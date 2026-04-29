@@ -22,14 +22,20 @@ const DesktopUseToolSchema = Type.Object(
   {
     action: Type.Union(
       [
+        Type.Literal("doctor"),
+        Type.Literal("inspect"),
+        Type.Literal("screenshot"),
+        Type.Literal("click"),
+        Type.Literal("type-text"),
+        Type.Literal("keypress"),
+        Type.Literal("scroll"),
+        Type.Literal("focus"),
+        // Backward-compatible aliases from 0.1.0.
         Type.Literal("permissions"),
         Type.Literal("see"),
         Type.Literal("capture"),
-        Type.Literal("click"),
         Type.Literal("type"),
         Type.Literal("press"),
-        Type.Literal("scroll"),
-        Type.Literal("focus"),
       ],
       { description: "Desktop action to perform." },
     ),
@@ -38,26 +44,26 @@ const DesktopUseToolSchema = Type.Object(
     windowId: Type.Optional(Type.Number({ description: "Platform window id." })),
     screenIndex: Type.Optional(Type.Number({ minimum: 0 })),
     mode: Type.Optional(CaptureMode),
-    path: Type.Optional(Type.String({ description: "Output image path for capture/see." })),
+    path: Type.Optional(Type.String({ description: "Output image path for screenshot/inspect." })),
     format: Type.Optional(ImageFormat),
     annotate: Type.Optional(
-      Type.Boolean({ description: "Annotate UI elements for see. Default true." }),
+      Type.Boolean({ description: "Annotate UI elements for inspect. Default true." }),
     ),
     retina: Type.Optional(
       Type.Boolean({ description: "Capture at Retina resolution when supported." }),
     ),
     analyze: Type.Optional(Type.String({ description: "Optional backend analysis prompt." })),
     on: Type.Optional(
-      Type.String({ description: "Element id from desktop_use action=see, e.g. B1." }),
+      Type.String({ description: "Element id from desktop_use action=inspect, e.g. B1." }),
     ),
     query: Type.Optional(Type.String({ description: "Element text/query for click fallback." })),
     coords: Type.Optional(Type.String({ description: "Coordinate fallback in x,y form." })),
     double: Type.Optional(Type.Boolean()),
     right: Type.Optional(Type.Boolean()),
-    text: Type.Optional(Type.String({ description: "Text for type action." })),
+    text: Type.Optional(Type.String({ description: "Text for type-text action." })),
     clear: Type.Optional(Type.Boolean()),
     pressReturn: Type.Optional(Type.Boolean()),
-    keys: Type.Optional(Type.Array(Type.String(), { description: "Keys for press action." })),
+    keys: Type.Optional(Type.Array(Type.String(), { description: "Keys for keypress action." })),
     direction: Type.Optional(
       Type.Union([
         Type.Literal("up"),
@@ -70,7 +76,7 @@ const DesktopUseToolSchema = Type.Object(
     confirm: Type.Optional(
       Type.Boolean({
         description:
-          "Required for interactive actions (click/type/press/scroll/focus) after explicit user approval.",
+          "Required for interactive actions (click/type-text/keypress/scroll/focus) after explicit user approval.",
       }),
     ),
     timeoutMs: Type.Optional(Type.Number({ minimum: 1000, maximum: 120000 })),
@@ -85,7 +91,7 @@ type ToolResult = {
   details: unknown;
 };
 
-const INTERACTIVE_ACTIONS = new Set(["click", "type", "press", "scroll", "focus"]);
+const INTERACTIVE_ACTIONS = new Set(["click", "type-text", "keypress", "scroll", "focus", "type", "press"]);
 
 export function createDesktopUseTool() {
   return {
@@ -102,7 +108,7 @@ export function createDesktopUseTool() {
           requiresConfirmation: true,
           action: params.action,
           message:
-            "Interactive desktop actions require confirm:true after explicit user approval. Use permissions/see/capture first.",
+            "Interactive desktop actions require confirm:true after explicit user approval. Use doctor/inspect/screenshot first.",
         });
       }
       return runAdapter(buildAdapterArgs(params), params);
@@ -131,7 +137,7 @@ function normalizeParams(params: DesktopUseParams): DesktopUseParams {
 async function runAdapter(args: string[], params: DesktopUseParams): Promise<ToolResult> {
   const timeout =
     params.timeoutMs ??
-    (params.action === "see" || params.action === "capture"
+    (normalizeAction(params.action) === "inspect" || normalizeAction(params.action) === "screenshot"
       ? CAPTURE_TIMEOUT_MS
       : DEFAULT_TIMEOUT_MS);
   const adapterBin = process.env.COVEN_DESKTOP_USE_BIN || DEFAULT_ADAPTER_BIN;
@@ -167,19 +173,20 @@ async function runAdapter(args: string[], params: DesktopUseParams): Promise<Too
 }
 
 function buildAdapterArgs(params: DesktopUseParams): string[] {
-  switch (params.action) {
-    case "permissions":
-      return ["permissions"];
-    case "see":
-      return buildSeeArgs(params);
-    case "capture":
-      return buildCaptureArgs(params);
+  const action = normalizeAction(params.action);
+  switch (action) {
+    case "doctor":
+      return ["doctor"];
+    case "inspect":
+      return buildInspectArgs(params);
+    case "screenshot":
+      return buildScreenshotArgs(params);
     case "click":
       return buildClickArgs(params);
-    case "type":
-      return buildTypeArgs(params);
-    case "press":
-      return buildPressArgs(params);
+    case "type-text":
+      return buildTypeTextArgs(params);
+    case "keypress":
+      return buildKeypressArgs(params);
     case "scroll":
       return buildScrollArgs(params);
     case "focus":
@@ -189,8 +196,25 @@ function buildAdapterArgs(params: DesktopUseParams): string[] {
   }
 }
 
-function buildSeeArgs(params: DesktopUseParams): string[] {
-  const args = ["see"];
+function normalizeAction(action: DesktopUseParams["action"]): string {
+  switch (action) {
+    case "permissions":
+      return "doctor";
+    case "see":
+      return "inspect";
+    case "capture":
+      return "screenshot";
+    case "type":
+      return "type-text";
+    case "press":
+      return "keypress";
+    default:
+      return action;
+  }
+}
+
+function buildInspectArgs(params: DesktopUseParams): string[] {
+  const args = ["inspect"];
   addCommonTargetArgs(args, params);
   if (params.mode) args.push("--mode", params.mode);
   if (typeof params.screenIndex === "number")
@@ -201,8 +225,8 @@ function buildSeeArgs(params: DesktopUseParams): string[] {
   return args;
 }
 
-function buildCaptureArgs(params: DesktopUseParams): string[] {
-  const args = ["capture"];
+function buildScreenshotArgs(params: DesktopUseParams): string[] {
+  const args = ["screenshot"];
   if (params.mode) args.push("--mode", params.mode);
   if (params.format) args.push("--format", params.format);
   addCommonTargetArgs(args, params);
@@ -228,18 +252,18 @@ function buildClickArgs(params: DesktopUseParams): string[] {
   return args;
 }
 
-function buildTypeArgs(params: DesktopUseParams): string[] {
-  if (!params.text) throw new ToolInputError("type requires text.");
-  const args = ["type", "--confirm", "--text", params.text];
+function buildTypeTextArgs(params: DesktopUseParams): string[] {
+  if (!params.text) throw new ToolInputError("type-text requires text.");
+  const args = ["type-text", "--confirm", "--text", params.text];
   if (params.clear) args.push("--clear");
   if (params.pressReturn) args.push("--return");
   addCommonTargetArgs(args, params);
   return args;
 }
 
-function buildPressArgs(params: DesktopUseParams): string[] {
-  if (!params.keys?.length) throw new ToolInputError("press requires keys.");
-  const args = ["press", "--confirm", "--keys", params.keys.join(",")];
+function buildKeypressArgs(params: DesktopUseParams): string[] {
+  if (!params.keys?.length) throw new ToolInputError("keypress requires keys.");
+  const args = ["keypress", "--confirm", "--keys", params.keys.join(",")];
   addCommonTargetArgs(args, params);
   return args;
 }

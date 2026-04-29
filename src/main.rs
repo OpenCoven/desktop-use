@@ -23,7 +23,7 @@ fn run(args: Vec<String>) -> String {
         ]);
     }
 
-    let command = args[0].as_str();
+    let command = normalize_command(args[0].as_str());
     if !cfg!(target_os = "macos") {
         return json_obj(vec![
             ("ok", "false".to_string()),
@@ -35,42 +35,58 @@ fn run(args: Vec<String>) -> String {
     }
 
     match command {
-        "permissions" => run_peekaboo(vec!["permissions".into()], false),
-        "see" => run_peekaboo(build_see_args(&args[1..]), false),
-        "capture" => run_peekaboo(build_capture_args(&args[1..]), false),
-        "click" | "type" | "press" | "scroll" | "focus" if !has_flag(&args[1..], "--confirm") => {
-            confirmation_required(command)
+        Some("doctor") => run_peekaboo(vec!["permissions".into()], false),
+        Some("inspect") => run_peekaboo(build_inspect_args(&args[1..]), false),
+        Some("screenshot") => run_peekaboo(build_screenshot_args(&args[1..]), false),
+        Some("click" | "type-text" | "keypress" | "scroll" | "focus")
+            if !has_flag(&args[1..], "--confirm") =>
+        {
+            confirmation_required(command.unwrap())
         }
-        "click" => run_peekaboo(
+        Some("click") => run_peekaboo(
             build_click_args(&strip_flag(&args[1..], "--confirm")),
             false,
         ),
-        "type" => run_peekaboo(build_type_args(&strip_flag(&args[1..], "--confirm")), true),
-        "press" => run_peekaboo(
+        Some("type-text") => run_peekaboo(build_type_args(&strip_flag(&args[1..], "--confirm")), true),
+        Some("keypress") => run_peekaboo(
             build_press_args(&strip_flag(&args[1..], "--confirm")),
             false,
         ),
-        "scroll" => run_peekaboo(
+        Some("scroll") => run_peekaboo(
             build_scroll_args(&strip_flag(&args[1..], "--confirm")),
             false,
         ),
-        "focus" => run_peekaboo(
+        Some("focus") => run_peekaboo(
             build_focus_args(&strip_flag(&args[1..], "--confirm")),
             false,
         ),
-        _ => json_obj(vec![
+        Some(_) | None => json_obj(vec![
             ("ok", "false".to_string()),
             (
                 "error",
-                json_string(&format!("unknown command: {}", command)),
+                json_string(&format!("unknown command: {}", args[0])),
             ),
             (
                 "help",
                 json_string(
-                    "commands: permissions, see, capture, click, type, press, scroll, focus",
+                    "commands: doctor, inspect, screenshot, click, type-text, keypress, scroll, focus",
                 ),
             ),
         ]),
+    }
+}
+
+fn normalize_command(command: &str) -> Option<&'static str> {
+    match command {
+        "doctor" | "permissions" => Some("doctor"),
+        "inspect" | "see" => Some("inspect"),
+        "screenshot" | "capture" => Some("screenshot"),
+        "click" => Some("click"),
+        "type-text" | "type" => Some("type-text"),
+        "keypress" | "press" => Some("keypress"),
+        "scroll" => Some("scroll"),
+        "focus" => Some("focus"),
+        _ => None,
     }
 }
 
@@ -95,7 +111,7 @@ fn strip_flag(args: &[String], flag: &str) -> Vec<String> {
         .collect()
 }
 
-fn build_see_args(args: &[String]) -> Vec<OsString> {
+fn build_inspect_args(args: &[String]) -> Vec<OsString> {
     let mut out = vec![OsString::from("see")];
     add_common_target_args(&mut out, args);
     if let Some(mode) = value(args, "--mode") {
@@ -111,7 +127,7 @@ fn build_see_args(args: &[String]) -> Vec<OsString> {
     }
     out.extend([
         "--path".into(),
-        output_path(value(args, "--path"), "see", "png").into(),
+        output_path(value(args, "--path"), "inspect", "png").into(),
     ]);
     if let Some(analyze) = value(args, "--analyze") {
         out.extend(["--analyze".into(), analyze.into()]);
@@ -119,7 +135,7 @@ fn build_see_args(args: &[String]) -> Vec<OsString> {
     out
 }
 
-fn build_capture_args(args: &[String]) -> Vec<OsString> {
+fn build_screenshot_args(args: &[String]) -> Vec<OsString> {
     let format = value(args, "--format").unwrap_or_else(|| "png".to_string());
     let mode = value(args, "--mode").unwrap_or_else(|| "frontmost".to_string());
     let mut out = vec![
@@ -138,7 +154,7 @@ fn build_capture_args(args: &[String]) -> Vec<OsString> {
     }
     out.extend([
         "--path".into(),
-        output_path(value(args, "--path"), "capture", &format).into(),
+        output_path(value(args, "--path"), "screenshot", &format).into(),
     ]);
     if let Some(analyze) = value(args, "--analyze") {
         out.extend(["--analyze".into(), analyze.into()]);
@@ -327,14 +343,24 @@ fn help_json() -> String {
         (
             "commands",
             json_array_strings(&[
-                "permissions".into(),
-                "see".into(),
-                "capture".into(),
+                "doctor".into(),
+                "inspect".into(),
+                "screenshot".into(),
                 "click".into(),
-                "type".into(),
-                "press".into(),
+                "type-text".into(),
+                "keypress".into(),
                 "scroll".into(),
                 "focus".into(),
+            ]),
+        ),
+        (
+            "aliases",
+            json_obj(vec![
+                ("permissions", json_string("doctor")),
+                ("see", json_string("inspect")),
+                ("capture", json_string("screenshot")),
+                ("type", json_string("type-text")),
+                ("press", json_string("keypress")),
             ]),
         ),
     ])
@@ -380,4 +406,39 @@ fn json_string(value: &str) -> String {
 
 fn bool_json(value: bool) -> String {
     if value { "true" } else { "false" }.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aliases_normalize_to_canonical_commands() {
+        assert_eq!(normalize_command("permissions"), Some("doctor"));
+        assert_eq!(normalize_command("see"), Some("inspect"));
+        assert_eq!(normalize_command("capture"), Some("screenshot"));
+        assert_eq!(normalize_command("type"), Some("type-text"));
+        assert_eq!(normalize_command("press"), Some("keypress"));
+    }
+
+    #[test]
+    fn canonical_help_lists_new_commands() {
+        let help = help_json();
+        assert!(help.contains("doctor"));
+        assert!(help.contains("inspect"));
+        assert!(help.contains("screenshot"));
+        assert!(help.contains("type-text"));
+        assert!(help.contains("keypress"));
+    }
+
+    #[test]
+    fn interactive_aliases_still_require_confirmation() {
+        let result = run(vec![
+            "press".to_string(),
+            "--keys".to_string(),
+            "tab".to_string(),
+        ]);
+        assert!(result.contains("requiresConfirmation"));
+        assert!(result.contains("keypress"));
+    }
 }

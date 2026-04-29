@@ -19,17 +19,19 @@ Proof of concept:
 ## Commands
 
 ```bash
-coven-desktop-use permissions
-coven-desktop-use see --mode frontmost
-coven-desktop-use capture --mode screen --format png
+coven-desktop-use doctor
+coven-desktop-use inspect --mode frontmost
+coven-desktop-use screenshot --mode screen --format png
 coven-desktop-use click --on B1 --confirm
-coven-desktop-use type --text "hello" --return --confirm
-coven-desktop-use press --keys tab,return --confirm
+coven-desktop-use type-text --text "hello" --return --confirm
+coven-desktop-use keypress --keys tab,return --confirm
 coven-desktop-use scroll --direction down --amount 3 --confirm
 coven-desktop-use focus --app TextEdit --confirm
 ```
 
-All commands print a JSON envelope.
+All commands print a JSON envelope. The 0.1.0 command names remain as aliases:
+`permissions -> doctor`, `see -> inspect`, `capture -> screenshot`,
+`type -> type-text`, and `press -> keypress`.
 
 ## Build
 
@@ -57,9 +59,16 @@ This repo also ships an external OpenClaw tool plugin package under the OpenCove
 ```
 
 The plugin registers the `desktop_use` agent tool and delegates all platform work
-to the `coven-desktop-use` adapter binary. By default it expects
-`coven-desktop-use` to be on `PATH`; for local development, point OpenClaw at a
-built adapter binary:
+to the `coven-desktop-use` adapter binary.
+
+Install the adapter binary from this repo:
+
+```bash
+cargo install --git https://github.com/OpenCoven/desktop-use coven-desktop-use
+```
+
+By default the plugin expects `coven-desktop-use` to be on `PATH`; for local
+development, point OpenClaw at a built adapter binary:
 
 ```bash
 COVEN_DESKTOP_USE_BIN=/path/to/coven-desktop-use

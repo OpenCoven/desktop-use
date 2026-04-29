@@ -1,6 +1,6 @@
 {
   "name": "@opencoven/openclaw-desktop-use",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "OpenCoven desktop-use adapter and OpenClaw plugin for computer-use integrations",
   "type": "module",
   "license": "MIT",
