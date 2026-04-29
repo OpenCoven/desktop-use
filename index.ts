@@ -7,6 +7,6 @@ export default definePluginEntry({
   description:
     "Registers the desktop_use tool and delegates desktop automation to the external OpenCoven coven-desktop-use adapter.",
   register(api) {
-    api.registerTool(createDesktopUseTool(), { name: "desktop_use" });
+    api.registerTool(createDesktopUseTool());
   },
 });
