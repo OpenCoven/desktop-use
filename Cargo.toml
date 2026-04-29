@@ -1,0 +1,11 @@
+[package]
+name = "coven-desktop-use"
+version = "0.1.0"
+edition = "2021"
+description = "OpenCoven desktop-use adapter for OpenClaw computer-use integrations"
+license = "MIT"
+repository = "https://github.com/OpenCoven/desktop-use"
+
+[[bin]]
+name = "coven-desktop-use"
+path = "src/main.rs"
