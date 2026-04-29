@@ -47,3 +47,34 @@ OpenClaw desktop_use tool → execFile("coven-desktop-use", args) → platform b
 ```
 
 OpenClaw owns tool policy and approvals. This adapter owns desktop backends.
+
+## OpenClaw plugin package
+
+This repo also ships an external OpenClaw tool plugin package under the OpenCoven scope:
+
+```text
+@opencoven/openclaw-desktop-use
+```
+
+The plugin registers the `desktop_use` agent tool and delegates all platform work
+to the `coven-desktop-use` adapter binary. By default it expects
+`coven-desktop-use` to be on `PATH`; for local development, point OpenClaw at a
+built adapter binary:
+
+```bash
+COVEN_DESKTOP_USE_BIN=/path/to/coven-desktop-use
+```
+
+Local plugin checks:
+
+```bash
+pnpm install --ignore-scripts
+pnpm run typecheck
+cargo test
+```
+
+Intended install shape once published:
+
+```bash
+openclaw plugins install @opencoven/openclaw-desktop-use
+```
