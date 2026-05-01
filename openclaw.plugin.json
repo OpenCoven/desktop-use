@@ -3,6 +3,9 @@
   "name": "OpenCoven Desktop Use",
   "description": "Registers the desktop_use tool and delegates desktop automation to the external coven-desktop-use adapter.",
   "version": "0.1.2",
+  "activation": {
+    "onStartup": true
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
