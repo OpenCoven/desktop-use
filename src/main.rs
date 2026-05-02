@@ -35,9 +35,9 @@ fn run(args: Vec<String>) -> String {
     }
 
     match command {
-        Some("doctor") => run_peekaboo(vec!["permissions".into()], false),
-        Some("inspect") => run_peekaboo(build_inspect_args(&args[1..]), false),
-        Some("screenshot") => run_peekaboo(build_screenshot_args(&args[1..]), false),
+        Some("doctor") => run_peekaboo(vec!["permissions".into()], false, true),
+        Some("inspect") => run_peekaboo(build_inspect_args(&args[1..]), false, false),
+        Some("screenshot") => run_peekaboo(build_screenshot_args(&args[1..]), false, false),
         Some("click" | "type-text" | "keypress" | "scroll" | "focus")
             if !has_flag(&args[1..], "--confirm") =>
         {
@@ -46,18 +46,26 @@ fn run(args: Vec<String>) -> String {
         Some("click") => run_peekaboo(
             build_click_args(&strip_flag(&args[1..], "--confirm")),
             false,
+            false,
         ),
-        Some("type-text") => run_peekaboo(build_type_args(&strip_flag(&args[1..], "--confirm")), true),
+        Some("type-text") => run_peekaboo(
+            build_type_args(&strip_flag(&args[1..], "--confirm")),
+            true,
+            false,
+        ),
         Some("keypress") => run_peekaboo(
             build_press_args(&strip_flag(&args[1..], "--confirm")),
+            false,
             false,
         ),
         Some("scroll") => run_peekaboo(
             build_scroll_args(&strip_flag(&args[1..], "--confirm")),
             false,
+            false,
         ),
         Some("focus") => run_peekaboo(
             build_focus_args(&strip_flag(&args[1..], "--confirm")),
+            false,
             false,
         ),
         Some(_) | None => json_obj(vec![
@@ -244,7 +252,11 @@ fn add_common_target_args(out: &mut Vec<OsString>, args: &[String]) {
     }
 }
 
-fn run_peekaboo(mut args: Vec<OsString>, redact_type_text: bool) -> String {
+fn run_peekaboo(
+    mut args: Vec<OsString>,
+    redact_type_text: bool,
+    always_include_permission_guide: bool,
+) -> String {
     args.push("--json".into());
     args.push("--no-remote".into());
     let mut cmd = Command::new("peekaboo");
@@ -258,7 +270,11 @@ fn run_peekaboo(mut args: Vec<OsString>, redact_type_text: bool) -> String {
             } else {
                 String::from_utf8_lossy(&output.stdout).to_string()
             };
-            json_obj(vec![
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            let include_permission_guide = always_include_permission_guide
+                || looks_like_permission_failure(&stdout)
+                || looks_like_permission_failure(&stderr);
+            let mut fields = vec![
                 ("ok", bool_json(ok)),
                 ("supported", "true".to_string()),
                 ("platform", json_string(env::consts::OS)),
@@ -270,11 +286,12 @@ fn run_peekaboo(mut args: Vec<OsString>, redact_type_text: bool) -> String {
                 ),
                 ("stdout", json_string(&stdout)),
                 ("stdoutRedacted", bool_json(redact_type_text)),
-                (
-                    "stderr",
-                    json_string(&String::from_utf8_lossy(&output.stderr)),
-                ),
-            ])
+                ("stderr", json_string(&stderr)),
+            ];
+            if include_permission_guide {
+                fields.push(("permissionGuide", permission_guide_json()));
+            }
+            json_obj(fields)
         }
         Err(err) => json_obj(vec![
             ("ok", "false".to_string()),
@@ -288,8 +305,71 @@ fn run_peekaboo(mut args: Vec<OsString>, redact_type_text: bool) -> String {
                     "Install Peekaboo and grant Screen Recording + Accessibility permissions.",
                 ),
             ),
+            ("permissionGuide", permission_guide_json()),
         ]),
     }
+}
+
+fn looks_like_permission_failure(text: &str) -> bool {
+    text.contains("PERMISSION_ERROR")
+        || text.contains("Screen recording permission")
+        || text.contains("Screen Recording") && text.contains("isGranted") && text.contains("false")
+        || text.contains("Accessibility") && text.contains("isGranted") && text.contains("false")
+}
+
+fn permission_guide_json() -> String {
+    let adapter_path = env::current_exe()
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "coven-desktop-use".to_string());
+    json_obj(vec![
+        (
+            "summary",
+            json_string(
+                "macOS privacy permission is required before desktop inspection or interaction can work.",
+            ),
+        ),
+        (
+            "requiredPermissions",
+            json_array_strings(&[
+                "Screen Recording".to_string(),
+                "Accessibility".to_string(),
+            ]),
+        ),
+        (
+            "systemSettingsPaths",
+            json_array_strings(&[
+                "System Settings > Privacy & Security > Screen Recording".to_string(),
+                "System Settings > Privacy & Security > Accessibility".to_string(),
+            ]),
+        ),
+        (
+            "systemSettingsUris",
+            json_array_strings(&[
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture".to_string(),
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility".to_string(),
+            ]),
+        ),
+        ("primaryBinaryToAdd", json_string(&adapter_path)),
+        (
+            "alsoCheckCallers",
+            json_array_strings(&[
+                "the terminal app or service that launched OpenClaw".to_string(),
+                "node".to_string(),
+                "openclaw".to_string(),
+                "peekaboo".to_string(),
+            ]),
+        ),
+        (
+            "afterGrant",
+            json_string(
+                "Quit/restart the granted app or restart the OpenClaw Gateway, then rerun `coven-desktop-use doctor`.",
+            ),
+        ),
+        (
+            "verificationCommand",
+            json_string("coven-desktop-use doctor"),
+        ),
+    ])
 }
 
 fn redact_args(args: &[OsString], redact_type_text: bool) -> Vec<String> {
@@ -440,5 +520,26 @@ mod tests {
         ]);
         assert!(result.contains("requiresConfirmation"));
         assert!(result.contains("keypress"));
+    }
+
+    #[test]
+    fn permission_guide_names_required_macos_privacy_grants() {
+        let guide = permission_guide_json();
+        assert!(guide.contains("Screen Recording"));
+        assert!(guide.contains("Accessibility"));
+        assert!(guide.contains("Privacy_ScreenCapture"));
+        assert!(guide.contains("Privacy_Accessibility"));
+        assert!(guide.contains("coven-desktop-use doctor"));
+    }
+
+    #[test]
+    fn permission_failure_detector_catches_peekaboo_denials() {
+        assert!(looks_like_permission_failure(
+            r#"{"code":"PERMISSION_ERROR_SCREEN_RECORDING"}"#,
+        ));
+        assert!(looks_like_permission_failure(
+            r#"{"name":"Accessibility","isGranted":false}"#,
+        ));
+        assert!(!looks_like_permission_failure(r#"{"success":true}"#));
     }
 }

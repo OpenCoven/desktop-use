@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { promisify } from "node:util";
 import { Static, Type } from "typebox";
 
@@ -140,17 +142,19 @@ async function runAdapter(args: string[], params: DesktopUseParams): Promise<Too
     (normalizeAction(params.action) === "inspect" || normalizeAction(params.action) === "screenshot"
       ? CAPTURE_TIMEOUT_MS
       : DEFAULT_TIMEOUT_MS);
-  const adapterBin = process.env.COVEN_DESKTOP_USE_BIN || DEFAULT_ADAPTER_BIN;
+  const adapterBin = resolveAdapterBin();
   try {
     const { stdout, stderr } = await execFileAsync(adapterBin, args, {
       timeout,
       maxBuffer: 10 * 1024 * 1024,
     });
+    const result = parseJsonOrText(stdout);
     return jsonResult({
       ok: true,
       adapter: adapterBin,
       args: redactArgsForDetails(args),
-      result: parseJsonOrText(stdout),
+      result,
+      permissionFlow: permissionFlowForResult(result, params.action),
       stderr: stderr ? String(stderr) : undefined,
     });
   } catch (err) {
@@ -159,17 +163,31 @@ async function runAdapter(args: string[], params: DesktopUseParams): Promise<Too
       stderr?: string | Buffer;
       code?: string | number;
     };
+    const stdout = error.stdout ? parseJsonOrText(error.stdout) : undefined;
     return jsonResult({
       ok: false,
       adapter: adapterBin,
       args: redactArgsForDetails(args),
       error: error.message,
       code: error.code,
-      stdout: error.stdout ? parseJsonOrText(error.stdout) : undefined,
+      stdout,
       stderr: error.stderr ? String(error.stderr).slice(0, 4000) : undefined,
-      hint: `Install the OpenCoven adapter or set COVEN_DESKTOP_USE_BIN to its path. Expected binary: ${DEFAULT_ADAPTER_BIN}`,
+      hint: missingAdapterHint(adapterBin),
+      permissionFlow: permissionFlowForResult(stdout, params.action),
+      adapterSetup: adapterSetupGuide(adapterBin),
     });
   }
+}
+
+function resolveAdapterBin(): string {
+  if (process.env.COVEN_DESKTOP_USE_BIN) {
+    return process.env.COVEN_DESKTOP_USE_BIN;
+  }
+  const cargoBin = `${homedir()}/.cargo/bin/${DEFAULT_ADAPTER_BIN}`;
+  if (existsSync(cargoBin)) {
+    return cargoBin;
+  }
+  return DEFAULT_ADAPTER_BIN;
 }
 
 function buildAdapterArgs(params: DesktopUseParams): string[] {
@@ -306,6 +324,67 @@ function parseJsonOrText(stdout: string | Buffer): unknown {
   } catch {
     return { text: text.slice(0, 8000) };
   }
+}
+
+function permissionFlowForResult(result: unknown, action: string): unknown | undefined {
+  if (action !== "doctor" && !looksLikePermissionFailure(result)) {
+    return undefined;
+  }
+  return {
+    summary:
+      "macOS privacy permission is required before desktop inspection or interaction can work.",
+    requiredPermissions: ["Screen Recording", "Accessibility"],
+    systemSettings: [
+      {
+        label: "Screen Recording",
+        path: "System Settings > Privacy & Security > Screen Recording",
+        uri: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+      },
+      {
+        label: "Accessibility",
+        path: "System Settings > Privacy & Security > Accessibility",
+        uri: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+      },
+    ],
+    grantTargets: [
+      process.env.COVEN_DESKTOP_USE_BIN || DEFAULT_ADAPTER_BIN,
+      `${homedir()}/.cargo/bin/${DEFAULT_ADAPTER_BIN}`,
+      "the terminal app or service that launched OpenClaw",
+      "node",
+      "openclaw",
+      "peekaboo",
+    ],
+    afterGrant:
+      "Quit/restart the granted app or restart the OpenClaw Gateway, then rerun desktop_use action=doctor.",
+    verification: { tool: "desktop_use", args: { action: "doctor" } },
+  };
+}
+
+function looksLikePermissionFailure(value: unknown): boolean {
+  const text = JSON.stringify(value ?? "");
+  return (
+    text.includes("PERMISSION_ERROR") ||
+    text.includes("Screen recording permission") ||
+    (text.includes("Screen Recording") && text.includes("isGranted") && text.includes("false")) ||
+    (text.includes("Accessibility") && text.includes("isGranted") && text.includes("false"))
+  );
+}
+
+function missingAdapterHint(adapterBin: string): string {
+  if (adapterBin === DEFAULT_ADAPTER_BIN) {
+    return `Adapter binary not found on PATH. Install the OpenCoven adapter or set COVEN_DESKTOP_USE_BIN to an absolute path. Expected binary: ${DEFAULT_ADAPTER_BIN}`;
+  }
+  return `Adapter binary not found or not executable at COVEN_DESKTOP_USE_BIN=${adapterBin}. Set COVEN_DESKTOP_USE_BIN to the coven-desktop-use binary path and restart the OpenClaw Gateway.`;
+}
+
+function adapterSetupGuide(adapterBin: string): unknown {
+  return {
+    expectedBinary: DEFAULT_ADAPTER_BIN,
+    configuredBinary: adapterBin,
+    envVar: "COVEN_DESKTOP_USE_BIN",
+    installCommand: "cargo install --git https://github.com/OpenCoven/desktop-use coven-desktop-use",
+    restartAfterChangingEnv: true,
+  };
 }
 
 function redactArgsForDetails(args: string[]): string[] {
