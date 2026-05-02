@@ -6,6 +6,11 @@
   "activation": {
     "onStartup": true
   },
+  "contracts": {
+    "tools": [
+      "desktop_use"
+    ]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
