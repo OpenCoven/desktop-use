@@ -19,9 +19,6 @@
     "typecheck": "tsc --noEmit",
     "check": "pnpm run typecheck && cargo test"
   },
-  "dependencies": {
-    "typebox": "1.1.34"
-  },
   "devDependencies": {
     "@types/node": "25.6.0",
     "openclaw": "2026.4.26",

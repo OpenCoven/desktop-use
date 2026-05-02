@@ -3,7 +3,6 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
-import { Static, Type } from "typebox";
 
 const execFileAsync = promisify(execFile);
 
@@ -13,81 +12,107 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const CAPTURE_TIMEOUT_MS = 45_000;
 const DEFAULT_ADAPTER_BIN = "coven-desktop-use";
 
-const CaptureMode = Type.Union([
-  Type.Literal("screen"),
-  Type.Literal("window"),
-  Type.Literal("frontmost"),
-  Type.Literal("auto"),
-]);
-const ImageFormat = Type.Union([Type.Literal("png"), Type.Literal("jpg")]);
+type DesktopUseAction =
+  | "doctor"
+  | "inspect"
+  | "screenshot"
+  | "click"
+  | "type-text"
+  | "keypress"
+  | "scroll"
+  | "focus"
+  | "permissions"
+  | "see"
+  | "capture"
+  | "type"
+  | "press";
 
-const DesktopUseToolSchema = Type.Object(
-  {
-    action: Type.Union(
-      [
-        Type.Literal("doctor"),
-        Type.Literal("inspect"),
-        Type.Literal("screenshot"),
-        Type.Literal("click"),
-        Type.Literal("type-text"),
-        Type.Literal("keypress"),
-        Type.Literal("scroll"),
-        Type.Literal("focus"),
-        // Backward-compatible aliases from 0.1.0.
-        Type.Literal("permissions"),
-        Type.Literal("see"),
-        Type.Literal("capture"),
-        Type.Literal("type"),
-        Type.Literal("press"),
+type DesktopUseParams = {
+  action: DesktopUseAction;
+  app?: string;
+  windowTitle?: string;
+  windowId?: number;
+  screenIndex?: number;
+  mode?: "screen" | "window" | "frontmost" | "auto";
+  path?: string;
+  format?: "png" | "jpg";
+  annotate?: boolean;
+  retina?: boolean;
+  analyze?: string;
+  on?: string;
+  query?: string;
+  coords?: string;
+  double?: boolean;
+  right?: boolean;
+  text?: string;
+  clear?: boolean;
+  pressReturn?: boolean;
+  keys?: string[];
+  direction?: "up" | "down" | "left" | "right";
+  amount?: number;
+  confirm?: boolean;
+  timeoutMs?: number;
+};
+
+const DesktopUseToolSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["action"],
+  properties: {
+    action: {
+      type: "string",
+      enum: [
+        "doctor",
+        "inspect",
+        "screenshot",
+        "click",
+        "type-text",
+        "keypress",
+        "scroll",
+        "focus",
+        "permissions",
+        "see",
+        "capture",
+        "type",
+        "press",
       ],
-      { description: "Desktop action to perform." },
-    ),
-    app: Type.Optional(Type.String({ description: "Target app name, bundle id, or PID:123." })),
-    windowTitle: Type.Optional(Type.String({ description: "Partial target window title." })),
-    windowId: Type.Optional(Type.Number({ description: "Platform window id." })),
-    screenIndex: Type.Optional(Type.Number({ minimum: 0 })),
-    mode: Type.Optional(CaptureMode),
-    path: Type.Optional(Type.String({ description: "Output image path for screenshot/inspect." })),
-    format: Type.Optional(ImageFormat),
-    annotate: Type.Optional(
-      Type.Boolean({ description: "Annotate UI elements for inspect. Default true." }),
-    ),
-    retina: Type.Optional(
-      Type.Boolean({ description: "Capture at Retina resolution when supported." }),
-    ),
-    analyze: Type.Optional(Type.String({ description: "Optional backend analysis prompt." })),
-    on: Type.Optional(
-      Type.String({ description: "Element id from desktop_use action=inspect, e.g. B1." }),
-    ),
-    query: Type.Optional(Type.String({ description: "Element text/query for click fallback." })),
-    coords: Type.Optional(Type.String({ description: "Coordinate fallback in x,y form." })),
-    double: Type.Optional(Type.Boolean()),
-    right: Type.Optional(Type.Boolean()),
-    text: Type.Optional(Type.String({ description: "Text for type-text action." })),
-    clear: Type.Optional(Type.Boolean()),
-    pressReturn: Type.Optional(Type.Boolean()),
-    keys: Type.Optional(Type.Array(Type.String(), { description: "Keys for keypress action." })),
-    direction: Type.Optional(
-      Type.Union([
-        Type.Literal("up"),
-        Type.Literal("down"),
-        Type.Literal("left"),
-        Type.Literal("right"),
-      ]),
-    ),
-    amount: Type.Optional(Type.Number({ minimum: 1, maximum: 50 })),
-    confirm: Type.Optional(
-      Type.Boolean({
-        description:
-          "Required for interactive actions (click/type-text/keypress/scroll/focus) after explicit user approval.",
-      }),
-    ),
-    timeoutMs: Type.Optional(Type.Number({ minimum: 1000, maximum: 120000 })),
+      description: "Desktop action to perform.",
+    },
+    app: { type: "string", description: "Target app name, bundle id, or PID:123." },
+    windowTitle: { type: "string", description: "Partial target window title." },
+    windowId: { type: "number", description: "Platform window id." },
+    screenIndex: { type: "number", minimum: 0 },
+    mode: { type: "string", enum: ["screen", "window", "frontmost", "auto"] },
+    path: { type: "string", description: "Output image path for screenshot/inspect." },
+    format: { type: "string", enum: ["png", "jpg"] },
+    annotate: {
+      type: "boolean",
+      description: "Annotate UI elements for inspect. Default true.",
+    },
+    retina: {
+      type: "boolean",
+      description: "Capture at Retina resolution when supported.",
+    },
+    analyze: { type: "string", description: "Optional backend analysis prompt." },
+    on: { type: "string", description: "Element id from desktop_use action=inspect, e.g. B1." },
+    query: { type: "string", description: "Element text/query for click fallback." },
+    coords: { type: "string", description: "Coordinate fallback in x,y form." },
+    double: { type: "boolean" },
+    right: { type: "boolean" },
+    text: { type: "string", description: "Text for type-text action." },
+    clear: { type: "boolean" },
+    pressReturn: { type: "boolean" },
+    keys: { type: "array", items: { type: "string" }, description: "Keys for keypress action." },
+    direction: { type: "string", enum: ["up", "down", "left", "right"] },
+    amount: { type: "number", minimum: 1, maximum: 50 },
+    confirm: {
+      type: "boolean",
+      description:
+        "Required for interactive actions (click/type-text/keypress/scroll/focus) after explicit user approval.",
+    },
+    timeoutMs: { type: "number", minimum: 1000, maximum: 120000 },
   },
-  { additionalProperties: false },
-);
-
-type DesktopUseParams = Static<typeof DesktopUseToolSchema>;
+} as const;
 
 type ToolResult = {
   content: [{ type: "text"; text: string }];
