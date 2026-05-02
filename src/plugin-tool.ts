@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
+import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
 import { Static, Type } from "typebox";
 
@@ -346,18 +347,33 @@ function permissionFlowForResult(result: unknown, action: string): unknown | und
         uri: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
       },
     ],
+    primaryBinariesToAdd: primaryPermissionBinaries(),
     grantTargets: [
-      process.env.COVEN_DESKTOP_USE_BIN || DEFAULT_ADAPTER_BIN,
-      `${homedir()}/.cargo/bin/${DEFAULT_ADAPTER_BIN}`,
+      ...primaryPermissionBinaries(),
       "the terminal app or service that launched OpenClaw",
       "node",
       "openclaw",
-      "peekaboo",
     ],
     afterGrant:
       "Quit/restart the granted app or restart the OpenClaw Gateway, then rerun desktop_use action=doctor.",
     verification: { tool: "desktop_use", args: { action: "doctor" } },
   };
+}
+
+function primaryPermissionBinaries(): string[] {
+  const adapter = resolveAdapterBin();
+  const peekaboo = resolvePathBinary("peekaboo") ?? "peekaboo";
+  return Array.from(new Set([adapter, peekaboo]));
+}
+
+function resolvePathBinary(name: string): string | undefined {
+  for (const dir of (process.env.PATH ?? "").split(delimiter).filter(Boolean)) {
+    const candidate = join(dir, name);
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return undefined;
 }
 
 function looksLikePermissionFailure(value: unknown): boolean {

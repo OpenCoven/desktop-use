@@ -1,6 +1,6 @@
 use std::env;
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -349,7 +349,15 @@ fn permission_guide_json() -> String {
                 "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility".to_string(),
             ]),
         ),
-        ("primaryBinaryToAdd", json_string(&adapter_path)),
+        (
+            "primaryBinariesToAdd",
+            json_array_strings(&primary_permission_binaries(&adapter_path)),
+        ),
+        ("adapterBinary", json_string(&adapter_path)),
+        (
+            "backendBinary",
+            json_string(&resolve_path_binary("peekaboo").unwrap_or_else(|| "peekaboo".to_string())),
+        ),
         (
             "alsoCheckCallers",
             json_array_strings(&[
@@ -370,6 +378,33 @@ fn permission_guide_json() -> String {
             json_string("coven-desktop-use doctor"),
         ),
     ])
+}
+
+fn primary_permission_binaries(adapter_path: &str) -> Vec<String> {
+    let mut binaries = vec![adapter_path.to_string()];
+    if let Some(peekaboo_path) = resolve_path_binary("peekaboo") {
+        if !binaries.iter().any(|item| item == &peekaboo_path) {
+            binaries.push(peekaboo_path);
+        }
+    } else {
+        binaries.push("peekaboo".to_string());
+    }
+    binaries
+}
+
+fn resolve_path_binary(name: &str) -> Option<String> {
+    let path_var = env::var_os("PATH")?;
+    for dir in env::split_paths(&path_var) {
+        let candidate = dir.join(name);
+        if is_executable_file(&candidate) {
+            return Some(candidate.to_string_lossy().to_string());
+        }
+    }
+    None
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    path.is_file()
 }
 
 fn redact_args(args: &[OsString], redact_type_text: bool) -> Vec<String> {
@@ -529,6 +564,9 @@ mod tests {
         assert!(guide.contains("Accessibility"));
         assert!(guide.contains("Privacy_ScreenCapture"));
         assert!(guide.contains("Privacy_Accessibility"));
+        assert!(guide.contains("primaryBinariesToAdd"));
+        assert!(guide.contains("backendBinary"));
+        assert!(guide.contains("peekaboo"));
         assert!(guide.contains("coven-desktop-use doctor"));
     }
 
