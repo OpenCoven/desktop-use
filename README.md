@@ -33,6 +33,40 @@ All commands print a JSON envelope. The 0.1.0 command names remain as aliases:
 `permissions -> doctor`, `see -> inspect`, `capture -> screenshot`,
 `type -> type-text`, and `press -> keypress`.
 
+## macOS onboarding
+
+Desktop inspection and interaction require two macOS privacy grants because the
+adapter captures the screen and drives accessibility APIs through Peekaboo.
+
+Run the doctor first:
+
+```bash
+coven-desktop-use doctor
+```
+
+If permissions are missing, the JSON output includes a `permissionGuide` with
+the exact Settings panes and binaries to approve. The usual paths are:
+
+- System Settings → Privacy & Security → Screen Recording
+- System Settings → Privacy & Security → Accessibility
+
+Grant access only to the local binaries you intentionally installed, typically:
+
+- the adapter binary, for example `~/.cargo/bin/coven-desktop-use`
+- the Peekaboo backend binary, for example `/opt/homebrew/bin/peekaboo`
+
+After granting permissions, quit/restart the app or service that launched the
+tool, or restart the OpenClaw Gateway, then verify:
+
+```bash
+coven-desktop-use doctor
+```
+
+`inspect` and `screenshot` should be used before interactive actions. Actions
+that click, type, press keys, scroll, or focus windows still require explicit
+confirmation via `--confirm` at the adapter layer and `confirm: true` through the
+OpenClaw plugin.
+
 ## Build
 
 ```bash
