@@ -353,10 +353,15 @@ function parseJsonOrText(stdout: string | Buffer): unknown {
 }
 
 function permissionFlowForResult(result: unknown, action: string): unknown | undefined {
+  const platform = readStringField(result, "platform");
+  if (platform === "linux") {
+    return linuxPermissionFlow(result, action);
+  }
   if (action !== "doctor" && !looksLikePermissionFailure(result)) {
     return undefined;
   }
   return {
+    platform: "macos",
     summary:
       "macOS privacy permission is required before desktop inspection or interaction can work.",
     requiredPermissions: ["Screen Recording", "Accessibility"],
@@ -383,6 +388,66 @@ function permissionFlowForResult(result: unknown, action: string): unknown | und
       "Quit/restart the granted app or restart the OpenClaw Gateway, then rerun desktop_use action=doctor.",
     verification: { tool: "desktop_use", args: { action: "doctor" } },
   };
+}
+
+function linuxPermissionFlow(result: unknown, action: string): unknown | undefined {
+  const setupGuide = readObjectField(result, "setupGuide");
+  const tools = readObjectField(result, "tools");
+  const session = readStringField(result, "session");
+  const errorText = readStringField(result, "error") ?? "";
+  const missingTool = errorText.startsWith("Missing required tool");
+
+  if (action !== "doctor" && !missingTool && !setupGuide) {
+    return undefined;
+  }
+
+  return {
+    platform: "linux",
+    session: session ?? null,
+    summary:
+      readStringField(setupGuide, "summary") ??
+      "Linux desktop-use requires per-session helper tools (scrot/xdotool on X11, grim/wtype/ydotool on Wayland).",
+    installCommand:
+      readStringField(setupGuide, "installCommand") ??
+      (session === "wayland"
+        ? "sudo apt install grim wtype ydotool"
+        : "sudo apt install scrot xdotool wmctrl"),
+    missingTools: readArrayField(setupGuide, "missingTools") ?? [],
+    tools: tools ?? null,
+    sessionNotes: collectSessionNotes(setupGuide),
+    afterInstall:
+      "After installing the listed packages, rerun desktop_use action=doctor. Wayland users may also need to start the ydotoold service and add their user to the 'input' group.",
+    verification: { tool: "desktop_use", args: { action: "doctor" } },
+  };
+}
+
+function readStringField(value: unknown, key: string): string | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const v = (value as Record<string, unknown>)[key];
+  return typeof v === "string" ? v : undefined;
+}
+
+function readObjectField(value: unknown, key: string): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const v = (value as Record<string, unknown>)[key];
+  return v && typeof v === "object" ? (v as Record<string, unknown>) : undefined;
+}
+
+function readArrayField(value: unknown, key: string): unknown[] | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const v = (value as Record<string, unknown>)[key];
+  return Array.isArray(v) ? v : undefined;
+}
+
+function collectSessionNotes(
+  setupGuide: Record<string, unknown> | undefined,
+): Record<string, string> {
+  const notes: Record<string, string> = {};
+  for (const key of ["ydotoolNote", "focusNote", "scrollNote", "elementIdNote"]) {
+    const v = readStringField(setupGuide, key);
+    if (v) notes[key] = v;
+  }
+  return notes;
 }
 
 function primaryPermissionBinaries(): string[] {
