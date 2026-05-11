@@ -1,13 +1,14 @@
 {
   "id": "opencoven-desktop-use",
   "name": "OpenCoven Desktop Use",
-  "description": "Registers the desktop_use tool and delegates desktop automation to the external coven-desktop-use adapter.",
+  "description": "Registers the computer_use and legacy desktop_use tools for the dedicated OpenCoven computer-use agent.",
   "version": "0.1.2",
   "activation": {
     "onStartup": true
   },
   "contracts": {
     "tools": [
+      "computer_use",
       "desktop_use"
     ]
   },

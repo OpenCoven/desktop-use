@@ -1,0 +1,31 @@
+{
+  "id": "computer-use",
+  "name": "Computer Use",
+  "workspace": "~/.openclaw/workspace/computer-use",
+  "agentDir": "~/.openclaw/agents/computer-use/agent",
+  "identityFile": "IDENTITY.md",
+  "plugin": "opencoven-desktop-use",
+  "memory": {
+    "store": "~/.openclaw/memory/computer-use.sqlite",
+    "mode": "agent-scoped"
+  },
+  "auth": {
+    "inheritsMainOAuth": true,
+    "copyOAuthSecrets": false,
+    "binding": "per-agent auth order"
+  },
+  "tools": {
+    "allow": ["computer_use"],
+    "deny": ["exec", "bash", "shell", "apply_patch"]
+  },
+  "health": {
+    "tool": "computer_use",
+    "args": {
+      "action": "health"
+    }
+  },
+  "logs": {
+    "actions": "~/.openclaw/agents/computer-use/audit/computer-use.jsonl",
+    "health": "~/.openclaw/agents/computer-use/audit/health.jsonl"
+  }
+}
