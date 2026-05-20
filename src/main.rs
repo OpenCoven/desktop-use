@@ -46,6 +46,14 @@ fn run(args: Vec<String>) -> String {
         Platform::Macos => run_macos(command, &args[1..]),
         Platform::LinuxX11 => run_linux(LinuxSession::X11, command, &args[1..]),
         Platform::LinuxWayland => run_linux(LinuxSession::Wayland, command, &args[1..]),
+        Platform::LinuxNoDisplay => json_obj(vec![
+            ("ok", "false".to_string()),
+            ("supported", "false".to_string()),
+            ("platform", json_string(env::consts::OS)),
+            ("backend", json_string("linux")),
+            ("error", json_string("No display session detected. XDG_SESSION_TYPE, WAYLAND_DISPLAY, and DISPLAY are all unset. coven-desktop-use requires an active graphical session (X11 or Wayland).")),
+            ("hint", json_string("Connect to the machine with display forwarding (ssh -X), or run in an active graphical session. Set DISPLAY=:0 if a local X11 server is running.")),
+        ]),
         Platform::Other => json_obj(vec![
             ("ok", "false".to_string()),
             ("supported", "false".to_string()),
@@ -66,6 +74,7 @@ enum Platform {
     Macos,
     LinuxX11,
     LinuxWayland,
+    LinuxNoDisplay,
     Other,
 }
 
@@ -107,10 +116,9 @@ fn detect_linux_session() -> Platform {
             } else if env::var_os("DISPLAY").is_some() {
                 Platform::LinuxX11
             } else {
-                // No display variables set (headless / SSH session). Default to
-                // X11 because xdotool/scrot also fail loudly and `doctor` will
-                // make the missing display obvious to the operator.
-                Platform::LinuxX11
+                // No display variables set (headless / SSH session).
+                // Return LinuxNoDisplay so all commands report a clean error.
+                Platform::LinuxNoDisplay
             }
         }
     }
@@ -536,7 +544,7 @@ fn linux_minimum_tools_present(session: LinuxSession, tools: &[LinuxToolStatus])
     let has = |name: &str| tools.iter().any(|t| t.name == name && t.found);
     match session {
         LinuxSession::X11 => (has("scrot") || has("maim")) && has("xdotool"),
-        LinuxSession::Wayland => has("grim") && (has("wtype") || has("ydotool")),
+        LinuxSession::Wayland => has("grim") && has("ydotool"),
     }
 }
 
@@ -555,10 +563,17 @@ fn linux_tool_inventory_json(tools: &[LinuxToolStatus]) -> String {
     format!("{{{}}}", body)
 }
 
+fn required_tools(session: LinuxSession) -> &'static [&'static str] {
+    match session {
+        LinuxSession::X11 => &["scrot", "xdotool"],   // maim is alt for scrot; wmctrl optional
+        LinuxSession::Wayland => &["grim", "ydotool"], // wtype optional fallback
+    }
+}
+
 fn linux_setup_guide_json(session: LinuxSession, tools: &[LinuxToolStatus]) -> String {
     let missing: Vec<String> = tools
         .iter()
-        .filter(|t| !t.found)
+        .filter(|t| !t.found && required_tools(session).contains(&t.name))
         .map(|t| t.name.to_string())
         .collect();
     let install_command = match session {
@@ -595,7 +610,7 @@ fn linux_setup_guide_json(session: LinuxSession, tools: &[LinuxToolStatus]) -> S
         fields.push((
             "scrollNote",
             json_string(
-                "Real scroll-wheel emulation on Wayland needs wlrctl or compositor support. Without it, `scroll` falls back to Page_Up/Page_Down keystrokes.",
+                "Wayland scroll uses Page_Up/Page_Down via wtype as a fallback because true scroll-wheel emulation requires compositor-specific support not available through a portable CLI.",
             ),
         ));
     } else {
@@ -1012,7 +1027,7 @@ fn wayland_scroll(direction: &str, amount: u32) -> String {
     if resolve_path_binary("wtype").is_none() {
         return missing_tool_json(
             "wtype",
-            "Install wtype (wlroots) or wlrctl for real scroll. Without one, scroll on Wayland is unsupported.",
+            "Install wtype for Wayland scroll support.",
             "wayland-scroll",
         );
     }
@@ -1037,7 +1052,7 @@ fn wayland_scroll(direction: &str, amount: u32) -> String {
         &[(
             "degraded",
             json_string(
-                "Wayland scroll uses Page_Up/Page_Down via wtype as a fallback. Install wlrctl for true scroll-wheel events.",
+                "Wayland scroll uses Page_Up/Page_Down via wtype as a fallback because true scroll-wheel emulation requires compositor-specific support not available through a portable CLI.",
             ),
         )],
     )
@@ -1046,50 +1061,93 @@ fn wayland_scroll(direction: &str, amount: u32) -> String {
 fn linux_focus(session: LinuxSession, args: &[String]) -> String {
     let app = value(args, "--app");
     let title = value(args, "--window-title");
-    let target = title.or(app);
-    let target = match target {
-        Some(t) => t,
-        None => {
-            return linux_error_json(
-                "focus requires --app or --window-title on Linux.",
-                None,
-            );
-        }
-    };
+    let window_id = value(args, "--window-id");
+
+    if window_id.is_none() && app.is_none() && title.is_none() {
+        return linux_error_json(
+            "focus requires --app, --window-title, or --window-id on Linux.",
+            None,
+        );
+    }
+
     match session {
-        LinuxSession::X11 => x11_focus(&target),
-        LinuxSession::Wayland => wayland_focus(&target),
+        LinuxSession::X11 => x11_focus(app.as_deref(), title.as_deref(), window_id.as_deref()),
+        LinuxSession::Wayland => wayland_focus(app.as_deref(), title.as_deref(), window_id.as_deref()),
     }
 }
 
-fn x11_focus(target: &str) -> String {
-    if resolve_path_binary("wmctrl").is_some() {
-        let cmd_args: Vec<OsString> = vec!["-a".into(), target.into()];
-        return run_linux_command("wmctrl", cmd_args, "wmctrl", false, &[]);
+fn x11_focus(app: Option<&str>, title: Option<&str>, window_id: Option<&str>) -> String {
+    if let Some(id) = window_id {
+        if resolve_path_binary("wmctrl").is_some() {
+            let cmd_args: Vec<OsString> = vec!["-i".into(), "-a".into(), id.into()];
+            return run_linux_command("wmctrl", cmd_args, "wmctrl", false, &[]);
+        }
+        if resolve_path_binary("xdotool").is_some() {
+            let cmd_args: Vec<OsString> = vec!["windowactivate".into(), id.into()];
+            return run_linux_command("xdotool", cmd_args, "xdotool", false, &[]);
+        }
+        return missing_tool_json(
+            "wmctrl or xdotool",
+            "Install with: sudo apt install wmctrl",
+            "x11-focus",
+        );
     }
-    if resolve_path_binary("xdotool").is_some() {
-        let cmd_args: Vec<OsString> = vec![
-            "search".into(),
-            "--name".into(),
-            target.into(),
-            "windowactivate".into(),
-        ];
-        return run_linux_command("xdotool", cmd_args, "xdotool", false, &[]);
+    if let Some(a) = app {
+        if resolve_path_binary("wmctrl").is_some() {
+            let cmd_args: Vec<OsString> = vec!["-x".into(), "-a".into(), a.into()];
+            return run_linux_command("wmctrl", cmd_args, "wmctrl", false, &[]);
+        }
+        if resolve_path_binary("xdotool").is_some() {
+            let cmd_args: Vec<OsString> =
+                vec!["search".into(), "--class".into(), a.into(), "windowactivate".into()];
+            return run_linux_command("xdotool", cmd_args, "xdotool", false, &[]);
+        }
+        return missing_tool_json(
+            "wmctrl or xdotool",
+            "Install with: sudo apt install wmctrl",
+            "x11-focus",
+        );
     }
-    missing_tool_json(
-        "wmctrl or xdotool",
-        "Install with: sudo apt install wmctrl",
-        "x11-focus",
-    )
+    if let Some(t) = title {
+        if resolve_path_binary("wmctrl").is_some() {
+            let cmd_args: Vec<OsString> = vec!["-a".into(), t.into()];
+            return run_linux_command("wmctrl", cmd_args, "wmctrl", false, &[]);
+        }
+        if resolve_path_binary("xdotool").is_some() {
+            let cmd_args: Vec<OsString> =
+                vec!["search".into(), "--name".into(), t.into(), "windowactivate".into()];
+            return run_linux_command("xdotool", cmd_args, "xdotool", false, &[]);
+        }
+        return missing_tool_json(
+            "wmctrl or xdotool",
+            "Install with: sudo apt install wmctrl",
+            "x11-focus",
+        );
+    }
+    linux_error_json("focus requires --app, --window-title, or --window-id on Linux.", None)
 }
 
-fn wayland_focus(target: &str) -> String {
+fn wayland_focus(app: Option<&str>, title: Option<&str>, window_id: Option<&str>) -> String {
     if env::var_os("SWAYSOCK").is_some() && resolve_path_binary("swaymsg").is_some() {
-        // sway's IPC accepts `[title="…"] focus` selectors.
-        let escaped = target.replace('"', "\\\"");
-        let selector = format!("[title=\"{}\"] focus", escaped);
+        let selector = if let Some(id) = window_id {
+            format!("[con_id={}] focus", id)
+        } else if let Some(a) = app {
+            let escaped = a.replace('"', "\\\"");
+            format!("[app_id=\"{}\"] focus", escaped)
+        } else if let Some(t) = title {
+            let escaped = t.replace('"', "\\\"");
+            format!("[title=\"{}\"] focus", escaped)
+        } else {
+            return linux_error_json("focus requires --app, --window-title, or --window-id on Linux.", None);
+        };
         let cmd_args: Vec<OsString> = vec![selector.into()];
         return run_linux_command("swaymsg", cmd_args, "swaymsg", false, &[]);
+    }
+    if window_id.is_some() {
+        return linux_error_json(
+            "Wayland --window-id focus requires SWAYSOCK and swaymsg (Sway compositor).",
+            Some("Connect via Sway or use an X11 session."),
+        );
     }
     linux_error_json(
         "Wayland focus is compositor-specific. SWAYSOCK is not set and swaymsg is not available; no portable CLI exists for window focus on GNOME Mutter or KDE KWin.",
@@ -1108,7 +1166,8 @@ fn parse_coords(s: &str) -> Option<(i32, i32)> {
 }
 
 fn map_key_xdotool(key: &str) -> String {
-    match key.trim().to_lowercase().as_str() {
+    let trimmed = key.trim();
+    match trimmed.to_lowercase().as_str() {
         "return" | "enter" => "Return".into(),
         "tab" => "Tab".into(),
         "escape" | "esc" => "Escape".into(),
@@ -1124,13 +1183,14 @@ fn map_key_xdotool(key: &str) -> String {
         "pageup" | "page_up" | "pgup" => "Page_Up".into(),
         "pagedown" | "page_down" | "pgdn" => "Page_Down".into(),
         // Allow XKeysym names through unchanged (e.g. "ctrl+c", "F5", "shift+Tab").
-        other => other.to_string(),
+        _ => trimmed.to_string(),
     }
 }
 
 fn map_key_wtype(key: &str) -> String {
     // wtype shares XKB key names with xdotool for the common cases.
-    match key.trim().to_lowercase().as_str() {
+    let trimmed = key.trim();
+    match trimmed.to_lowercase().as_str() {
         "return" | "enter" => "Return".into(),
         "tab" => "Tab".into(),
         "escape" | "esc" => "Escape".into(),
@@ -1145,7 +1205,7 @@ fn map_key_wtype(key: &str) -> String {
         "end" => "End".into(),
         "pageup" | "page_up" | "pgup" => "Page_Up".into(),
         "pagedown" | "page_down" | "pgdn" => "Page_Down".into(),
-        other => other.to_string(),
+        _ => trimmed.to_string(),
     }
 }
 
@@ -1516,8 +1576,8 @@ mod tests {
         assert_eq!(map_key_xdotool("ENTER"), "Return");
         assert_eq!(map_key_xdotool("esc"), "Escape");
         assert_eq!(map_key_xdotool("pageup"), "Page_Up");
-        // Unknown names pass through (xdotool accepts XKeysym names directly).
-        assert_eq!(map_key_xdotool("F5"), "f5");
+        // Unknown names pass through preserving original case (xdotool accepts XKeysym names directly).
+        assert_eq!(map_key_xdotool("F5"), "F5");
         assert_eq!(map_key_xdotool("ctrl+c"), "ctrl+c");
 
         assert_eq!(map_key_wtype("return"), "Return");
@@ -1589,6 +1649,7 @@ mod tests {
         assert!(result.contains("\"ok\":false"));
         assert!(result.contains("--app"));
         assert!(result.contains("--window-title"));
+        assert!(result.contains("--window-id"));
     }
 
     #[test]
@@ -1613,8 +1674,7 @@ mod tests {
 
         let wl_ok = vec![
             LinuxToolStatus { name: "grim", found: true, path: Some("/usr/bin/grim".into()) },
-            LinuxToolStatus { name: "wtype", found: true, path: Some("/usr/bin/wtype".into()) },
-            LinuxToolStatus { name: "ydotool", found: false, path: None },
+            LinuxToolStatus { name: "ydotool", found: true, path: Some("/usr/bin/ydotool".into()) },
         ];
         assert!(linux_minimum_tools_present(LinuxSession::Wayland, &wl_ok));
     }

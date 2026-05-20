@@ -8,7 +8,7 @@ plugin that calls this binary, while this adapter owns platform-specific backend
 
 ## Status
 
-Proof of concept:
+Dedicated OpenCoven computer-use boundary for OpenClaw:
 
 - macOS: shells to [`peekaboo`](https://peekaboo.boo) with `--json --no-remote`
 - Linux (X11): shells to `scrot`/`maim` (capture), `xdotool` (input), `wmctrl` (focus)
@@ -16,8 +16,10 @@ Proof of concept:
 - Windows: returns a clean unsupported JSON response for now
 - Session detection uses `XDG_SESSION_TYPE`, with fallback to `WAYLAND_DISPLAY`/`DISPLAY`
 - No shell interpolation; uses process argv directly
-- Interactive actions require `--confirm`
-- Typed text is redacted from command echoes and type stdout (handles both `type TEXT` and `-- TEXT` forms)
+- Interactive desktop actions require OpenClaw approval and adapter `--confirm`
+- Typed text, clipboard text, file-write content, tokens, cookies, and secrets
+  are redacted from durable logs
+- The OpenClaw plugin registers `computer_use` plus legacy `desktop_use`
 
 ## Commands
 
@@ -136,13 +138,15 @@ cargo test
 
 ## OpenClaw integration
 
-The intended OpenClaw plugin shape is deliberately small:
+The OpenClaw plugin shape is deliberately small:
 
 ```text
-OpenClaw desktop_use tool → execFile("coven-desktop-use", args) → platform backend
+OpenClaw computer_use tool -> execFile("coven-desktop-use", args) -> platform backend
 ```
 
-OpenClaw owns tool policy and approvals. This adapter owns desktop backends.
+OpenClaw owns gateway auth, tool policy, approvals, and Control UI state. This
+package owns the dedicated computer-use agent contract, redacted audit events,
+and desktop backends.
 
 ## OpenClaw plugin package
 
@@ -152,8 +156,10 @@ This repo also ships an external OpenClaw tool plugin package under the OpenCove
 @opencoven/openclaw-desktop-use
 ```
 
-The plugin registers the `desktop_use` agent tool and delegates all platform work
-to the `coven-desktop-use` adapter binary.
+The plugin registers the `computer_use` agent tool and a legacy `desktop_use`
+alias. New configurations should allow only `computer_use` for the dedicated
+agent. See [docs/computer-use-agent.md](docs/computer-use-agent.md) for the
+agent identity, approval model, audit contract, and verification checklist.
 
 Install the adapter binary from this repo:
 
@@ -173,11 +179,26 @@ Local plugin checks:
 ```bash
 pnpm install --ignore-scripts
 pnpm run typecheck
+pnpm run test:ts
+pnpm run check:plugin-runtime-imports
 cargo test
+pnpm run check
 ```
 
 Intended install shape once published:
 
 ```bash
 openclaw plugins install @opencoven/openclaw-desktop-use
+```
+
+Local development install:
+
+```bash
+openclaw plugins install . --force
+```
+
+Real adapter health check:
+
+```bash
+cargo run -- doctor
 ```

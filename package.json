@@ -11,14 +11,18 @@
   "files": [
     "index.ts",
     "src/**/*.ts",
+    "agents/**/*",
+    "docs/**/*.md",
     "scripts/check-plugin-runtime-imports.mjs",
     "openclaw.plugin.json",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "check": "pnpm run typecheck && pnpm run check:plugin-runtime-imports && cargo test",
+    "test:ts": "tsx --test src/**/*.test.ts",
+    "check": "pnpm run typecheck && pnpm run test:ts && pnpm run check:plugin-runtime-imports && cargo test",
     "check:plugin-runtime-imports": "node scripts/check-plugin-runtime-imports.mjs"
   },
   "devDependencies": {
