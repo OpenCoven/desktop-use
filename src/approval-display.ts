@@ -12,7 +12,7 @@ export function gatewayApprovalDisplay(params: ComputerUseParams, decision: Comp
     ? { args: params.args ?? [], ...(params.timeoutMs !== undefined ? { timeoutMs: params.timeoutMs } : {}) }
     : Object.fromEntries(Object.entries(params).filter(([key]) => !["action", "confirm", "reason", "path", "cwd"].includes(key)));
   const details = JSON.stringify(redactComputerUseValue(input));
-  let title = shell ? `Run ${JSON.stringify(redactComputerUseValue(params.command))}` : prompt.title;
+  let title = shell ? `Run ${JSON.stringify(params.command)}` : prompt.title;
   if (prompt.rollback && fits(`${title} (manual rollback)`, 80)) title += " (manual rollback)";
   const description = `Risk: ${prompt.risk}. Target: ${JSON.stringify(prompt.target)}${details === "{}" ? "" : `. Input: ${details}`}`;
   if (!fits(title, 80) || !fits(description, 256)) return undefined;

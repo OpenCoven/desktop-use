@@ -184,3 +184,14 @@ test("unrepresentable approval targets and input fail visibly rather than being 
     assert.equal(result.requireApproval, undefined);
   }
 });
+
+test("approval preserves executable identity even when a path resembles an encoded token", async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "desktopuse-command-identity-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const ctx = { agentId: "computer-use", sessionKey: "command-identity", workspaceDir: root };
+  const command = "/Users/runner/hostedtoolcache/node/24.22.2/arm64/bin/node";
+  const result = await hookFor([ctx])({ toolName: COMPUTER_USE_TOOL_NAME, params: { action: "shell", command, args: ["-e", "process.exit(0)"] } }, ctx) as any;
+  assert.ok(result.requireApproval);
+  assert.ok(result.requireApproval.title.includes(JSON.stringify(command)));
+  assert.ok(!result.requireApproval.title.includes("<redacted>"));
+});

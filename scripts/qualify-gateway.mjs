@@ -39,6 +39,7 @@ const model = createServer(async (req, res) => {
     const marker = JSON.stringify(messages[userIndex]?.content).match(/QUALIFICATION_CASE:([a-z0-9-]+)/)?.[1];
     assert.ok(marker && cases.has(marker), `Unexpected model request ${req.url}`);
     const plan = cases.get(marker);
+    assert.deepEqual((body.tools ?? []).map(t => t.function?.name), [plan.tool ?? "computer_use"], "Actual model tool inventory");
     const finished = messages.slice(userIndex + 1).some(m => m.role === "tool");
     requests.push({ case: marker, url: req.url, tools: (body.tools ?? []).map(t => t.function?.name), finished });
     await save("model-requests.json", requests);
@@ -134,7 +135,7 @@ try {
       }
     });
   });
-  await save("runtime-version.json", { package: pkg.version, server: hello.server.version, defaultBundledPlugins: true, providerDiscovery: "qualification only via upstream live-gateway configuration" });
+  await save("runtime-version.json", { package: pkg.version, server: hello.server.version, defaultBundledPlugins: true, implicitModelDiscovery: "qualification only via upstream live-gateway configuration" });
   const session = "agent:computer-use:qualification";
   await rpc("sessions.patch", { key: session, label: "qualification" });
   const inventory = await rpc("tools.effective", { sessionKey: session }); await save("effective-tools.json", inventory);
@@ -146,7 +147,7 @@ try {
         response.setEncoding("utf8"); response.on("data", chunk => body += chunk);
         response.on("end", () => { try { resolve({ status: response.statusCode, body: JSON.parse(body) }); } catch (e) { reject(e); } });
       });
-      request.setTimeout(30000, () => request.destroy(new Error("HTTP invocation timed out")));
+      request.setTimeout(180000, () => request.destroy(new Error("HTTP invocation timed out")));
       request.on("error", reject); request.end(JSON.stringify({ tool, args, sessionKey }));
     });
   }
@@ -207,12 +208,17 @@ try {
   assert.deepEqual(legacyInventory.groups.flatMap(g => g.tools.map(t => t.id)), ["desktop_use"]);
   const legacy = await runCase("legacy-denied", { action: "file-write", path: "legacy.txt", content: secret, confirm: true }, "deny", legacySession, "desktop_use");
   await noFile(join(legacyWorkspace, "legacy.txt"));
+  // Gateway construction can load bundled provider metadata before dispatching
+  // the tool; warm each control route before timing cancellation of live work.
+  await httpInvoke("computer_use", { action: "stop" }, session);
+  await httpInvoke("desktop_use", { action: "stop" }, legacySession);
   const helper = join(workspace, "stalled-helper.cjs");
   await writeFile(helper, "const fs=require('fs');process.on('SIGTERM',()=>{});fs.writeFileSync(process.argv[2],String(process.pid));setInterval(()=>{},1000);\n");
   const processGone = async pid => until(() => { try { process.kill(pid, 0); return false; } catch (e) { assert.equal(e.code, "ESRCH"); return true; } }, 2000);
   for (const mode of ["stop", "abort"]) {
     const caseName = `owned-${mode}`, key = `agent:computer-use:${caseName}`, ready = join(workspace, `${caseName}.pid`);
     await rpc("sessions.patch", { key });
+    await httpInvoke("computer_use", { action: "stop" }, key);
     let run;
     const active = runCase(caseName, { action: "shell", command: process.execPath, args: ["stalled-helper.cjs", `${caseName}.pid`], timeoutMs: 30000 }, "allow-once", key, "computer_use", { abort: mode === "abort", onAccepted: accepted => run = accepted });
     active.catch(() => {});
@@ -226,6 +232,11 @@ try {
     const cancellation = mode === "stop" ? await httpInvoke("computer_use", { action: "stop" }, key) : await rpc("sessions.abort", { key, runId: run.runId });
     await processGone(pid);
     const result = await active;
+    const cancellationAudit = await until(async () => {
+      const records = (await readFile(join(dirname(agentDir), "audit/computer-use.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
+      return records.find(record => record.toolCallId === `call_${caseName}`);
+    });
+    assert.equal(cancellationAudit.result.status, "cancelled", `Audit the actual ${mode} outcome`);
     if (mode === "stop") { assert.equal(cancellation.body.result.details.cancellationRequested, 1); assert.equal(toolResult(result.history).status, "cancelled"); }
     await save(`${caseName}-cancellation.json`, { cancellation, elapsedMs: Date.now() - start, helperGone: true });
   }
