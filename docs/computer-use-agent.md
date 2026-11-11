@@ -17,8 +17,21 @@ plugin plus the `coven-desktop-use` adapter.
 - `agents/computer-use/IDENTITY.md`: packaged identity for the dedicated agent.
 - `agents/computer-use/openclaw-agent.json`: install/config template for the
   dedicated agent boundary.
+- `src/host-actions.ts`, `src/file-actions.ts`, `src/process-runner.ts`: plugin-side
+  clipboard/browser/app-launch planning, bounded file actions, and the owned
+  helper process runner.
 - `src/main.rs`: native adapter that delegates macOS observation and input to
-  Peekaboo with `--json --no-remote`.
+  Peekaboo with `--json --no-remote`, and Linux observation and input to the
+  per-session X11/Wayland helpers.
+- `src/linux_capabilities.rs`, `src/process.rs`: Linux capability reporting and
+  the adapter's bounded helper process groups.
+
+The names map to layers: `coven-desktop-use` is the GUI-only adapter binary
+(`doctor`, `inspect`, `screenshot`, `click`, `type-text`, `keypress`, `scroll`,
+`focus`); `computer_use` is the agent tool that wraps it with policy, approval,
+audit, and the host actions listed below. Repair hints and verification steps
+returned by the plugin always name `computer_use`; hints printed by the binary
+name `coven-desktop-use`.
 
 `OpenCoven/open-side` was not changed for this slice. It is the operator shell;
 the trust boundary already belongs in this adapter/plugin package. The plugin
@@ -66,8 +79,10 @@ the agent rather than widening the default agent.
 
 ## Tool Boundary
 
-The plugin registers `computer_use` and a legacy `desktop_use` alias. New config
-should allow only `computer_use` for this agent:
+The plugin registers `computer_use` and a legacy `desktop_use` alias. The alias
+is the same tool under another name: same schema, policy, approval hook, and
+audit path. It is registered as optional and exists only so older configs keep
+working. New config should allow only `computer_use` for this agent:
 
 ```json
 {
@@ -151,14 +166,15 @@ The schema describes host-rendered state. `stateSources` identifies the producer
 ## Reliability
 
 Actions have bounded timeouts. `stop` is an auditable local control action that
-acknowledges cancellation and returns the agent to idle when no background
-runner is retained. Observation and health adapter calls retry once
+requests cancellation of active calls in the same agent/session/workspace. It
+reports `cancelling` while those calls settle and `idle` when none were active;
+it does not undo completed effects or revoke approvals. Observation and health adapter calls retry once
 only for transient runtime failures such as timeouts, stale observations, busy
 backends, or reset connections. Interactive, destructive, clipboard, shell, and
 filesystem actions do not retry internally.
 
 Every action returns a structured status (`success`, `needsApproval`, `blocked`,
-`unsupported`, or `error`) with enough repair context for the gateway or Control
+`unsupported`, `error`, `cancelled`, or `timeout`) with enough repair context for the gateway or Control
 UI to show the next step.
 
 ## Verification

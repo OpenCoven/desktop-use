@@ -35,6 +35,10 @@ test("registers computer_use, legacy desktop_use, Control UI descriptor, and app
     [{ name: "computer_use" }, { name: "desktop_use", optional: true }],
   );
   assert.equal(metadata.length, 2);
+  for (const entry of metadata as { toolName: string; risk: string; tags: string[] }[]) {
+    assert.equal(entry.risk, "high", entry.toolName);
+    assert.ok(entry.tags.includes("approval-gated"), entry.toolName);
+  }
   assert.equal(descriptors.length, 1);
   assert.equal(hooks[0]?.name, "before_tool_call");
 

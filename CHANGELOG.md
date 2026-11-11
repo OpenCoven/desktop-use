@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Name `computer_use` in the Linux setup guide, tag the legacy `desktop_use` alias as approval-gated, and keep the packaged agent template and docs in step with the plugin.
+
 - Bound helper sequences with shared deadlines, process-group cleanup, scoped cancellation, failure stopping, and private diagnostics.
 - Resolve workspace file paths before approval, including relative traversal and static symlink escapes; summarize durable audit values and require explicit content return.
 - Report Linux capabilities from helper/protocol evidence, reject unsupported targeting, validate Sway replies, and select honest Wayland input/scroll/capture fallbacks.
