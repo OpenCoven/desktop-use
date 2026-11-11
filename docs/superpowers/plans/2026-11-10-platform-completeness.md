@@ -17,19 +17,19 @@
 - [x] Add real helper-process regression tests for success, missing helper, permission denial, malformed JSON, bounded timeout, descendant cleanup, safe argv, and stop-after-failure sequences; observe failures.
 - [x] Add Rust helper runner with a cumulative 30-second default action deadline (CLI override 1000–120000 ms), output limit, process group cleanup and cancellation. Validate Peekaboo envelopes and Sway replies. Expose timeout/cancellation/partial progress in results without raw private diagnostics.
 - [x] Add TypeScript child runner, per-tool abort controllers, session-scoped stop across tool instances, gateway AbortSignal support, one shared deadline across observation retry, and sanitized failures. Validate timeout input.
-- [ ] Run focused tests and `pnpm run check`.
+- [x] Run focused tests and `pnpm run check`.
 
 ### Task 2: Verify file and durable audit boundaries
 
 - [x] Add regression tests for relative traversal, directory/file symlinks including nonexistent write targets, denied file-read contents, diagnostics containing arbitrary text and secret-bearing URLs/argv, and failing audit writes; observe failures.
 - [x] Resolve real paths (nearest existing ancestor for writes), reclassify the canonical target, preserve approval for deliberate external paths, prevent implicit content previews, summarize audit strings and fail visibly on audit errors.
-- [ ] Run focused tests and `pnpm run check`; commit a focused runtime-safety PR with full validation and CI workflow.
+- [x] Run focused tests and `pnpm run check`; commit a focused runtime-safety PR, preserving the dependency CI workflow.
 
 ### Task 3: Linux capabilities and host integrations
 
-- [ ] Add deterministic tests for compositor/tool combinations, wtype/ydotool selection, scrolling, screenshot degradation/failure, focus injection and replies, clipboard/launch tools with argv/stdin; observe failures.
-- [ ] Make doctor report available/degraded/unsupported/unverified per capability; probe Wayland advertised protocols when wayland-info exists, otherwise avoid assuming wtype/grim support. Support ydotool typing/key fallbacks and Sway-only focus. Keep action errors honest and stop sequences at failure.
-- [ ] Add bounded Linux clipboard via wl-copy/wl-paste or xclip/xsel, browser via xdg-open, app via gtk-launch desktop id. Keep existing approval policy and explicit unsupported responses.
+- [x] Add deterministic tests for compositor/tool combinations, wtype/ydotool selection, scrolling, screenshot degradation/failure, focus injection and replies, clipboard/launch tools with argv/stdin; observe failures.
+- [x] Make doctor report available/degraded/unsupported/unverified per capability; probe Wayland advertised protocols when wayland-info exists, otherwise avoid assuming wtype/grim support. Support ydotool typing/key fallbacks and Sway-only focus. Keep action errors honest and stop sequences at failure.
+- [x] Add bounded Linux clipboard via wl-copy/wl-paste or xclip/xsel, browser via xdg-open, app via gtk-launch desktop id. Keep existing approval policy and explicit unsupported responses.
 - [ ] Update matrix, bounds/stop/privacy documentation, and exact-head handoff. Run `pnpm run check`; commit/push focused dependent platform PR, verify hosted CI for both PRs, record unavailable graphical acceptance gates. Do not merge.
 
 ## Execution ledger
@@ -38,3 +38,9 @@
 - Design choice: bounded local helper execution retains the adapter architecture; replacing helpers with compositor/OS libraries would expand runtime ownership. Acknowledge injected runners only cancel cooperatively; file system operations already in progress cannot be rolled back by stop. Existing user task authorization takes precedence over extra skill approval rounds.
 
 - Runtime/privacy tests: 33 TypeScript and 24 Rust passed (one ignored Rust test is only the subprocess fixture entry, explicitly invoked by four parent tests). Baseline failures reproduced and corrected; static /tmp-to-/private/tmp workspace alias handling also covered.
+
+- Reliability PR #7 appeared during execution and remains owned by its original session. Runtime PR #8 is dependent on its exact green head; no upstream commits were changed. Ruling: preserve its audit-failure operation outcome with an explicit audit failure field instead of replacing operation status, preventing accidental action replay.
+- Final review: fixed screenshot filename option injection, ignored Linux selectors, and invalid X11 scroll direction with failing-then-passing helper tests. Additional Mac literal input regression also failed before correction. No code findings deferred. Concurrent hostile filesystem writers remain outside the stated static-path boundary; compositor/Windows acceptance remains gated on real environments.
+- Local final check before delivery: 74 TypeScript and 39 Rust tests pass (38 unit tests plus one CLI cancellation integration test), plus typecheck and import guard. The one ignored Rust test is only an entry point explicitly run in isolated child processes by its parent fixture tests. Browser and native app launch were observed in the real macOS graphical session; no input/screenshot acceptance is claimed without Peekaboo.
+
+- Extra verification: the real built CLI receives SIGTERM while an owned TERM-ignoring helper runs, returns CANCELLED, and reaps the helper. A real partial sequence preserves its first failure and skips later steps. Linux capture success also requires a nonempty artifact; ext-only capture registries are unverified installed-helper compatibility rather than falsely unsupported.

@@ -1,5 +1,6 @@
 #[cfg(all(test, unix))]
 mod backend_fixtures;
+mod linux_capabilities;
 mod process;
 use std::cell::Cell;
 use std::env;
@@ -200,6 +201,23 @@ fn run_linux(session: LinuxSession, command: &'static str, args: &[String]) -> S
     {
         return confirmation_required(command);
     }
+    if command != "focus" && command != "doctor" {
+        let unsupported = [
+            "--app",
+            "--window-title",
+            "--window-id",
+            "--screen-index",
+            "--on",
+            "--query",
+            "--analyze",
+        ]
+        .iter()
+        .any(|flag| value(args, flag).is_some())
+            || has_flag(args, "--retina");
+        if unsupported {
+            return linux_capabilities::unsupported("This Linux action cannot honor the requested target or capture option. No helper was invoked. Focus a supported window separately with approval, then use untargeted input or an explicit screen capture.");
+        }
+    }
     let stripped: Vec<String> = strip_flag(args, "--confirm");
     match command {
         "doctor" => linux_doctor(session),
@@ -359,10 +377,7 @@ fn build_click_args(args: &[String]) -> Vec<OsString> {
 }
 
 fn build_type_args(args: &[String]) -> Vec<OsString> {
-    let mut out = vec![
-        OsString::from("type"),
-        value(args, "--text").unwrap_or_default().into(),
-    ];
+    let mut out = vec![OsString::from("type")];
     if has_flag(args, "--clear") {
         out.push("--clear".into());
     }
@@ -370,6 +385,10 @@ fn build_type_args(args: &[String]) -> Vec<OsString> {
         out.push("--return".into());
     }
     add_common_target_args(&mut out, args);
+    out.extend([
+        "--".into(),
+        value(args, "--text").unwrap_or_default().into(),
+    ]);
     out
 }
 
@@ -424,8 +443,14 @@ fn run_peekaboo(
     redact_type_text: bool,
     always_include_permission_guide: bool,
 ) -> String {
-    args.push("--json".into());
-    args.push("--no-remote".into());
+    let separator = args
+        .iter()
+        .position(|arg| arg == "--")
+        .unwrap_or(args.len());
+    args.splice(
+        separator..separator,
+        ["--json".into(), "--no-remote".into()],
+    );
     let mut cmd = Command::new("peekaboo");
     cmd.args(&args);
     match process::run(&mut cmd, deadline()) {
@@ -586,7 +611,18 @@ fn resolve_path_binary(name: &str) -> Option<String> {
 }
 
 fn is_executable_file(path: &Path) -> bool {
-    path.is_file()
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        path.is_file()
+            && path
+                .metadata()
+                .is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
+    }
 }
 
 // ============================================================================
@@ -606,13 +642,21 @@ fn is_executable_file(path: &Path) -> bool {
 
 fn linux_doctor(session: LinuxSession) -> String {
     let tools = linux_tool_inventory(session);
-    let ok = linux_minimum_tools_present(session, &tools);
+    let capabilities = linux_capabilities::capabilities(session, &tools);
+    let ok = linux_minimum_tools_present(session, &tools)
+        && capabilities["screenshot"]["state"] != "unsupported"
+        && capabilities["typing"]["state"] != "unsupported";
     json_obj(vec![
         ("ok", bool_json(ok)),
         ("supported", "true".to_string()),
         ("platform", json_string(env::consts::OS)),
         ("backend", json_string("linux")),
         ("session", json_string(session.label())),
+        ("capabilities", capabilities.to_string()),
+        (
+            "readiness",
+            json_string("unverified; installed prerequisites do not prove desktop acceptance"),
+        ),
         ("tools", linux_tool_inventory_json(&tools)),
         ("setupGuide", linux_setup_guide_json(session, &tools)),
     ])
@@ -627,8 +671,29 @@ struct LinuxToolStatus {
 
 fn linux_tool_inventory(session: LinuxSession) -> Vec<LinuxToolStatus> {
     let names: &[&'static str] = match session {
-        LinuxSession::X11 => &["scrot", "maim", "xdotool", "wmctrl", "xprop"],
-        LinuxSession::Wayland => &["grim", "wtype", "ydotool", "wlrctl", "swaymsg"],
+        LinuxSession::X11 => &[
+            "scrot",
+            "maim",
+            "xdotool",
+            "wmctrl",
+            "xprop",
+            "xclip",
+            "xsel",
+            "xdg-open",
+            "gtk-launch",
+        ],
+        LinuxSession::Wayland => &[
+            "grim",
+            "wtype",
+            "ydotool",
+            "wlrctl",
+            "swaymsg",
+            "wayland-info",
+            "wl-copy",
+            "wl-paste",
+            "xdg-open",
+            "gtk-launch",
+        ],
     };
     names
         .iter()
@@ -666,19 +731,27 @@ fn linux_tool_inventory_json(tools: &[LinuxToolStatus]) -> String {
     format!("{{{}}}", body)
 }
 
-fn required_tools(session: LinuxSession) -> &'static [&'static str] {
-    match session {
-        LinuxSession::X11 => &["scrot", "xdotool"], // maim is alt for scrot; wmctrl optional
-        LinuxSession::Wayland => &["grim", "ydotool"], // wtype optional fallback
-    }
-}
-
 fn linux_setup_guide_json(session: LinuxSession, tools: &[LinuxToolStatus]) -> String {
-    let missing: Vec<String> = tools
-        .iter()
-        .filter(|t| !t.found && required_tools(session).contains(&t.name))
-        .map(|t| t.name.to_string())
-        .collect();
+    let has = |name| tools.iter().any(|t| t.name == name && t.found);
+    let mut missing: Vec<String> = Vec::new();
+    if session == LinuxSession::X11 {
+        if !has("scrot") && !has("maim") {
+            missing.push("scrot or maim".into());
+        }
+        if !has("xdotool") {
+            missing.push("xdotool".into());
+        }
+    } else {
+        if !has("grim") {
+            missing.push("grim".into());
+        }
+        if !has("wtype") && !has("ydotool") {
+            missing.push("wtype or ydotool".into());
+        }
+        if !has("ydotool") {
+            missing.push("ydotool (pointer/wheel input)".into());
+        }
+    }
     let install_command = match session {
         LinuxSession::X11 => "sudo apt install scrot xdotool wmctrl",
         LinuxSession::Wayland => "sudo apt install grim wtype ydotool",
@@ -688,7 +761,7 @@ fn linux_setup_guide_json(session: LinuxSession, tools: &[LinuxToolStatus]) -> S
             "X11 desktop-use uses scrot (or maim) for screen capture, xdotool for input synthesis, and wmctrl for window focus."
         }
         LinuxSession::Wayland => {
-            "Wayland desktop-use uses grim for screen capture and wtype/ydotool for input. ydotool needs the ydotoold daemon and uinput permissions; wtype requires a wlroots-based compositor (Sway, Hyprland)."
+            "Wayland desktop-use probes capture/virtual-keyboard protocols when wayland-info exists. ydotool needs ydotoold and uinput access; installed tools do not prove runtime readiness."
         }
     };
     let mut fields = vec![
@@ -707,13 +780,13 @@ fn linux_setup_guide_json(session: LinuxSession, tools: &[LinuxToolStatus]) -> S
         fields.push((
             "focusNote",
             json_string(
-                "Window focus on Wayland is compositor-specific. Sway/wlroots use swaymsg; GNOME Mutter has no public CLI for window activation.",
+                "Only Sway focus is implemented, requiring SWAYSOCK and a successful swaymsg JSON response. Other compositors are unsupported.",
             ),
         ));
         fields.push((
             "scrollNote",
             json_string(
-                "Wayland scroll uses Page_Up/Page_Down via wtype as a fallback because true scroll-wheel emulation requires compositor-specific support not available through a portable CLI.",
+                "Wayland wheel input uses ydotool mousemove --wheel when installed; otherwise wtype page/arrow keys are an explicitly degraded fallback.",
             ),
         ));
     } else {
@@ -765,10 +838,17 @@ fn capture_screenshot(
     mode: &str,
     extras: &[(&'static str, String)],
 ) -> String {
-    match session {
+    let result = match session {
         LinuxSession::X11 => x11_screenshot(path, mode, extras),
         LinuxSession::Wayland => wayland_screenshot(path, mode, extras),
+    };
+    let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+    if parsed["ok"] == true && !std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() > 0) {
+        return json_obj(vec![("ok", "false".into()), ("supported", "true".into()),
+            ("backend", json_string("linux")), ("code", json_string("CAPTURE_MISSING")),
+            ("error", json_string("Capture helper exited successfully without a nonempty image artifact. No screenshot evidence is available."))]);
     }
+    result
 }
 
 fn x11_screenshot(path: &str, mode: &str, extras: &[(&'static str, String)]) -> String {
@@ -777,7 +857,7 @@ fn x11_screenshot(path: &str, mode: &str, extras: &[(&'static str, String)]) -> 
         if matches!(mode, "window" | "frontmost") {
             a.push("--focused".into());
         }
-        a.push(path.into());
+        a.extend(["--".into(), path.into()]);
         return run_linux_command("scrot", a, "scrot", false, extras);
     }
     if resolve_path_binary("maim").is_some() {
@@ -804,7 +884,7 @@ fn x11_screenshot(path: &str, mode: &str, extras: &[(&'static str, String)]) -> 
             }
             return run_linux_command(
                 "maim",
-                vec!["-i".into(), id.into(), path.into()],
+                vec!["-i".into(), id.into(), "--".into(), path.into()],
                 "maim",
                 false,
                 extras,
@@ -818,7 +898,7 @@ fn x11_screenshot(path: &str, mode: &str, extras: &[(&'static str, String)]) -> 
             );
         }
 
-        let a: Vec<OsString> = vec![path.into()];
+        let a: Vec<OsString> = vec!["--".into(), path.into()];
         return run_linux_command("maim", a, "maim", false, extras);
     }
     missing_tool_json(
@@ -829,6 +909,12 @@ fn x11_screenshot(path: &str, mode: &str, extras: &[(&'static str, String)]) -> 
 }
 
 fn wayland_screenshot(path: &str, mode: &str, extras: &[(&'static str, String)]) -> String {
+    if matches!(mode, "window" | "frontmost") {
+        return linux_capabilities::unsupported("Targeted Wayland capture is unsupported; request mode=screen explicitly. No screenshot was taken.");
+    }
+    if linux_capabilities::protocols().capture == Some(false) {
+        return linux_capabilities::unsupported("The compositor advertises neither wlr-screencopy nor the ext-image-copy/output-source pair used by grim. No screenshot was taken.");
+    }
     if resolve_path_binary("grim").is_none() {
         return missing_tool_json(
             "grim",
@@ -836,12 +922,18 @@ fn wayland_screenshot(path: &str, mode: &str, extras: &[(&'static str, String)])
             "wayland-screenshot",
         );
     }
-    // `mode=window`/`frontmost` is degraded on vanilla wlroots: grim has no
-    // notion of "active window". Sway users can pre-resolve via `swaymsg -t
-    // get_tree` but that's out of scope for v1; we just take the full screen.
-    let _ = mode;
-    let a: Vec<OsString> = vec![path.into()];
-    run_linux_command("grim", a, "grim", false, extras)
+    let format = if path.ends_with(".jpg") || path.ends_with(".jpeg") {
+        "jpeg"
+    } else {
+        "png"
+    };
+    run_linux_command(
+        "grim",
+        vec!["-t".into(), format.into(), "--".into(), path.into()],
+        "grim",
+        false,
+        extras,
+    )
 }
 
 fn linux_click(session: LinuxSession, args: &[String]) -> String {
@@ -981,7 +1073,7 @@ fn x11_type_text(text: &str, clear: bool, press_return: bool) -> String {
 }
 
 fn wayland_type_text(text: &str, clear: bool, press_return: bool) -> String {
-    let use_wtype = resolve_path_binary("wtype").is_some();
+    let use_wtype = linux_capabilities::use_wtype();
     let use_ydotool = resolve_path_binary("ydotool").is_some();
     if !use_wtype && !use_ydotool {
         return missing_tool_json(
@@ -1020,7 +1112,11 @@ fn wayland_type_text(text: &str, clear: bool, press_return: bool) -> String {
         }
         return run_linux_steps(steps, "wtype", true, &[]);
     }
-    // ydotool fallback. ydotool's `type` command takes the literal string.
+    // Do not clear a field before discovering that the fallback cannot represent its text.
+    if !text.is_ascii() {
+        return linux_capabilities::unsupported("ydotool typing is limited to ASCII and depends on the active keyboard layout. Unicode requires wtype and the virtual-keyboard protocol.");
+    }
+    // ydotool fallback. Separate text from options.
     if clear {
         // Ctrl+A : keycode 29 (LCTRL) + 30 (A); Delete: keycode 111.
         steps.push(LinuxStep {
@@ -1040,7 +1136,13 @@ fn wayland_type_text(text: &str, clear: bool, press_return: bool) -> String {
     }
     steps.push(LinuxStep {
         program: "ydotool",
-        args: vec!["type".into(), text.into()],
+        args: vec![
+            "type".into(),
+            "--escape".into(),
+            "0".into(),
+            "--".into(),
+            text.into(),
+        ],
     });
     if press_return {
         // Return: keycode 28.
@@ -1090,29 +1192,67 @@ fn x11_keypress(keys: &[&str]) -> String {
 }
 
 fn wayland_keypress(keys: &[&str]) -> String {
-    if resolve_path_binary("wtype").is_none() {
-        return missing_tool_json(
-            "wtype",
-            "Install with: sudo apt install wtype  (wlroots compositors). For non-wlroots, use ydotool with raw keycodes.",
-            "wayland-keypress",
-        );
+    let wtype = linux_capabilities::use_wtype();
+    if !wtype && resolve_path_binary("ydotool").is_none() {
+        return linux_capabilities::unsupported("No usable Wayland keyboard provider. wtype needs virtual-keyboard; ydotool needs ydotoold/uinput access.");
     }
-    let mut steps: Vec<LinuxStep> = Vec::new();
+    let mut steps = Vec::new();
     for key in keys {
-        steps.push(LinuxStep {
-            program: "wtype",
-            args: vec!["-k".into(), map_key_wtype(key).into()],
-        });
+        if wtype {
+            let mut parts: Vec<&str> = key.trim().split('+').collect();
+            let name = parts.pop().unwrap_or("");
+            if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                return linux_error_json("Invalid Wayland key name.", None);
+            }
+            let mut args = Vec::new();
+            for modifier in &parts {
+                if !["ctrl", "shift", "alt", "logo", "super", "meta"].contains(modifier) {
+                    return linux_error_json("Unsupported Wayland key modifier.", None);
+                }
+                let modifier = if ["super", "meta"].contains(modifier) {
+                    "logo"
+                } else {
+                    modifier
+                };
+                args.extend(["-M".into(), OsString::from(modifier)]);
+            }
+            args.extend(["-k".into(), map_key_wtype(name).into()]);
+            for modifier in parts.iter().rev() {
+                let modifier = if ["super", "meta"].contains(modifier) {
+                    "logo"
+                } else {
+                    modifier
+                };
+                args.extend(["-m".into(), OsString::from(modifier)]);
+            }
+            steps.push(LinuxStep {
+                program: "wtype",
+                args,
+            });
+        } else {
+            let Some(args) = linux_capabilities::evdev_args(key) else {
+                return linux_capabilities::unsupported(
+                    "Key/chord is not supported by the ydotool fallback. No input was sent.",
+                );
+            };
+            steps.push(LinuxStep {
+                program: "ydotool",
+                args,
+            });
+        }
     }
-    run_linux_steps(steps, "wtype", false, &[])
+    run_linux_steps(steps, if wtype { "wtype" } else { "ydotool" }, false, &[])
 }
 
 fn linux_scroll(session: LinuxSession, args: &[String]) -> String {
     let direction = value(args, "--direction").unwrap_or_else(|| "down".to_string());
-    let amount: u32 = value(args, "--amount")
-        .as_deref()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(3);
+    let amount = match value(args, "--amount") {
+        None => 3,
+        Some(raw) => match raw.parse::<u32>() {
+            Ok(n @ 1..=50) => n,
+            _ => return linux_error_json("Scroll amount must be an integer from 1 to 50.", None),
+        },
+    };
     match session {
         LinuxSession::X11 => x11_scroll(&direction, amount),
         LinuxSession::Wayland => wayland_scroll(&direction, amount),
@@ -1132,7 +1272,7 @@ fn x11_scroll(direction: &str, amount: u32) -> String {
         "down" => "5",
         "left" => "6",
         "right" => "7",
-        _ => "5",
+        _ => return linux_error_json("Invalid scroll direction.", None),
     };
     let cmd_args: Vec<OsString> = vec![
         "click".into(),
@@ -1144,14 +1284,28 @@ fn x11_scroll(direction: &str, amount: u32) -> String {
 }
 
 fn wayland_scroll(direction: &str, amount: u32) -> String {
-    // True scroll-wheel emulation needs wlrctl or compositor support; fall back
-    // to Page_Up/Page_Down via wtype as a degraded behavior. Make the trade-off
-    // explicit in the response.
-    if resolve_path_binary("wtype").is_none() {
-        return missing_tool_json(
-            "wtype",
-            "Install wtype for Wayland scroll support.",
-            "wayland-scroll",
+    if resolve_path_binary("ydotool").is_some() {
+        let n = amount as i32;
+        let (x, y) = match direction {
+            "up" => (0, n),
+            "down" => (0, -n),
+            "left" => (-n, 0),
+            "right" => (n, 0),
+            _ => return linux_error_json("Invalid scroll direction.", None),
+        };
+        return run_linux_command(
+            "ydotool",
+            vec![
+                "mousemove".into(),
+                "--wheel".into(),
+                "-x".into(),
+                x.to_string().into(),
+                "-y".into(),
+                y.to_string().into(),
+            ],
+            "ydotool",
+            false,
+            &[],
         );
     }
     let key = match direction {
@@ -1159,26 +1313,15 @@ fn wayland_scroll(direction: &str, amount: u32) -> String {
         "down" => "Page_Down",
         "left" => "Left",
         "right" => "Right",
-        _ => "Page_Down",
+        _ => return linux_error_json("Invalid scroll direction.", None),
     };
-    let mut steps: Vec<LinuxStep> = Vec::new();
-    for _ in 0..amount {
-        steps.push(LinuxStep {
-            program: "wtype",
-            args: vec!["-k".into(), key.into()],
-        });
-    }
-    run_linux_steps(
-        steps,
-        "wtype",
-        false,
-        &[(
-            "degraded",
-            json_string(
-                "Wayland scroll uses Page_Up/Page_Down via wtype as a fallback because true scroll-wheel emulation requires compositor-specific support not available through a portable CLI.",
-            ),
-        )],
-    )
+    let keys: Vec<&str> = (0..amount).map(|_| key).collect();
+    let result = wayland_keypress(&keys);
+    let mut parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+    parsed["degraded"] = serde_json::Value::String(
+        "Wayland scroll sends page/arrow keys, not wheel events; amount counts key presses.".into(),
+    );
+    parsed.to_string()
 }
 
 fn linux_focus(session: LinuxSession, args: &[String]) -> String {
@@ -1265,6 +1408,20 @@ fn x11_focus(app: Option<&str>, title: Option<&str>, window_id: Option<&str>) ->
 
 fn wayland_focus(app: Option<&str>, title: Option<&str>, window_id: Option<&str>) -> String {
     if env::var_os("SWAYSOCK").is_some() && resolve_path_binary("swaymsg").is_some() {
+        if let Some(id) = window_id {
+            if id.parse::<u64>().is_err() {
+                return linux_error_json("Wayland window id must be numeric.", None);
+            }
+        }
+        for target in [app, title].into_iter().flatten() {
+            if target.is_empty()
+                || !target
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || " _-@.:/".contains(c))
+            {
+                return linux_error_json("Wayland focus target contains unsupported selector syntax; use a numeric window id.", None);
+            }
+        }
         let selector = if let Some(id) = window_id {
             format!("[con_id={}] focus", id)
         } else if let Some(a) = app {
@@ -1279,8 +1436,26 @@ fn wayland_focus(app: Option<&str>, title: Option<&str>, window_id: Option<&str>
                 None,
             );
         };
-        let cmd_args: Vec<OsString> = vec![selector.into()];
-        return run_linux_command("swaymsg", cmd_args, "swaymsg", false, &[]);
+        let mut cmd = Command::new("swaymsg");
+        cmd.args(["-r", "--", &selector]);
+        return match process::run(&mut cmd, deadline()) {
+            Err(e) => process_failure_json("swaymsg", &e),
+            Ok(output) => {
+                let parsed = serde_json::from_slice::<serde_json::Value>(&output.stdout).ok();
+                let ok = output.status.success()
+                    && parsed.as_ref().and_then(|v| v.as_array()).is_some_and(|v| {
+                        !v.is_empty() && v.iter().all(|item| item["success"] == true)
+                    });
+                if ok {
+                    json_obj(vec![
+                        ("ok", "true".into()),
+                        ("backend", json_string("swaymsg")),
+                    ])
+                } else {
+                    linux_error_json("Sway IPC rejected focus or returned malformed output. Raw diagnostics withheld.", None)
+                }
+            }
+        };
     }
     if window_id.is_some() {
         return linux_error_json(
@@ -1864,6 +2039,36 @@ mod helper_regressions {
         assert!(!ran, "later action executed after first failure: {result}");
         assert!(result.contains("\"failedStep\":0"), "{result}");
         assert!(result.contains("\"completedSteps\":0"), "{result}");
+    }
+
+    #[test]
+    fn partial_sequence_preserves_first_failure_and_skips_remaining_steps() {
+        let result = run_linux_steps(
+            vec![
+                LinuxStep {
+                    program: "/bin/sh",
+                    args: vec!["-c".into(), "exit 0".into()],
+                },
+                LinuxStep {
+                    program: "/bin/sh",
+                    args: vec!["-c".into(), "exit 9".into()],
+                },
+                LinuxStep {
+                    program: "/bin/sh",
+                    args: vec!["-c".into(), "exit 0".into()],
+                },
+            ],
+            "fixture",
+            false,
+            &[],
+        );
+        let value: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["completedSteps"], 1);
+        assert_eq!(value["failedStep"], 1);
+        assert_eq!(value["partial"], true);
+        assert_eq!(value["exitCode"], 9);
+        assert_eq!(value["steps"].as_array().unwrap().len(), 2);
     }
 
     #[test]

@@ -93,3 +93,17 @@ test("malformed adapter output is an error without private diagnostic text", asy
   assert.equal(result.details.status, "error");
   assert.ok(!JSON.stringify(result).includes("arbitrary-private-text"));
 });
+
+test("gateway abort cancels owned helpers without stopping a different session", async (t) => {
+  const { inside } = await workspace(t);
+  const controller = new AbortController();
+  const tool = createComputerUseTool({ ctx: { workspaceDir: inside, sessionKey: "gateway-abort" }, appendAuditEvent: async () => {} });
+  const active = tool.execute("gateway", { action: "shell", command: process.execPath, args: ["-e", "setInterval(()=>{},1000)"] }, controller.signal);
+  controller.abort();
+  const result = await active;
+  assert.equal(result.details.status, "cancelled");
+  const other = createComputerUseTool({ ctx: { workspaceDir: inside, sessionKey: "other-session" }, appendAuditEvent: async () => {} });
+  const independent = await other.execute("independent", { action: "shell", command: process.execPath, args: ["-e", "process.stdout.write('okay')"] });
+  assert.equal(independent.details.status, "success");
+  assert.equal(independent.details.stdout, "okay");
+});
