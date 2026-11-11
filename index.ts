@@ -30,11 +30,15 @@ export default definePluginEntry({
   register(api) {
     const optionalApi = api as typeof api & OptionalComputerUseApi;
     // Hook contexts omit workspaceDir in this SDK. Retain the authenticated tool-factory context.
-    const policyContexts = new Map<string, ComputerUsePolicyContext>();
+    const policyContexts = new Map<string, ComputerUsePolicyContext | undefined>();
     const scope = (ctx: ComputerUsePolicyContext) => computerUseScopeKey(ctx, "session");
     const remember = (ctx: ComputerUsePolicyContext) => {
       const snapshot = { ...ctx }; const key = scope(snapshot);
-      policyContexts.delete(key); policyContexts.set(key, snapshot);
+      const previous = policyContexts.get(key);
+      // The SDK hook has no workspace identity to distinguish conflicting factories.
+      // Keep a conflict fail-closed until this bounded entry expires or the plugin reloads.
+      const conflict = policyContexts.has(key) && (!previous || previous.workspaceDir !== snapshot.workspaceDir);
+      policyContexts.delete(key); policyContexts.set(key, conflict ? undefined : snapshot);
       if (policyContexts.size > 256) policyContexts.delete(policyContexts.keys().next().value!);
       return snapshot;
     };
@@ -72,8 +76,7 @@ export default definePluginEntry({
           return { block: true, blockReason: "Invalid computer-use parameters." };
         }
         const action = normalizeComputerUseAction(params.action);
-        const candidates = [...policyContexts.values()].filter(value => (value.agentId ?? "computer-use") === (ctx.agentId ?? "computer-use"));
-        const known = policyContexts.get(scope(ctx)) ?? (new Set(candidates.map(value => value.workspaceDir)).size === 1 ? candidates[0] : undefined);
+        const known = policyContexts.get(scope(ctx));
         const fileAction = ["file-list", "file-read", "file-write"].includes(action) || (["inspect", "screenshot"].includes(action) && params.path);
         if (fileAction && !known?.workspaceDir) return { block: true, blockReason: "Computer-use workspace context is unavailable; file approval cannot be established." };
         let prepared;

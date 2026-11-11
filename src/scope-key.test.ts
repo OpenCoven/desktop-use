@@ -7,7 +7,7 @@ import plugin from "../index.js";
 import type { ComputerUsePolicyContext } from "./computer-use-policy.js";
 import { createComputerUseTool } from "./plugin-tool.js";
 import { ProcessFailure } from "./process-runner.js";
-import { COMPUTER_USE_TOOL_NAME } from "./tool-names.js";
+import { COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME } from "./tool-names.js";
 
 type Hook = (event: unknown, ctx: ComputerUsePolicyContext) => Promise<{ params?: { path?: string } }>;
 
@@ -70,4 +70,48 @@ test("the approval hook keeps a sessionless context apart from an empty session 
 
   assert.equal(sessionless.params?.path, join(first, "note.txt"));
   assert.equal(empty.params?.path, join(second, "note.txt"));
+});
+
+for (const toolName of [COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME]) {
+  test(`${toolName} file approval never borrows another session's factory context`, async t => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "desktopuse-missing-scope-")));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const hook = hookFor([{ agentId: "computer-use", sessionKey: "known", workspaceDir: root }]);
+    for (const ctx of [{}, { agentId: "computer-use", sessionKey: "other" }, { agentId: "other", sessionKey: "known" }]) {
+      const result = await hook({ toolName, params: { action: "file-write", path: "note.txt", content: "fixture" } }, ctx) as any;
+      assert.equal(result.block, true, JSON.stringify(ctx));
+      assert.equal(result.params, undefined);
+      assert.equal(result.requireApproval, undefined);
+    }
+  });
+  test(`${toolName} file approval fails closed for conflicting workspaces in the same scope`, async t => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "desktopuse-ambiguous-scope-")));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const first = join(root, "first"), second = join(root, "second");
+    await mkdir(first); await mkdir(second);
+    const ctx = { agentId: "computer-use", sessionKey: "same" };
+    const hook = hookFor([{ ...ctx, workspaceDir: first }, { ...ctx, workspaceDir: second }]);
+    const result = await hook({ toolName, params: { action: "file-write", path: "note.txt", content: "fixture" } }, ctx) as any;
+    assert.equal(result.block, true);
+    assert.equal(result.params, undefined);
+    assert.equal(result.requireApproval, undefined);
+  });
+}
+
+test("Stop leaves different agents, sessions, and workspaces active", async () => {
+  const own = { agentId: "computer-use", sessionKey: "shared", workspaceDir: "/tmp/owned-workspace" };
+  const tool = hangingTool(own);
+  const active = tool.execute("active-scopes", { action: "doctor" });
+  for (const ctx of [
+    { ...own, agentId: "another-agent" },
+    { ...own, sessionKey: "another-session" },
+    { ...own, workspaceDir: "/tmp/another-workspace" },
+    { agentId: own.agentId },
+  ]) {
+    const result = await createComputerUseTool({ ctx, appendAuditEvent: async () => {} }).execute("unrelated-stop", { action: "stop" });
+    assert.equal(result.details.cancellationRequested, 0);
+  }
+  const stopped = await tool.execute("own-stop", { action: "stop" });
+  assert.equal(stopped.details.cancellationRequested, 1);
+  assert.equal((await active).details.status, "cancelled");
 });
