@@ -83,13 +83,8 @@ const ComputerUseToolSchema = {
         "clipboard-write",
         "browser-open",
         "app-launch",
-        "permissions",
-        "see",
-        "capture",
-        "type",
-        "press",
       ],
-      description: "Computer-use action to perform.",
+      description: "Computer-use action to perform. Deprecated input aliases: permissions -> doctor, see -> inspect, capture -> screenshot, type -> type-text, press -> keypress. Removal targeted at 0.2.0.",
     },
     app: { type: "string", description: "Target app name, bundle id, or PID:123." },
     windowTitle: { type: "string", description: "Partial target window title." },
@@ -112,7 +107,7 @@ const ComputerUseToolSchema = {
     coords: { type: "string", description: "Coordinate fallback in x,y form." },
     double: { type: "boolean" },
     right: { type: "boolean" },
-    text: { type: "string", description: "Text for type-text or clipboard-write." },
+    text: { type: "string", description: "Text for type-text. For clipboard-write, text is deprecated; use clipboardText. Removal targeted at 0.2.0." },
     clear: { type: "boolean" },
     pressReturn: { type: "boolean" },
     keys: { type: "array", items: { type: "string" }, description: "Keys for keypress." },
@@ -150,6 +145,10 @@ const DESKTOP_ADAPTER_ACTIONS = new Set([
 const TRANSIENT_RETRY_ACTIONS = new Set(["doctor", "inspect", "screenshot"]);
 
 export function createComputerUseTool(options: CreateComputerUseToolOptions = {}) {
+  return createTool(options);
+}
+
+function createTool(options: CreateComputerUseToolOptions, legacyTool = false) {
   const ctx = options.ctx ?? {};
   const runAdapter = options.runAdapter ?? runAdapterBinary;
   const appendAuditEvent =
@@ -157,10 +156,11 @@ export function createComputerUseTool(options: CreateComputerUseToolOptions = {}
     ((event: ComputerUseAuditEvent) => appendComputerUseAuditEvent(event, ctx));
 
   return {
-    name: "computer_use",
-    label: "Computer Use",
-    description:
-      "OpenCoven computer-use agent tool for health checks, observation, approved desktop input, scoped shell/file actions, browser/app launches, and clipboard workflows.",
+    name: legacyTool ? "desktop_use" : "computer_use",
+    label: legacyTool ? "Desktop Use" : "Computer Use",
+    description: legacyTool
+      ? "Deprecated alias for computer_use. Use computer_use instead. Removal targeted at 0.2.0."
+      : "OpenCoven computer-use agent tool for health checks, observation, approved desktop input, scoped shell/file actions, browser/app launches, and clipboard workflows.",
     parameters: ComputerUseToolSchema,
     async execute(toolCallId: string, rawParams: unknown, gatewaySignal?: AbortSignal): Promise<ToolResult> {
       let params = normalizeParams(rawParams);
@@ -205,20 +205,22 @@ export function createComputerUseTool(options: CreateComputerUseToolOptions = {}
         details.audit = { written: false, code: "AUDIT_WRITE_FAILED" };
       }
 
+      // Notices are response metadata only; policy, execution, and audit see the original request/outcome.
+      const notices: string[] = [];
+      if (legacyTool) notices.push("desktop_use is deprecated; use computer_use instead.");
+      const action = normalizeComputerUseAction(params.action);
+      if (action !== params.action) notices.push(`${params.action} is deprecated; use ${action} instead.`);
+      if (action === "clipboard-write" && params.text !== undefined) {
+        notices.push("clipboard-write text is deprecated; use clipboardText instead.");
+      }
+      if (notices.length) details.deprecation = notices.join(" ");
       return jsonResult(details);
     },
   };
 }
 
 export function createDesktopUseTool(options: CreateComputerUseToolOptions = {}) {
-  const tool = createComputerUseTool(options);
-  return {
-    ...tool,
-    name: "desktop_use",
-    label: "Desktop Use",
-    description:
-      "Legacy alias for the OpenCoven computer_use tool. Prefer computer_use for new OpenClaw agent policy.",
-  };
+  return createTool(options, true);
 }
 
 async function executeAllowedAction(
@@ -486,7 +488,8 @@ export function normalizeParams(params: unknown): ComputerUseParams {
     } else if (typeof value !== schema.type) {
       throw new ToolInputError(`${label} has an invalid type.`);
     }
-    if (schema.enum && !schema.enum.includes(value as string)) {
+    const enumValue = label === "action" ? normalizeComputerUseAction(value as ComputerUseParams["action"]) : value;
+    if (schema.enum && !schema.enum.includes(enumValue as string)) {
       throw new ToolInputError(`${label} has an unsupported value.`);
     }
     if (typeof value === "number" && (

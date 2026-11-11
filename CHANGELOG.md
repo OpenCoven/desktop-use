@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Deprecate the plugin tool `desktop_use` in favor of `computer_use`, the action inputs `permissions -> doctor`, `see -> inspect`, `capture -> screenshot`, `type -> type-text`, and `press -> keypress`, and the `clipboard-write` field `text` in favor of `clipboardText`. Removal is targeted at **0.2.0**. Legacy inputs remain accepted for this compatibility release and add a `deprecation` string naming replacements to results without changing status, approval, or audit behavior. Advertise only the 18 canonical actions; retain `desktop_use` registration and `openclaw.plugin.json` contracts until the later release.
+
 - Bound helper sequences with shared deadlines, process-group cleanup, scoped cancellation, failure stopping, and private diagnostics.
 - Resolve workspace file paths before approval, including relative traversal and static symlink escapes; summarize durable audit values and require explicit content return.
 - Report Linux capabilities from helper/protocol evidence, reject unsupported targeting, validate Sway replies, and select honest Wayland input/scroll/capture fallbacks.

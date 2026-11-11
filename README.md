@@ -34,9 +34,7 @@ coven-desktop-use scroll --direction down --amount 3 --confirm
 coven-desktop-use focus --app TextEdit --confirm
 ```
 
-All commands print a JSON envelope. The 0.1.0 command names remain as aliases:
-`permissions -> doctor`, `see -> inspect`, `capture -> screenshot`,
-`type -> type-text`, and `press -> keypress`.
+All commands print a JSON envelope. The 0.1.0 command names remain as aliases: `permissions -> doctor`, `see -> inspect`, `capture -> screenshot`, `type -> type-text`, and `press -> keypress`. For plugin action inputs, these aliases are deprecated as described below.
 
 ## Linux / Ubuntu onboarding
 
@@ -144,10 +142,27 @@ This repo also ships an external OpenClaw tool plugin package under the OpenCove
 @opencoven/openclaw-desktop-use
 ```
 
-The plugin registers the `computer_use` agent tool and a legacy `desktop_use`
-alias. New configurations should allow only `computer_use` for the dedicated
-agent. See [docs/computer-use-agent.md](docs/computer-use-agent.md) for the
-agent identity, approval model, audit contract, and verification checklist.
+The plugin registers the `computer_use` agent tool and a deprecated `desktop_use` alias. New configurations should allow only `computer_use` for the dedicated agent. See [docs/computer-use-agent.md](docs/computer-use-agent.md) for the agent identity, approval model, audit contract, and verification checklist.
+
+### Deprecated plugin inputs
+
+The advertised action enum contains 18 canonical actions. The five 0.1.0 action aliases remain accepted and normalize on input for this compatibility release. Migrate these names before their targeted removal in 0.2.0:
+
+| Deprecated input | Replacement |
+| --- | --- |
+| Tool `desktop_use` | `computer_use` |
+| Action `permissions` | `doctor` |
+| Action `see` | `inspect` |
+| Action `capture` | `screenshot` |
+| Action `type` | `type-text` |
+| Action `press` | `keypress` |
+| `clipboard-write` field `text` | `clipboardText` |
+
+Use `computer_use` with `{ "action": "clipboard-write", "clipboardText": "hello" }` for clipboard writes. The `text` field remains the canonical input for `type-text`. If both clipboard fields are supplied, `clipboardText` keeps precedence and supplying `text` still produces a notice.
+
+Legacy plugin inputs add a `deprecation` string to result details and the JSON text response, for example `"deprecation": "permissions is deprecated; use doctor instead."`. Multiple notices are combined in that string. Canonical calls omit the field. Notices preserve action status, approval decisions, and redacted audit behavior, including failures. Malformed requests still fail validation before execution. The `desktop_use` tool remains registered and listed in `openclaw.plugin.json` for this release.
+
+### Installation
 
 Install the adapter binary from this repo:
 
