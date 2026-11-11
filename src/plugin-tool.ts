@@ -678,6 +678,7 @@ async function runAdapterBinary(args: string[], params: ComputerUseParams): Prom
 
 // Backend errors can echo private input even when the adapter itself exits zero.
 function redactTypeDiagnostics(value: unknown): unknown {
+  if (typeof value === "string") return "<redacted for type action>";
   if (Array.isArray(value)) return value.map(redactTypeDiagnostics);
   if (!value || typeof value !== "object") return value;
   const record = value as Record<string, unknown>;
