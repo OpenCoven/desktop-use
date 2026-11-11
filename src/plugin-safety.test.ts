@@ -45,15 +45,27 @@ test("stop cancels active helper across instances in the same session", async (t
   const { root, inside } = await workspace(t);
   const ready = join(root, "ready");
   const fixture = join(root, "adapter");
-  await writeFile(fixture, `#!${process.execPath}\nrequire('fs').writeFileSync(${JSON.stringify(ready)}, String(process.pid));setInterval(()=>{},1000);`, { mode: 0o700 });
+  await writeFile(fixture, `#!/usr/bin/env node
+const fs = require('fs');
+const ready = require('path').join(__dirname, 'ready');
+fs.writeFileSync(ready, '');
+setTimeout(() => fs.writeFileSync(ready, String(process.pid)), 100);
+setInterval(() => {}, 1000);
+`, { mode: 0o700 });
   const previous = process.env.COVEN_DESKTOP_USE_BIN;
   process.env.COVEN_DESKTOP_USE_BIN = fixture;
   t.after(() => { if (previous === undefined) delete process.env.COVEN_DESKTOP_USE_BIN; else process.env.COVEN_DESKTOP_USE_BIN = previous; });
   const ctx = { workspaceDir: inside, sessionKey: "safety-stop" };
   const tool = createComputerUseTool({ ctx, appendAuditEvent: async () => {} });
   const active = tool.execute("active", { action: "click", coords: "1,1", confirm: true });
-  for (let i = 0; i < 100; i++) { try { await readFile(ready); break; } catch { await new Promise(r => setTimeout(r, 10)); } }
-  const pid = Number(await readFile(ready, "utf8"));
+  // File creation can be observed before its PID contents have been published.
+  let pid = 0;
+  for (let i = 0; i < 100; i++) {
+    try { pid = Number(await readFile(ready, "utf8")); } catch { /* helper has not created the marker yet */ }
+    if (Number.isSafeInteger(pid) && pid > 0) break;
+    await new Promise(r => setTimeout(r, 10));
+  }
+  assert.ok(Number.isSafeInteger(pid) && pid > 0, "helper must publish a positive PID before Stop");
   const other = createComputerUseTool({ ctx, appendAuditEvent: async () => {} });
   await other.execute("stop", { action: "stop" });
   const outcome = await Promise.race([active, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("active call was not cancelled")), 1500).unref())]);
