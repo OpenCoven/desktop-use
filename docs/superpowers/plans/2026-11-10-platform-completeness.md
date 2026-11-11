@@ -30,7 +30,7 @@
 - [x] Add deterministic tests for compositor/tool combinations, wtype/ydotool selection, scrolling, screenshot degradation/failure, focus injection and replies, clipboard/launch tools with argv/stdin; observe failures.
 - [x] Make doctor report available/degraded/unsupported/unverified per capability; probe Wayland advertised protocols when wayland-info exists, otherwise avoid assuming wtype/grim support. Support ydotool typing/key fallbacks and Sway-only focus. Keep action errors honest and stop sequences at failure.
 - [x] Add bounded Linux clipboard via wl-copy/wl-paste or xclip/xsel, browser via xdg-open, app via gtk-launch desktop id. Keep existing approval policy and explicit unsupported responses.
-- [ ] Update matrix, bounds/stop/privacy documentation, and exact-head handoff. Run `pnpm run check`; commit/push focused dependent platform PR, verify hosted CI for both PRs, record unavailable graphical acceptance gates. Do not merge.
+- [x] Update matrix, bounds/stop/privacy documentation, and exact-head handoff. Run `pnpm run check`; commit/push focused dependent platform PR, verify hosted CI for both PRs, record unavailable graphical acceptance gates. Do not merge.
 
 ## Execution ledger
 
@@ -44,3 +44,5 @@
 - Local final check before delivery: 74 TypeScript and 39 Rust tests pass (38 unit tests plus one CLI cancellation integration test), plus typecheck and import guard. The one ignored Rust test is only an entry point explicitly run in isolated child processes by its parent fixture tests. Browser and native app launch were observed in the real macOS graphical session; no input/screenshot acceptance is claimed without Peekaboo.
 
 - Extra verification: the real built CLI receives SIGTERM while an owned TERM-ignoring helper runs, returns CANCELLED, and reaps the helper. A real partial sequence preserves its first failure and skips later steps. Linux capture success also requires a nonempty artifact; ext-only capture registries are unverified installed-helper compatibility rather than falsely unsupported.
+
+- Hosted delivery: #8 head 48e4037fc1ed7184286596aec474ecc6860a869a passed macOS/Linux run 42941119545; #9 code head cd4eb37c208024b6de8cb78594a27a396dced2d6 passed macOS/Linux run 42943013378. Both PRs remain open and unmerged. Durable final receipts and exact final branch heads are retained in the sibling desktop-use-goal2-evidence/handoff.md.
