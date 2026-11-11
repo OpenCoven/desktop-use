@@ -36,7 +36,7 @@ export default definePluginEntry({
       const snapshot = { ...ctx }; const key = scope(snapshot);
       const previous = policyContexts.get(key);
       // The SDK hook has no workspace identity to distinguish conflicting factories.
-      // Keep a conflict fail-closed until this bounded entry expires or the plugin reloads.
+      // Keep a conflict fail-closed until this bounded entry is evicted or the plugin reloads.
       const conflict = policyContexts.has(key) && (!previous || previous.workspaceDir !== snapshot.workspaceDir);
       policyContexts.delete(key); policyContexts.set(key, conflict ? undefined : snapshot);
       if (policyContexts.size > 256) policyContexts.delete(policyContexts.keys().next().value!);

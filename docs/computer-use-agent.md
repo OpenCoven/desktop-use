@@ -140,6 +140,10 @@ Policy decisions have one of three statuses: `allow`, `needsApproval`, or
 `blocked`. Approval prompts include risk, target, exact redacted input when
 available, and rollback notes for writes.
 
+The gateway hook treats incoming tool arguments as model-controlled. A supplied `confirm:true` does not satisfy runtime approval: the hook classifies the request without confirmation and returns confirmation overrides only alongside `requireApproval`, which the gateway applies after an allowed resolution. Trusted operator calls through the gateway's direct HTTP tool endpoint are a separate gateway-authenticated surface and do not prove this agent approval flow.
+
+Approval-context lookup requires an exact agent/session key remembered from a trusted tool factory. Missing session keys are distinct from actual empty or `default` keys. The SDK hook does not carry a workspace, so the plugin refuses file approval when that exact scope has no workspace or has been associated with conflicting workspaces. It never falls back to another session's workspace. Conflicts stay blocked until the bounded context entry is evicted or the plugin reloads; use a fresh session when changing an agent's workspace. Stop adds the workspace to the shared scope key and therefore cannot cancel another agent, session, or workspace. Both tool names follow the same hook and cancellation path; the dedicated template still exposes only the canonical tool.
+
 Audit logs are append-only JSONL:
 
 ```text
