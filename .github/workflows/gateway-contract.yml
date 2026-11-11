@@ -1,0 +1,63 @@
+name: Gateway contract
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/gateway-contract.yml'
+      - 'scripts/qualify-gateway.mjs'
+      - 'index.ts'
+      - 'src/**'
+      - 'agents/**'
+      - 'openclaw.plugin.json'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gateway-contract-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qualify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Pack the plugin and run the minimum supported gateway
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/gateway-package" "$RUNNER_TEMP/gateway-packed"
+          pnpm pack --pack-destination "$RUNNER_TEMP/gateway-package"
+          tar -xzf "$RUNNER_TEMP/gateway-package/"*.tgz -C "$RUNNER_TEMP/gateway-packed"
+          node scripts/qualify-gateway.mjs "$RUNNER_TEMP/gateway-receipts" "$PWD/node_modules/openclaw" "$RUNNER_TEMP/gateway-packed/package"
+      - name: Preserve contract evidence without gateway credentials or profiles
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gateway-contract-${{ matrix.os }}
+          if-no-files-found: ignore
+          path: |
+            ${{ runner.temp }}/gateway-receipts/runtime-version.json
+            ${{ runner.temp }}/gateway-receipts/effective-tools.json
+            ${{ runner.temp }}/gateway-receipts/legacy-effective-tools.json
+            ${{ runner.temp }}/gateway-receipts/model-requests.json
+            ${{ runner.temp }}/gateway-receipts/events.json
+            ${{ runner.temp }}/gateway-receipts/*-approval.json
+            ${{ runner.temp }}/gateway-receipts/*-outcome.json
+            ${{ runner.temp }}/gateway-receipts/*-cancellation.json
+            ${{ runner.temp }}/gateway-receipts/audit-summary.json
+            ${{ runner.temp }}/gateway-receipts/console.log
