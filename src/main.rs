@@ -357,9 +357,6 @@ fn build_screenshot_args(args: &[String]) -> Vec<OsString> {
 
 fn build_click_args(args: &[String]) -> Vec<OsString> {
     let mut out = vec![OsString::from("click")];
-    if let Some(query) = value(args, "--query") {
-        out.push(query.into());
-    }
     if let Some(on) = value(args, "--on") {
         out.extend(["--on".into(), on.into()]);
     }
@@ -373,6 +370,9 @@ fn build_click_args(args: &[String]) -> Vec<OsString> {
         out.push("--right".into());
     }
     add_common_target_args(&mut out, args);
+    if let Some(query) = value(args, "--query") {
+        out.extend(["--".into(), query.into()]);
+    }
     out
 }
 
@@ -394,12 +394,15 @@ fn build_type_args(args: &[String]) -> Vec<OsString> {
 
 fn build_press_args(args: &[String]) -> Vec<OsString> {
     let mut out = vec![OsString::from("press")];
-    if let Some(keys) = value(args, "--keys") {
-        for key in keys.split(',').filter(|s| !s.is_empty()) {
-            out.push(key.into());
-        }
-    }
     add_common_target_args(&mut out, args);
+    if let Some(keys) = value(args, "--keys") {
+        out.push("--".into());
+        out.extend(
+            keys.split(',')
+                .filter(|s| !s.is_empty())
+                .map(OsString::from),
+        );
+    }
     out
 }
 
@@ -454,48 +457,7 @@ fn run_peekaboo(
     let mut cmd = Command::new("peekaboo");
     cmd.args(&args);
     match process::run(&mut cmd, deadline()) {
-        Ok(output) => {
-            let permission =
-                looks_like_permission_failure(&String::from_utf8_lossy(&output.stdout))
-                    || looks_like_permission_failure(&String::from_utf8_lossy(&output.stderr));
-            let parsed = serde_json::from_slice::<serde_json::Value>(&output.stdout).ok();
-            let backend_ok = parsed
-                .as_ref()
-                .and_then(|v| v.get("success").or_else(|| v.get("ok")))
-                .and_then(|v| v.as_bool())
-                == Some(true);
-            let ok = output.status.success() && backend_ok;
-            let mut fields = vec![
-                ("ok", bool_json(ok)),
-                ("supported", "true".into()),
-                ("platform", json_string(env::consts::OS)),
-                ("backend", json_string("peekaboo")),
-                ("exitCode", output.status.code().unwrap_or(-1).to_string()),
-                ("stdoutRedacted", bool_json(redact_type_text || !ok)),
-            ];
-            if ok && !redact_type_text {
-                fields.push(("result", parsed.unwrap().to_string()));
-            } else if !ok {
-                let code = if permission {
-                    "PERMISSION_ERROR"
-                } else if parsed.is_none() {
-                    "MALFORMED_OUTPUT"
-                } else {
-                    "BACKEND_ERROR"
-                };
-                fields.push(("code", json_string(code)));
-                fields.push((
-                    "error",
-                    json_string(
-                        "Peekaboo did not complete the action. Raw diagnostics were withheld.",
-                    ),
-                ));
-            }
-            if always_include_permission_guide || permission {
-                fields.push(("permissionGuide", permission_guide_json()));
-            }
-            json_obj(fields)
-        }
+        Ok(output) => peekaboo_result(output, redact_type_text, always_include_permission_guide),
         Err(err) => process_failure_json("peekaboo", &err),
     }
 }
@@ -515,6 +477,57 @@ fn process_failure_json(backend: &str, error: &process::Failure) -> String {
             ),
         ),
     ])
+}
+
+fn peekaboo_result(
+    output: std::process::Output,
+    redact_type_text: bool,
+    always_include_permission_guide: bool,
+) -> String {
+    let permission = looks_like_permission_failure(&String::from_utf8_lossy(&output.stdout))
+        || looks_like_permission_failure(&String::from_utf8_lossy(&output.stderr));
+    let parsed = serde_json::from_slice::<serde_json::Value>(&output.stdout).ok();
+    let field = |name: &str| {
+        parsed
+            .as_ref()
+            .and_then(|v| v.get(name))
+            .and_then(|v| v.as_bool())
+    };
+    let supported = field("supported") != Some(false);
+    let confirmation = field("requiresConfirmation") == Some(true);
+    let backend_ok = field("ok").or_else(|| field("success")) == Some(true);
+    let ok = output.status.success() && backend_ok && supported && !confirmation;
+    let mut fields = vec![
+        ("ok", bool_json(ok)),
+        ("supported", bool_json(supported)),
+        ("platform", json_string(env::consts::OS)),
+        ("backend", json_string("peekaboo")),
+        ("exitCode", output.status.code().unwrap_or(-1).to_string()),
+        ("stdoutRedacted", bool_json(redact_type_text || !ok)),
+    ];
+    if confirmation {
+        fields.push(("requiresConfirmation", "true".into()));
+    }
+    if ok && !redact_type_text {
+        fields.push(("result", parsed.unwrap().to_string()));
+    } else if !ok {
+        let code = if permission {
+            "PERMISSION_ERROR"
+        } else if parsed.is_none() {
+            "MALFORMED_OUTPUT"
+        } else {
+            "BACKEND_ERROR"
+        };
+        fields.push(("code", json_string(code)));
+        fields.push((
+            "error",
+            json_string("Peekaboo did not complete the action; raw diagnostics were withheld."),
+        ));
+    }
+    if always_include_permission_guide || permission {
+        fields.push(("permissionGuide", permission_guide_json()));
+    }
+    json_obj(fields)
 }
 
 fn looks_like_permission_failure(text: &str) -> bool {
@@ -643,6 +656,9 @@ fn is_executable_file(path: &Path) -> bool {
 fn linux_doctor(session: LinuxSession) -> String {
     let tools = linux_tool_inventory(session);
     let capabilities = linux_capabilities::capabilities(session, &tools);
+    if let Err(error) = process::check(deadline()) {
+        return process_failure_json("linux-doctor", &error);
+    }
     let ok = linux_minimum_tools_present(session, &tools)
         && capabilities["screenshot"]["state"] != "unsupported"
         && capabilities["typing"]["state"] != "unsupported";
@@ -832,21 +848,68 @@ fn linux_screenshot(session: LinuxSession, args: &[String]) -> String {
     capture_screenshot(session, &path, &mode, &extras)
 }
 
+struct CaptureStaging(PathBuf);
+impl Drop for CaptureStaging {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn capture_screenshot(
     session: LinuxSession,
     path: &str,
     mode: &str,
     extras: &[(&'static str, String)],
 ) -> String {
+    if let Err(error) = process::check(deadline()) {
+        return process_failure_json("linux-capture", &error);
+    }
+    let target = Path::new(path);
+    let parent = target
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let directory = parent.join(format!(".desktopuse-capture-{}", unique_suffix()));
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    if builder.create(&directory).is_err() {
+        return linux_error_json(
+            "Cannot create a private capture staging directory in the destination directory.",
+            None,
+        );
+    }
+    let staging = CaptureStaging(directory);
+    let extension = if path.ends_with(".jpg") || path.ends_with(".jpeg") {
+        "jpg"
+    } else {
+        "png"
+    };
+    let image = staging.0.join(format!("capture.{extension}"));
+    let image_path = image.to_string_lossy();
     let result = match session {
-        LinuxSession::X11 => x11_screenshot(path, mode, extras),
-        LinuxSession::Wayland => wayland_screenshot(path, mode, extras),
+        LinuxSession::X11 => x11_screenshot(&image_path, mode, extras),
+        LinuxSession::Wayland => wayland_screenshot(&image_path, mode, extras),
     };
     let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
-    if parsed["ok"] == true && !std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() > 0) {
-        return json_obj(vec![("ok", "false".into()), ("supported", "true".into()),
-            ("backend", json_string("linux")), ("code", json_string("CAPTURE_MISSING")),
-            ("error", json_string("Capture helper exited successfully without a nonempty image artifact. No screenshot evidence is available."))]);
+    if parsed["ok"] != true {
+        return result;
+    }
+    if !std::fs::symlink_metadata(&image).is_ok_and(|m| m.file_type().is_file() && m.len() > 0) {
+        return json_obj(vec![("ok", "false".into()), ("supported", "true".into()), ("backend", json_string("linux")),
+            ("code", json_string("CAPTURE_MISSING")), ("error", json_string("Capture helper did not produce a new nonempty regular image artifact. The destination was not changed."))]);
+    }
+    if let Err(error) = process::check(deadline()) {
+        return process_failure_json("linux-capture", &error);
+    }
+    if std::fs::rename(&image, target).is_err() {
+        return linux_error_json(
+            "Captured artifact could not be atomically published to the destination.",
+            None,
+        );
     }
     result
 }
@@ -1344,98 +1407,154 @@ fn linux_focus(session: LinuxSession, args: &[String]) -> String {
     }
 }
 
+fn numeric_window_id(value: &str) -> Option<u64> {
+    if let Some(hex) = value.strip_prefix("0x") {
+        u64::from_str_radix(hex, 16).ok()
+    } else {
+        value.parse().ok()
+    }
+}
+
+fn regex_literal(value: &str) -> String {
+    let mut result = String::new();
+    for ch in value.chars() {
+        if ".^$*+?()[]{}|\\".contains(ch) {
+            result.push('\\');
+        }
+        result.push(ch);
+    }
+    result
+}
+
 fn x11_focus(app: Option<&str>, title: Option<&str>, window_id: Option<&str>) -> String {
-    if let Some(id) = window_id {
-        if resolve_path_binary("wmctrl").is_some() {
-            let cmd_args: Vec<OsString> = vec!["-i".into(), "-a".into(), id.into()];
-            return run_linux_command("wmctrl", cmd_args, "wmctrl", false, &[]);
+    let requested_id = match window_id {
+        Some(id) => match numeric_window_id(id) {
+            Some(id) => Some(id),
+            None => return linux_error_json("X11 window id must be numeric.", None),
+        },
+        None => None,
+    };
+    if resolve_path_binary("wmctrl").is_some() {
+        let mut command = Command::new("wmctrl");
+        command.arg("-lx");
+        let output = match process::run(&mut command, deadline()) {
+            Ok(output) if output.status.success() => output,
+            Ok(_) => {
+                return linux_error_json("Window inventory failed; focus was not changed.", None)
+            }
+            Err(error) => return process_failure_json("wmctrl", &error),
+        };
+        let wanted_title = title.map(|s| s.split_whitespace().collect::<Vec<_>>().join(" "));
+        let mut matches = Vec::new();
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            if fields.len() < 4 {
+                continue;
+            }
+            let Some(id) = numeric_window_id(fields[0]) else {
+                continue;
+            };
+            let class = fields[2];
+            let name = fields[4..].join(" ");
+            if requested_id.is_some_and(|wanted| wanted != id) {
+                continue;
+            }
+            if app.is_some_and(|wanted| {
+                !class.eq_ignore_ascii_case(wanted)
+                    && !class
+                        .rsplit('.')
+                        .next()
+                        .unwrap_or("")
+                        .eq_ignore_ascii_case(wanted)
+            }) {
+                continue;
+            }
+            if wanted_title
+                .as_ref()
+                .is_some_and(|wanted| !name.contains(wanted))
+            {
+                continue;
+            }
+            matches.push(fields[0].to_string());
         }
-        if resolve_path_binary("xdotool").is_some() {
-            let cmd_args: Vec<OsString> = vec!["windowactivate".into(), id.into()];
-            return run_linux_command("xdotool", cmd_args, "xdotool", false, &[]);
+        if matches.len() != 1 {
+            return linux_error_json("Focus target is missing or ambiguous; specify a unique window id. Focus was not changed.", None);
         }
+        return run_linux_command(
+            "wmctrl",
+            vec!["-i".into(), "-a".into(), matches.remove(0).into()],
+            "wmctrl",
+            false,
+            &[],
+        );
+    }
+    if [app.is_some(), title.is_some(), window_id.is_some()]
+        .into_iter()
+        .filter(|v| *v)
+        .count()
+        > 1
+    {
+        return linux_capabilities::unsupported("Combined X11 focus selectors require wmctrl. No selector was discarded and focus was not changed.");
+    }
+    if resolve_path_binary("xdotool").is_none() {
         return missing_tool_json(
             "wmctrl or xdotool",
-            "Install with: sudo apt install wmctrl",
+            "Install a supported focus helper.",
             "x11-focus",
         );
     }
-    if let Some(a) = app {
-        if resolve_path_binary("wmctrl").is_some() {
-            let cmd_args: Vec<OsString> = vec!["-x".into(), "-a".into(), a.into()];
-            return run_linux_command("wmctrl", cmd_args, "wmctrl", false, &[]);
-        }
-        if resolve_path_binary("xdotool").is_some() {
-            let cmd_args: Vec<OsString> = vec![
-                "search".into(),
-                "--class".into(),
-                a.into(),
-                "windowactivate".into(),
-            ];
-            return run_linux_command("xdotool", cmd_args, "xdotool", false, &[]);
-        }
-        return missing_tool_json(
-            "wmctrl or xdotool",
-            "Install with: sudo apt install wmctrl",
-            "x11-focus",
-        );
-    }
-    if let Some(t) = title {
-        if resolve_path_binary("wmctrl").is_some() {
-            let cmd_args: Vec<OsString> = vec!["-a".into(), t.into()];
-            return run_linux_command("wmctrl", cmd_args, "wmctrl", false, &[]);
-        }
-        if resolve_path_binary("xdotool").is_some() {
-            let cmd_args: Vec<OsString> = vec![
-                "search".into(),
-                "--name".into(),
-                t.into(),
-                "windowactivate".into(),
-            ];
-            return run_linux_command("xdotool", cmd_args, "xdotool", false, &[]);
-        }
-        return missing_tool_json(
-            "wmctrl or xdotool",
-            "Install with: sudo apt install wmctrl",
-            "x11-focus",
-        );
-    }
-    linux_error_json(
-        "focus requires --app, --window-title, or --window-id on Linux.",
-        None,
-    )
+    let args = if let Some(id) = requested_id {
+        vec!["windowactivate".into(), id.to_string().into()]
+    } else if let Some(app) = app {
+        vec![
+            "search".into(),
+            "--class".into(),
+            format!("^{}$", regex_literal(app)).into(),
+            "windowactivate".into(),
+        ]
+    } else if let Some(title) = title {
+        vec![
+            "search".into(),
+            "--name".into(),
+            regex_literal(title).into(),
+            "windowactivate".into(),
+        ]
+    } else {
+        return linux_error_json("Missing focus target.", None);
+    };
+    run_linux_command("xdotool", args, "xdotool", false, &[])
 }
 
 fn wayland_focus(app: Option<&str>, title: Option<&str>, window_id: Option<&str>) -> String {
     if env::var_os("SWAYSOCK").is_some() && resolve_path_binary("swaymsg").is_some() {
+        let mut criteria = Vec::new();
         if let Some(id) = window_id {
-            if id.parse::<u64>().is_err() {
+            let Some(id) = numeric_window_id(id) else {
                 return linux_error_json("Wayland window id must be numeric.", None);
+            };
+            criteria.push(format!("con_id={id}"));
+        }
+        for (field, target, exact) in [("app_id", app, true), ("title", title, false)] {
+            if let Some(target) = target {
+                if target.is_empty() || target.chars().any(char::is_control) {
+                    return linux_error_json(
+                        "Focus target must be nonempty and contain no control characters.",
+                        None,
+                    );
+                }
+                let literal = regex_literal(target);
+                let pattern = if exact {
+                    format!("^{literal}$")
+                } else {
+                    literal
+                };
+                criteria.push(format!(
+                    "{field}={}",
+                    serde_json::to_string(&pattern).unwrap()
+                ));
             }
         }
-        for target in [app, title].into_iter().flatten() {
-            if target.is_empty()
-                || !target
-                    .chars()
-                    .all(|c| c.is_alphanumeric() || " _-@.:/".contains(c))
-            {
-                return linux_error_json("Wayland focus target contains unsupported selector syntax; use a numeric window id.", None);
-            }
-        }
-        let selector = if let Some(id) = window_id {
-            format!("[con_id={}] focus", id)
-        } else if let Some(a) = app {
-            let escaped = a.replace('"', "\\\"");
-            format!("[app_id=\"{}\"] focus", escaped)
-        } else if let Some(t) = title {
-            let escaped = t.replace('"', "\\\"");
-            format!("[title=\"{}\"] focus", escaped)
-        } else {
-            return linux_error_json(
-                "focus requires --app, --window-title, or --window-id on Linux.",
-                None,
-            );
-        };
+        let selector = format!("[{}] focus", criteria.join(" "));
         let mut cmd = Command::new("swaymsg");
         cmd.args(["-r", "--", &selector]);
         return match process::run(&mut cmd, deadline()) {
@@ -1705,13 +1824,25 @@ fn output_path(value: Option<String>, kind: &str, format: &str) -> String {
     if let Some(path) = value {
         return path;
     }
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
     let mut path: PathBuf = env::temp_dir();
-    path.push(format!("opencoven-desktop-use-{}-{}.{}", kind, ts, format));
+    path.push(format!(
+        "opencoven-desktop-use-{kind}-{}.{format}",
+        unique_suffix()
+    ));
     path.to_string_lossy().to_string()
+}
+
+fn unique_suffix() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!(
+        "{}-{timestamp}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
 }
 
 fn help_json() -> String {
@@ -2084,5 +2215,34 @@ mod helper_regressions {
             &[],
         );
         assert!(!result.contains("arbitrary-private-text"), "{result}");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod peekaboo_outcome_tests {
+    use super::*;
+    use std::os::unix::process::ExitStatusExt;
+
+    #[test]
+    fn exit_zero_backend_failure_is_error_without_private_diagnostics() {
+        let output = std::process::Output { status: std::process::ExitStatus::from_raw(0),
+            stdout: br#"{"success":false,"error":{"code":"PERMISSION_ERROR","message":"private-typed-diagnostic"}}"#.to_vec(), stderr: b"private-typed-diagnostic".to_vec() };
+        let result = peekaboo_result(output, true, false);
+        assert!(result.contains("\"ok\":false"));
+        assert!(result.contains("PERMISSION_ERROR"));
+        assert!(!result.contains("private-typed-diagnostic"));
+    }
+
+    #[test]
+    fn malformed_backend_json_is_not_success() {
+        let output = std::process::Output {
+            status: std::process::ExitStatus::from_raw(0),
+            stdout: b"private-invalid-json".to_vec(),
+            stderr: vec![],
+        };
+        let result = peekaboo_result(output, false, false);
+        assert!(result.contains("\"ok\":false"));
+        assert!(result.contains("MALFORMED_OUTPUT"));
+        assert!(!result.contains("private-invalid-json"));
     }
 }

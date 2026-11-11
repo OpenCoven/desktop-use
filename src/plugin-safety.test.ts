@@ -98,12 +98,12 @@ test("gateway abort cancels owned helpers without stopping a different session",
   const { inside } = await workspace(t);
   const controller = new AbortController();
   const tool = createComputerUseTool({ ctx: { workspaceDir: inside, sessionKey: "gateway-abort" }, appendAuditEvent: async () => {} });
-  const active = tool.execute("gateway", { action: "shell", command: process.execPath, args: ["-e", "setInterval(()=>{},1000)"] }, controller.signal);
+  const active = tool.execute("gateway", { action: "shell", confirm: true, command: process.execPath, args: ["-e", "setInterval(()=>{},1000)"] }, controller.signal);
   controller.abort();
   const result = await active;
   assert.equal(result.details.status, "cancelled");
   const other = createComputerUseTool({ ctx: { workspaceDir: inside, sessionKey: "other-session" }, appendAuditEvent: async () => {} });
-  const independent = await other.execute("independent", { action: "shell", command: process.execPath, args: ["-e", "process.stdout.write('okay')"] });
+  const independent = await other.execute("independent", { action: "shell", confirm: true, command: process.execPath, args: ["-e", "process.stdout.write('okay')"] });
   assert.equal(independent.details.status, "success");
   assert.equal(independent.details.stdout, "okay");
 });
@@ -117,4 +117,15 @@ test("typed-input backend diagnostics retain only safe outcome fields", async ()
   assert.equal(result.details.status, "error");
   assert.equal((result.details.result as any).completedSteps, 1);
   assert.ok(!JSON.stringify(result).includes("arbitrary-private-text"));
+});
+
+test("explicit capture destinations require write approval before adapter execution", async t => {
+  const {root,inside}=await workspace(t); const outside=join(root,"existing.png"); await writeFile(outside,"original");
+  let calls=0;
+  const tool=createComputerUseTool({ctx:{workspaceDir:inside},runAdapter:async()=>{calls++;return{ok:true};},appendAuditEvent:async()=>{}});
+  for (const action of ["screenshot","inspect","capture","see"]) {
+    const result=await tool.execute("capture-path",{action,path:outside});
+    assert.equal(result.details.status,"needsApproval");
+  }
+  assert.equal(calls,0); assert.equal(await readFile(outside,"utf8"),"original");
 });

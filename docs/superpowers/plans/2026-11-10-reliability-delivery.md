@@ -19,3 +19,9 @@
 **Independent review:** Two important findings were reproduced with failing tests and fixed: joined key argv could exceed the byte cap; exit-zero backend diagnostics could expose typed input. Actual process timeout retry was also reproduced and fixed with structured ETIMEDOUT handling. No deferred review findings remain.
 
 **Local validation:** `pnpm run check` passes with 56 TypeScript tests, 14 Rust tests, typecheck, and the plugin-runtime import guard. `git diff --check` passes. Hosted CI remains the final delivery gate.
+
+## Review completion before merge
+
+The automated own-property edit at 581a908 introduced an unmatched conditional; the typecheck reproduced it and the guard is restored. Request normalization now snapshots own enumerable properties into a prototype-free record, rejects sparse key arrays, and validates action-specific argv before classification and approval. Shared action decoding recognizes transport wrappers and legacy Peekaboo stdout JSON, preserves semantic outcomes, and drives observation retry. The Rust boundary validates Peekaboo JSON before reporting success, including input actions, and suppresses malformed/failed diagnostics. Shell and health exceptions use the shared safe boundary; typed diagnostics preserve only safe outcome fields instead of erasing semantic codes.
+
+Review regressions failed before fixes and pass afterward. Full local pnpm run check passes 79 TypeScript and 16 Rust tests; formatting and diff whitespace checks pass. The user has authorized resolving review conversations and merging the reviewed stack to main after CI, replacing the earlier no-merge instruction.

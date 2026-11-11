@@ -35,6 +35,7 @@ impl Fixture {
             .env("PATH", &self.root)
             .env("FIXTURE_CONFIG", config.to_string())
             .env("FIXTURE_OUTPUT", self.root.join("result.json"))
+            .env("FIXTURE_READY", self.root.join("ready"))
             .env("FIXTURE_LOG", self.root.join("argv.log"));
         for key in [
             "SWAYSOCK",
@@ -52,7 +53,26 @@ impl Fixture {
                 child.env(key, value.as_str().unwrap());
             }
         }
-        let output = child.output().unwrap();
+        child
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut running = child.spawn().unwrap();
+        if let Some(ms) = config["cancelAfterMs"].as_u64() {
+            let ready = self.root.join("ready");
+            let end = Instant::now() + Duration::from_secs(2);
+            while !ready.exists() && Instant::now() < end {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            if !ready.exists() {
+                let _ = running.kill();
+                panic!("fixture did not initialize cancellation");
+            }
+            std::thread::sleep(Duration::from_millis(ms));
+            unsafe {
+                libc::kill(running.id() as i32, libc::SIGTERM);
+            }
+        }
+        let output = running.wait_with_output().unwrap();
         assert!(
             output.status.success(),
             "{}",
@@ -73,6 +93,8 @@ impl Drop for Fixture {
 #[test]
 #[ignore = "subprocess fixture entry only"]
 fn entry() {
+    process::install_cancellation();
+    fs::write(env::var("FIXTURE_READY").unwrap(), "ready").unwrap();
     let config: Value = serde_json::from_str(&env::var("FIXTURE_CONFIG").unwrap()).unwrap();
     DEADLINE.with(|d| {
         d.set(Some(
@@ -251,7 +273,8 @@ exit 0"#;
             .run(json!({"platform":"x11","args":["screenshot","--path","--exec=private-command"]}));
         assert_eq!(result["code"], "CAPTURE_MISSING");
         assert!(!f.log().contains("unsafe-option"));
-        assert!(f.log().contains("--\n--exec=private-command"));
+        assert!(f.log().contains("--\n"));
+        assert!(!f.log().contains("--exec=private-command"));
         let _ = fs::remove_file(f.root.join(helper));
         fs::write(f.root.join("argv.log"), "").unwrap();
     }
@@ -381,4 +404,72 @@ fn desktop_name_without_registry_evidence_leaves_protocols_unverified() {
         f.run(json!({"platform":"wayland","env":{"XDG_CURRENT_DESKTOP":"KDE"},"args":["doctor"]}));
     assert_eq!(result["capabilities"]["typing"]["state"], "unverified");
     assert_eq!(result["capabilities"]["screenshot"]["state"], "unverified");
+}
+
+#[test]
+fn capture_does_not_accept_a_stale_destination_as_new_evidence() {
+    let f = Fixture::new();
+    let path = f.root.join("old.png");
+    fs::write(&path, "old-image").unwrap();
+    f.tool("scrot", "exit 0");
+    let result =
+        f.run(json!({"platform":"x11","args":["screenshot","--path",path.to_string_lossy()]}));
+    assert_eq!(result["ok"], false);
+    assert_eq!(result["code"], "CAPTURE_MISSING");
+    assert_eq!(fs::read_to_string(&path).unwrap(), "old-image");
+}
+
+#[test]
+fn sway_focus_combines_targets_and_treats_regex_punctuation_literally() {
+    let f = Fixture::new();
+    f.tool(
+        "swaymsg",
+        r#"printf '%s\n' "$@" >> "$FIXTURE_LOG"; printf '[{"success":true}]'"#,
+    );
+    let result = f.run(json!({"platform":"wayland","env":{"SWAYSOCK":"/fixture"},"args":["focus","--app","org.example.App","--window-title","Draft [1]","--confirm"]}));
+    assert_eq!(result["ok"], true);
+    assert_eq!(
+        f.log().lines().last().unwrap(),
+        r#"[app_id="^org\\.example\\.App$" title="Draft \\[1\\]"] focus"#
+    );
+}
+
+#[test]
+fn x11_focus_matches_app_and_title_together_without_regex_broadening() {
+    let f = Fixture::new();
+    f.tool("wmctrl", r#"if [ "$1" = '-lx' ]; then
+printf '%s\n' '0x00000001 0 org.example.App fixture-host Other' '0x00000002 0 org.example.App fixture-host Draft [1]' '0x00000003 0 orgXexampleXApp fixture-host Draft [1]'
+else printf '%s\n' "$@" >> "$FIXTURE_LOG"; fi"#);
+    let result = f.run(json!({"platform":"x11","args":["focus","--app","org.example.App","--window-title","Draft [1]","--confirm"]}));
+    assert_eq!(result["ok"], true);
+    assert_eq!(f.log(), "-i\n-a\n0x00000002\n");
+}
+
+#[test]
+fn cancelled_wayland_doctor_never_becomes_successful_unknown_capabilities() {
+    let f = Fixture::new();
+    for name in ["grim", "ydotool"] {
+        f.tool(name, "exit 0");
+    }
+    f.tool("wayland-info", "/bin/sleep 5");
+    let result = f.run(json!({"platform":"wayland","args":["doctor"],"cancelAfterMs":50}));
+    assert_eq!(result["ok"], false);
+    assert_eq!(result["code"], "CANCELLED");
+}
+
+#[test]
+fn peekaboo_query_and_key_positionals_cannot_become_options() {
+    let f = Fixture::new();
+    f.tool(
+        "peekaboo",
+        r#"printf '%s\n' "$@" >> "$FIXTURE_LOG"; printf '{"success":true}'"#,
+    );
+    let result = f.run(json!({"platform":"macos","args":["click","--query","--help","--confirm"]}));
+    assert_eq!(result["ok"], true);
+    assert_eq!(f.log(), "click\n--json\n--no-remote\n--\n--help\n");
+    fs::write(f.root.join("argv.log"), "").unwrap();
+    let result =
+        f.run(json!({"platform":"macos","args":["keypress","--keys","--help,tab","--confirm"]}));
+    assert_eq!(result["ok"], true);
+    assert_eq!(f.log(), "press\n--json\n--no-remote\n--\n--help\ntab\n");
 }

@@ -86,8 +86,7 @@ Supported actions:
 - Scoped host actions: `shell`, `file-list`, `file-read`, `file-write`
 - Clipboard: `clipboard-read`, `clipboard-write`
 
-Shell execution uses `execFile` with argv, not shell interpolation. Workspace
-reads and read-only shell commands can run without approval. Writes, external
+Shell execution uses argv without shell interpolation. Workspace reads can run without approval. General shell execution requires explicit approval because effects cannot be inferred safely from command names. Writes, external
 network-visible commands, package installs, clipboard access, app launch, remote
 URLs, and desktop input require explicit OpenClaw approval. Attempts to reset or
 bypass macOS security boundaries, use privilege helpers, or run obviously
