@@ -1,4 +1,5 @@
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
+import { gatewayApprovalDisplay } from "./src/approval-display.js";
 import {
   COMPUTER_USE_CONTROL_UI_DESCRIPTOR,
 } from "./src/computer-use-agent.js";
@@ -98,23 +99,12 @@ export default definePluginEntry({
           };
         }
         if (decision.status === "needsApproval" && decision.approvalPrompt) {
+          const display = gatewayApprovalDisplay(params, decision);
+          if (!display) return { block: true, blockReason: "Approval cannot display the complete target and input; shorten the request before retrying." };
           return {
             params: { ...params, confirm: true },
             requireApproval: {
-              title: decision.approvalPrompt.title,
-              description: [
-                decision.approvalPrompt.description,
-                `Risk: ${decision.approvalPrompt.risk}.`,
-                decision.approvalPrompt.exactInput
-                  ? `Exact input: ${decision.approvalPrompt.exactInput}`
-                  : "",
-                decision.approvalPrompt.rollback
-                  ? `Rollback: ${decision.approvalPrompt.rollback}`
-                  : "",
-              ]
-                .filter(Boolean)
-                .join("\n"),
-              severity: decision.approvalPrompt.severity,
+              ...display,
               timeoutMs: 5 * 60 * 1000,
               timeoutBehavior: "deny",
             },

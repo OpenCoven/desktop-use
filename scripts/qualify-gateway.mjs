@@ -85,10 +85,14 @@ const log = await open(join(root, "console.log"), "w", 0o600);
 const env = Object.fromEntries(["PATH", "TMPDIR", "LANG", "USER"].filter(k => process.env[k]).map(k => [k, process.env[k]]));
 Object.assign(env, { OPENCLAW_STATE_DIR: join(root, "state"), OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_HOME: join(root, "home"), OPENCLAW_PLUGIN_LOAD_PROFILE: "1", OPENCLAW_LIVE_GATEWAY: "1", OPENCLAW_LIVE_GATEWAY_PROVIDERS: "qualification" });
 // Refuse to start a gateway if this package would escape the explicit state root.
-// This dry resolver call has no audit write or gateway/profile initialization.
+// Verify byte-identical source, then use the checkout's installed SDK peer for a
+// dry resolver call with no audit write or gateway/profile initialization.
+for (const file of ["src/computer-use-audit.ts", "src/computer-use-agent.ts", "src/tool-names.ts"]) {
+  assert.deepEqual(await readFile(join(repo, file)), await readFile(join(pluginRoot, file)), `Packed source differs: ${file}`);
+}
 const auditProbe = spawnSync(process.execPath, ["--import", createRequire(join(repo, "package.json")).resolve("tsx"), "--input-type=module", "-e",
   "const audit = await import(process.argv[1]); console.log(JSON.stringify(['computer-use','legacy-qualification'].map(agentId => audit.resolveComputerUseAuditLogPath({agentId}))));",
-  pathToFileURL(join(pluginRoot, "src/computer-use-audit.ts")).href,
+  pathToFileURL(join(repo, "src/computer-use-audit.ts")).href,
 ], { cwd: repo, env, encoding: "utf8" });
 assert.equal(auditProbe.status, 0, auditProbe.stderr);
 assert.deepEqual(JSON.parse(auditProbe.stdout.trim()), [join(root, "state/agents/computer-use/audit/computer-use.jsonl"), join(root, "state/agents/legacy-qualification/audit/computer-use.jsonl")]);
@@ -203,14 +207,14 @@ try {
   assert.deepEqual(legacyInventory.groups.flatMap(g => g.tools.map(t => t.id)), ["desktop_use"]);
   const legacy = await runCase("legacy-denied", { action: "file-write", path: "legacy.txt", content: secret, confirm: true }, "deny", legacySession, "desktop_use");
   await noFile(join(legacyWorkspace, "legacy.txt"));
-  const helper = join(root, "stalled-helper.cjs");
+  const helper = join(workspace, "stalled-helper.cjs");
   await writeFile(helper, "const fs=require('fs');process.on('SIGTERM',()=>{});fs.writeFileSync(process.argv[2],String(process.pid));setInterval(()=>{},1000);\n");
   const processGone = async pid => until(() => { try { process.kill(pid, 0); return false; } catch (e) { assert.equal(e.code, "ESRCH"); return true; } }, 2000);
   for (const mode of ["stop", "abort"]) {
-    const caseName = `owned-${mode}`, key = `agent:computer-use:${caseName}`, ready = join(root, `${caseName}.pid`);
+    const caseName = `owned-${mode}`, key = `agent:computer-use:${caseName}`, ready = join(workspace, `${caseName}.pid`);
     await rpc("sessions.patch", { key });
     let run;
-    const active = runCase(caseName, { action: "shell", command: process.execPath, args: [helper, ready], timeoutMs: 30000 }, "allow-once", key, "computer_use", { abort: mode === "abort", onAccepted: accepted => run = accepted });
+    const active = runCase(caseName, { action: "shell", command: process.execPath, args: ["stalled-helper.cjs", `${caseName}.pid`], timeoutMs: 30000 }, "allow-once", key, "computer_use", { abort: mode === "abort", onAccepted: accepted => run = accepted });
     active.catch(() => {});
     const pid = await until(async () => { const n = Number(await readFile(ready, "utf8")); return Number.isSafeInteger(n) && n > 0 ? n : undefined; }, 45000);
     const otherSessionStop = await httpInvoke("computer_use", { action: "stop" }, session);

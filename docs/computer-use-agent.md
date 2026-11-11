@@ -142,6 +142,8 @@ available, and rollback notes for writes.
 
 The gateway hook treats incoming tool arguments as model-controlled. A supplied `confirm:true` does not satisfy runtime approval: the hook classifies the request without confirmation and returns confirmation overrides only alongside `requireApproval`, which the gateway applies after an allowed resolution. Trusted operator calls through the gateway's direct HTTP tool endpoint are a separate gateway-authenticated surface and do not prove this agent approval flow.
 
+OpenClaw 2026.4.26 accepts approval titles up to 80 Unicode characters and descriptions up to 256. The hook uses a compact display with the complete canonical target and risk, plus complete redacted input fields; shell command and argument boundaries are shown as JSON strings/arrays. Inputs and targets are never silently shortened to obtain approval. If the complete display cannot fit the gateway API, the request is visibly blocked with a prompt to shorten it. Rollback advice is summarized as manual rollback where applicable; completed effects are not automatically undone.
+
 Approval-context lookup requires an exact agent/session key remembered from a trusted tool factory. Missing session keys are distinct from actual empty or `default` keys. The SDK hook does not carry a workspace, so the plugin refuses file approval when that exact scope has no workspace or has been associated with conflicting workspaces. It never falls back to another session's workspace. Conflicts stay blocked until the bounded context entry is evicted or the plugin reloads; use a fresh session when changing an agent's workspace. Stop adds the workspace to the shared scope key and therefore cannot cancel another agent, session, or workspace. Both tool names follow the same hook and cancellation path; the dedicated template still exposes only the canonical tool.
 
 Audit logs are append-only JSONL:
@@ -154,6 +156,8 @@ Each event includes timestamp, agent id, session key, tool call id, action,
 target, risk, approval id when present, redacted params, result status, and a
 result hash. Raw screenshot data, raw clipboard content, typed text, file-write
 content, tokens, cookies, and credentials are not written to durable logs.
+
+Audit writes use the trusted tool factory's agent directory when available. Gateway HTTP factories may omit it; the fallback uses the host SDK's state-directory resolver, including `OPENCLAW_STATE_DIR`, `OPENCLAW_HOME`, and home-prefix normalization, and keeps separate agent audit paths. Isolated verification must set an explicit disposable state root.
 
 ## Control UI State
 

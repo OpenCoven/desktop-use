@@ -143,3 +143,44 @@ for (const toolName of [COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME]) {
     assert.equal(result.requireApproval, undefined);
   });
 }
+
+test("approval payloads fit the minimum gateway API without losing their target", async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "desktopuse-approval-api-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const ctx = { agentId: "computer-use", sessionKey: "approval-api", workspaceDir: root };
+  const hook = hookFor([ctx]);
+  const protocol = await import(new URL("../node_modules/openclaw/dist/gateway/protocol/index.js", import.meta.url).href);
+  const privateText = "approval-private-content";
+  for (const params of [
+    { action: "file-write", path: "note.txt", content: privateText },
+    { action: "shell", command: process.execPath, args: ["-e", "process.exit(0)"] },
+  ]) {
+    const result = await hook({ toolName: COMPUTER_USE_TOOL_NAME, params }, ctx) as any;
+    assert.ok(result.requireApproval);
+    const { title, description, severity, timeoutMs } = result.requireApproval;
+    const request = { title, description, severity, timeoutMs, toolName: COMPUTER_USE_TOOL_NAME, agentId: ctx.agentId, sessionKey: ctx.sessionKey };
+    assert.equal(protocol.validatePluginApprovalRequestParams(request), true, JSON.stringify(protocol.validatePluginApprovalRequestParams.errors));
+    assert.ok(description.includes(root), "display the complete canonical target/cwd");
+    assert.ok(!JSON.stringify(result.requireApproval).includes(privateText));
+    if (params.action === "shell") {
+      assert.ok(title.includes(JSON.stringify(params.command)));
+      assert.ok(description.includes(JSON.stringify(params.args)));
+    }
+  }
+});
+
+test("unrepresentable approval targets and input fail visibly rather than being truncated", async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "desktopuse-long-approval-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const ctx = { agentId: "computer-use", sessionKey: "long-approval", workspaceDir: root };
+  const hook = hookFor([ctx]);
+  for (const params of [
+    { action: "file-write", path: `${"x".repeat(220)}/note.txt`, content: "fixture" },
+    { action: "shell", command: process.execPath, args: ["-e", "x-".repeat(250)] },
+  ]) {
+    const result = await hook({ toolName: COMPUTER_USE_TOOL_NAME, params }, ctx) as any;
+    assert.equal(result.block, true);
+    assert.match(result.blockReason, /complete target and input/i);
+    assert.equal(result.requireApproval, undefined);
+  }
+});
