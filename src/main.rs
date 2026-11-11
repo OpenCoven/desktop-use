@@ -129,23 +129,42 @@ fn run_macos(command: &'static str, args: &[String]) -> String {
         "doctor" => run_peekaboo(vec!["permissions".into()], false, true),
         "inspect" => run_peekaboo(build_inspect_args(args), false, false),
         "screenshot" => run_peekaboo(build_screenshot_args(args), false, false),
-        "click" | "type-text" | "keypress" | "scroll" | "focus"
-            if !has_flag(args, "--confirm") =>
-        {
+        "click" | "type-text" | "keypress" | "scroll" | "focus" if !has_flag(args, "--confirm") => {
             confirmation_required(command)
         }
-        "click" => run_peekaboo(build_click_args(&strip_flag(args, "--confirm")), false, false),
+        "click" => run_peekaboo(
+            build_click_args(&strip_flag(args, "--confirm")),
+            false,
+            false,
+        ),
         "type-text" => run_peekaboo(build_type_args(&strip_flag(args, "--confirm")), true, false),
-        "keypress" => run_peekaboo(build_press_args(&strip_flag(args, "--confirm")), false, false),
-        "scroll" => run_peekaboo(build_scroll_args(&strip_flag(args, "--confirm")), false, false),
-        "focus" => run_peekaboo(build_focus_args(&strip_flag(args, "--confirm")), false, false),
-        _ => unreachable!("normalize_command returned {} but match did not handle it", command),
+        "keypress" => run_peekaboo(
+            build_press_args(&strip_flag(args, "--confirm")),
+            false,
+            false,
+        ),
+        "scroll" => run_peekaboo(
+            build_scroll_args(&strip_flag(args, "--confirm")),
+            false,
+            false,
+        ),
+        "focus" => run_peekaboo(
+            build_focus_args(&strip_flag(args, "--confirm")),
+            false,
+            false,
+        ),
+        _ => unreachable!(
+            "normalize_command returned {} but match did not handle it",
+            command
+        ),
     }
 }
 
 fn run_linux(session: LinuxSession, command: &'static str, args: &[String]) -> String {
-    if matches!(command, "click" | "type-text" | "keypress" | "scroll" | "focus")
-        && !has_flag(args, "--confirm")
+    if matches!(
+        command,
+        "click" | "type-text" | "keypress" | "scroll" | "focus"
+    ) && !has_flag(args, "--confirm")
     {
         return confirmation_required(command);
     }
@@ -159,7 +178,10 @@ fn run_linux(session: LinuxSession, command: &'static str, args: &[String]) -> S
         "keypress" => linux_keypress(session, &stripped),
         "scroll" => linux_scroll(session, &stripped),
         "focus" => linux_focus(session, &stripped),
-        _ => unreachable!("normalize_command returned {} but match did not handle it", command),
+        _ => unreachable!(
+            "normalize_command returned {} but match did not handle it",
+            command
+        ),
     }
 }
 
@@ -341,37 +363,7 @@ fn run_peekaboo(
     let mut cmd = Command::new("peekaboo");
     cmd.args(&args);
     match cmd.output() {
-        Ok(output) => {
-            let ok = output.status.success();
-            let code = output.status.code().unwrap_or(-1);
-            let stdout = if redact_type_text {
-                "<redacted for type action>".to_string()
-            } else {
-                String::from_utf8_lossy(&output.stdout).to_string()
-            };
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            let include_permission_guide = always_include_permission_guide
-                || looks_like_permission_failure(&stdout)
-                || looks_like_permission_failure(&stderr);
-            let mut fields = vec![
-                ("ok", bool_json(ok)),
-                ("supported", "true".to_string()),
-                ("platform", json_string(env::consts::OS)),
-                ("backend", json_string("peekaboo")),
-                ("exitCode", code.to_string()),
-                (
-                    "command",
-                    json_array_strings(&redact_args(&args, redact_type_text)),
-                ),
-                ("stdout", json_string(&stdout)),
-                ("stdoutRedacted", bool_json(redact_type_text)),
-                ("stderr", json_string(&stderr)),
-            ];
-            if include_permission_guide {
-                fields.push(("permissionGuide", permission_guide_json()));
-            }
-            json_obj(fields)
-        }
+        Ok(output) => peekaboo_result(output, redact_type_text, always_include_permission_guide),
         Err(err) => json_obj(vec![
             ("ok", "false".to_string()),
             ("supported", "true".to_string()),
@@ -387,6 +379,57 @@ fn run_peekaboo(
             ("permissionGuide", permission_guide_json()),
         ]),
     }
+}
+
+fn peekaboo_result(
+    output: std::process::Output,
+    redact_type_text: bool,
+    always_include_permission_guide: bool,
+) -> String {
+    let permission = looks_like_permission_failure(&String::from_utf8_lossy(&output.stdout))
+        || looks_like_permission_failure(&String::from_utf8_lossy(&output.stderr));
+    let parsed = serde_json::from_slice::<serde_json::Value>(&output.stdout).ok();
+    let field = |name: &str| {
+        parsed
+            .as_ref()
+            .and_then(|v| v.get(name))
+            .and_then(|v| v.as_bool())
+    };
+    let supported = field("supported") != Some(false);
+    let confirmation = field("requiresConfirmation") == Some(true);
+    let backend_ok = field("ok").or_else(|| field("success")) == Some(true);
+    let ok = output.status.success() && backend_ok && supported && !confirmation;
+    let mut fields = vec![
+        ("ok", bool_json(ok)),
+        ("supported", bool_json(supported)),
+        ("platform", json_string(env::consts::OS)),
+        ("backend", json_string("peekaboo")),
+        ("exitCode", output.status.code().unwrap_or(-1).to_string()),
+        ("stdoutRedacted", bool_json(redact_type_text || !ok)),
+    ];
+    if confirmation {
+        fields.push(("requiresConfirmation", "true".into()));
+    }
+    if ok && !redact_type_text {
+        fields.push(("result", parsed.unwrap().to_string()));
+    } else if !ok {
+        let code = if permission {
+            "PERMISSION_ERROR"
+        } else if parsed.is_none() {
+            "MALFORMED_OUTPUT"
+        } else {
+            "BACKEND_ERROR"
+        };
+        fields.push(("code", json_string(code)));
+        fields.push((
+            "error",
+            json_string("Peekaboo did not complete the action; raw diagnostics were withheld."),
+        ));
+    }
+    if always_include_permission_guide || permission {
+        fields.push(("permissionGuide", permission_guide_json()));
+    }
+    json_obj(fields)
 }
 
 fn looks_like_permission_failure(text: &str) -> bool {
@@ -565,7 +608,7 @@ fn linux_tool_inventory_json(tools: &[LinuxToolStatus]) -> String {
 
 fn required_tools(session: LinuxSession) -> &'static [&'static str] {
     match session {
-        LinuxSession::X11 => &["scrot", "xdotool"],   // maim is alt for scrot; wmctrl optional
+        LinuxSession::X11 => &["scrot", "xdotool"], // maim is alt for scrot; wmctrl optional
         LinuxSession::Wayland => &["grim", "ydotool"], // wtype optional fallback
     }
 }
@@ -735,14 +778,19 @@ fn linux_click(session: LinuxSession, args: &[String]) -> String {
     let (x, y) = match parse_coords(&coords) {
         Some(c) => c,
         None => {
-            return linux_error_json(
-                "--coords must be in x,y form, e.g. 120,240.",
-                None,
-            );
+            return linux_error_json("--coords must be in x,y form, e.g. 120,240.", None);
         }
     };
-    let button = if has_flag(args, "--right") { 3u32 } else { 1u32 };
-    let times = if has_flag(args, "--double") { 2u32 } else { 1u32 };
+    let button = if has_flag(args, "--right") {
+        3u32
+    } else {
+        1u32
+    };
+    let times = if has_flag(args, "--double") {
+        2u32
+    } else {
+        1u32
+    };
     match session {
         LinuxSession::X11 => x11_click(x, y, button, times),
         LinuxSession::Wayland => wayland_click(x, y, button, times),
@@ -826,11 +874,7 @@ fn x11_type_text(text: &str, clear: bool, press_return: bool) -> String {
     if clear {
         steps.push(LinuxStep {
             program: "xdotool",
-            args: vec![
-                "key".into(),
-                "--clearmodifiers".into(),
-                "ctrl+a".into(),
-            ],
+            args: vec!["key".into(), "--clearmodifiers".into(), "ctrl+a".into()],
         });
         steps.push(LinuxStep {
             program: "xdotool",
@@ -1072,7 +1116,9 @@ fn linux_focus(session: LinuxSession, args: &[String]) -> String {
 
     match session {
         LinuxSession::X11 => x11_focus(app.as_deref(), title.as_deref(), window_id.as_deref()),
-        LinuxSession::Wayland => wayland_focus(app.as_deref(), title.as_deref(), window_id.as_deref()),
+        LinuxSession::Wayland => {
+            wayland_focus(app.as_deref(), title.as_deref(), window_id.as_deref())
+        }
     }
 }
 
@@ -1098,8 +1144,12 @@ fn x11_focus(app: Option<&str>, title: Option<&str>, window_id: Option<&str>) ->
             return run_linux_command("wmctrl", cmd_args, "wmctrl", false, &[]);
         }
         if resolve_path_binary("xdotool").is_some() {
-            let cmd_args: Vec<OsString> =
-                vec!["search".into(), "--class".into(), a.into(), "windowactivate".into()];
+            let cmd_args: Vec<OsString> = vec![
+                "search".into(),
+                "--class".into(),
+                a.into(),
+                "windowactivate".into(),
+            ];
             return run_linux_command("xdotool", cmd_args, "xdotool", false, &[]);
         }
         return missing_tool_json(
@@ -1114,8 +1164,12 @@ fn x11_focus(app: Option<&str>, title: Option<&str>, window_id: Option<&str>) ->
             return run_linux_command("wmctrl", cmd_args, "wmctrl", false, &[]);
         }
         if resolve_path_binary("xdotool").is_some() {
-            let cmd_args: Vec<OsString> =
-                vec!["search".into(), "--name".into(), t.into(), "windowactivate".into()];
+            let cmd_args: Vec<OsString> = vec![
+                "search".into(),
+                "--name".into(),
+                t.into(),
+                "windowactivate".into(),
+            ];
             return run_linux_command("xdotool", cmd_args, "xdotool", false, &[]);
         }
         return missing_tool_json(
@@ -1124,7 +1178,10 @@ fn x11_focus(app: Option<&str>, title: Option<&str>, window_id: Option<&str>) ->
             "x11-focus",
         );
     }
-    linux_error_json("focus requires --app, --window-title, or --window-id on Linux.", None)
+    linux_error_json(
+        "focus requires --app, --window-title, or --window-id on Linux.",
+        None,
+    )
 }
 
 fn wayland_focus(app: Option<&str>, title: Option<&str>, window_id: Option<&str>) -> String {
@@ -1138,7 +1195,10 @@ fn wayland_focus(app: Option<&str>, title: Option<&str>, window_id: Option<&str>
             let escaped = t.replace('"', "\\\"");
             format!("[title=\"{}\"] focus", escaped)
         } else {
-            return linux_error_json("focus requires --app, --window-title, or --window-id on Linux.", None);
+            return linux_error_json(
+                "focus requires --app, --window-title, or --window-id on Linux.",
+                None,
+            );
         };
         let cmd_args: Vec<OsString> = vec![selector.into()];
         return run_linux_command("swaymsg", cmd_args, "swaymsg", false, &[]);
@@ -1612,7 +1672,10 @@ mod tests {
         // ydotool / Peekaboo: `type TEXT`.
         let args = vec![OsString::from("type"), OsString::from("hello")];
         let redacted = redact_args(&args, true);
-        assert_eq!(redacted, vec!["type".to_string(), "<5-byte text>".to_string()]);
+        assert_eq!(
+            redacted,
+            vec!["type".to_string(), "<5-byte text>".to_string()]
+        );
     }
 
     #[test]
@@ -1659,27 +1722,91 @@ mod tests {
     #[test]
     fn linux_minimum_tools_requires_capture_and_input() {
         let none = vec![
-            LinuxToolStatus { name: "scrot", found: false, path: None },
-            LinuxToolStatus { name: "xdotool", found: false, path: None },
+            LinuxToolStatus {
+                name: "scrot",
+                found: false,
+                path: None,
+            },
+            LinuxToolStatus {
+                name: "xdotool",
+                found: false,
+                path: None,
+            },
         ];
         assert!(!linux_minimum_tools_present(LinuxSession::X11, &none));
 
         let only_capture = vec![
-            LinuxToolStatus { name: "scrot", found: true, path: Some("/usr/bin/scrot".into()) },
-            LinuxToolStatus { name: "xdotool", found: false, path: None },
+            LinuxToolStatus {
+                name: "scrot",
+                found: true,
+                path: Some("/usr/bin/scrot".into()),
+            },
+            LinuxToolStatus {
+                name: "xdotool",
+                found: false,
+                path: None,
+            },
         ];
-        assert!(!linux_minimum_tools_present(LinuxSession::X11, &only_capture));
+        assert!(!linux_minimum_tools_present(
+            LinuxSession::X11,
+            &only_capture
+        ));
 
         let both = vec![
-            LinuxToolStatus { name: "scrot", found: true, path: Some("/usr/bin/scrot".into()) },
-            LinuxToolStatus { name: "xdotool", found: true, path: Some("/usr/bin/xdotool".into()) },
+            LinuxToolStatus {
+                name: "scrot",
+                found: true,
+                path: Some("/usr/bin/scrot".into()),
+            },
+            LinuxToolStatus {
+                name: "xdotool",
+                found: true,
+                path: Some("/usr/bin/xdotool".into()),
+            },
         ];
         assert!(linux_minimum_tools_present(LinuxSession::X11, &both));
 
         let wl_ok = vec![
-            LinuxToolStatus { name: "grim", found: true, path: Some("/usr/bin/grim".into()) },
-            LinuxToolStatus { name: "ydotool", found: true, path: Some("/usr/bin/ydotool".into()) },
+            LinuxToolStatus {
+                name: "grim",
+                found: true,
+                path: Some("/usr/bin/grim".into()),
+            },
+            LinuxToolStatus {
+                name: "ydotool",
+                found: true,
+                path: Some("/usr/bin/ydotool".into()),
+            },
         ];
         assert!(linux_minimum_tools_present(LinuxSession::Wayland, &wl_ok));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod peekaboo_outcome_tests {
+    use super::*;
+    use std::os::unix::process::ExitStatusExt;
+
+    #[test]
+    fn exit_zero_backend_failure_is_error_without_private_diagnostics() {
+        let output = std::process::Output { status: std::process::ExitStatus::from_raw(0),
+            stdout: br#"{"success":false,"error":{"code":"PERMISSION_ERROR","message":"private-typed-diagnostic"}}"#.to_vec(), stderr: b"private-typed-diagnostic".to_vec() };
+        let result = peekaboo_result(output, true, false);
+        assert!(result.contains("\"ok\":false"));
+        assert!(result.contains("PERMISSION_ERROR"));
+        assert!(!result.contains("private-typed-diagnostic"));
+    }
+
+    #[test]
+    fn malformed_backend_json_is_not_success() {
+        let output = std::process::Output {
+            status: std::process::ExitStatus::from_raw(0),
+            stdout: b"private-invalid-json".to_vec(),
+            stderr: vec![],
+        };
+        let result = peekaboo_result(output, false, false);
+        assert!(result.contains("\"ok\":false"));
+        assert!(result.contains("MALFORMED_OUTPUT"));
+        assert!(!result.contains("private-invalid-json"));
     }
 }

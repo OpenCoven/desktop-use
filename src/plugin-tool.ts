@@ -17,6 +17,7 @@ import {
 } from "./computer-use-audit.js";
 import {
   classifyComputerUseRequest,
+  decodeAdapterAction,
   normalizeAdapterResult,
   normalizeComputerUseAction,
   redactComputerUseValue,
@@ -179,16 +180,7 @@ export function createComputerUseTool(options: CreateComputerUseToolOptions = {}
           details = await executeAllowedAction(params, ctx, runAdapter);
         } catch (error) {
           // Child-process messages can echo argv. Keep arbitrary exception text out of results.
-          const code = (error as { code?: unknown } | null)?.code;
-          details = {
-            status: "error",
-            success: false,
-            action: decision.normalizedAction,
-            code: error instanceof ToolInputError ? "INVALID_INPUT"
-              : typeof code === "string" && ["ENOENT", "EACCES", "EPERM", "EISDIR", "ENOTDIR", "EEXIST", "EIO", "ENOSPC"].includes(code)
-                ? code : "ACTION_FAILED",
-            error: error instanceof ToolInputError ? error.message : "Computer-use action failed.",
-          };
+          details = { status: "error", success: false, action: decision.normalizedAction, ...safeExecutionError(error) };
         }
       }
 
@@ -240,11 +232,12 @@ async function executeAllowedAction(
       runAdapter,
       action,
     );
-    const normalized = normalizeAdapterResult(raw, { evidence });
+    const safe = action === "type-text" ? redactTypeDiagnostics(decodeAdapterAction(raw)) : raw;
+    const normalized = normalizeAdapterResult(safe, { evidence });
     return {
       ...normalized,
       action,
-      permissionFlow: permissionFlowForResult(raw, action),
+      permissionFlow: permissionFlowForResult(safe, action),
     };
   }
 
@@ -291,7 +284,7 @@ async function runHealth(ctx: ComputerUsePolicyContext, runAdapter: AdapterRunne
       "health",
     );
   } catch (error) {
-    adapterResult = { ok: false, error: error instanceof Error ? error.message : String(error) };
+    adapterResult = { ok: false, ...safeExecutionError(error) };
   }
   const normalized = normalizeAdapterResult(adapterResult, {
     evidence: { action: "health", adapter: adapterBin },
@@ -309,6 +302,13 @@ async function runHealth(ctx: ComputerUsePolicyContext, runAdapter: AdapterRunne
     ],
     permissionFlow: permissionFlowForResult(adapterResult, "doctor"),
   };
+}
+
+function safeExecutionError(error: unknown): { code: string; error: string } {
+  const code = (error as { code?: unknown } | null)?.code;
+  return { code: error instanceof ToolInputError ? "INVALID_INPUT"
+    : typeof code === "string" && ["ENOENT", "EACCES", "EPERM", "EISDIR", "ENOTDIR", "EEXIST", "EIO", "ENOSPC", "ETIMEDOUT", "CANCELLED"].includes(code) ? code : "ACTION_FAILED",
+    error: error instanceof ToolInputError ? error.message : "Computer-use action failed; raw diagnostics withheld." };
 }
 
 function stopComputerUse(ctx: ComputerUsePolicyContext): ToolResult["details"] {
@@ -343,10 +343,7 @@ function shouldRetryAdapterResult(result: unknown, action: string): boolean {
   if (!retryableAction || !result || typeof result !== "object") {
     return false;
   }
-  const record = result as Record<string, unknown>;
-  if (record.ok === true && typeof record.adapter === "string") {
-    return shouldRetryAdapterResult(record.result, action);
-  }
+  const record = decodeAdapterAction(result);
   if (record.ok === true || record.supported === false || record.requiresConfirmation === true) {
     return false;
   }
@@ -354,7 +351,7 @@ function shouldRetryAdapterResult(result: unknown, action: string): boolean {
     return false;
   }
   const haystack = [
-    record.error,
+    record.error && typeof record.error === "object" ? JSON.stringify(record.error) : record.error,
     record.code,
     record.stderr,
     record.message,
@@ -389,22 +386,7 @@ async function runShell(params: ComputerUseParams, ctx: ComputerUsePolicyContext
       exitCode: 0,
     };
   } catch (error) {
-    const err = error as Error & {
-      stdout?: string | Buffer;
-      stderr?: string | Buffer;
-      code?: string | number;
-    };
-    return {
-      status: "error",
-      success: false,
-      action: "shell",
-      cwd,
-      command: redactComputerUseValue({ command, args }),
-      error: err.message,
-      code: err.code,
-      stdout: err.stdout ? truncateText(String(err.stdout)) : undefined,
-      stderr: err.stderr ? truncateText(String(err.stderr)) : undefined,
-    };
+    throw error; // The shared safe exception boundary owns failed process diagnostics.
   }
 }
 
@@ -582,7 +564,8 @@ export function normalizeParams(params: unknown): ComputerUseParams {
   if (!params || typeof params !== "object" || Array.isArray(params)) {
     throw new ToolInputError("Parameters must be an object.");
   }
-  const record = Object.fromEntries(Object.entries(params)) as Record<string, unknown>;
+  const record = Object.assign(Object.create(null), Object.fromEntries(Object.entries(params))) as Record<string, unknown>;
+  if (typeof record.action !== "string" || !record.action) {
     throw new ToolInputError("action is required and must be a string.");
   }
   const properties: Record<string, {
@@ -595,7 +578,7 @@ export function normalizeParams(params: unknown): ComputerUseParams {
     if (!Object.hasOwn(properties, label)) throw new ToolInputError("Unknown computer-use parameter.");
     const schema = properties[label];
     if (schema.type === "array") {
-      if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+      if (!Array.isArray(value) || Array.from(value).some((item) => typeof item !== "string")) {
         throw new ToolInputError(`${label} must be an array of strings.`);
       }
       if (value.length > 256) throw new ToolInputError(`${label} exceeds 256 items.`);
@@ -628,6 +611,16 @@ export function normalizeParams(params: unknown): ComputerUseParams {
   if (record.coords && !/^\d{1,5},\d{1,5}$/.test((record.coords as string).trim())) {
     throw new ToolInputError("coords must be in x,y form, for example 120,240.");
   }
+  const normalized = record as ComputerUseParams;
+  const action = normalizeComputerUseAction(normalized.action);
+  if (DESKTOP_ADAPTER_ACTIONS.has(action)) buildAdapterArgs(normalized);
+  if (action === "keypress" && normalized.keys?.some(key => !key.trim() || key.includes(","))) throw new ToolInputError("keys must contain nonempty individual key/chord names.");
+  if (action === "shell") requireString(normalized.command, "shell requires command.");
+  if (["file-read", "file-write"].includes(action)) requireString(normalized.path, "File action requires path.");
+  if (action === "file-write") requireString(normalized.content, "file-write requires content.");
+  if (action === "clipboard-write" && typeof (normalized.clipboardText ?? normalized.text) !== "string") throw new ToolInputError("clipboard-write requires clipboardText or text.");
+  if (action === "browser-open") requireString(normalized.url ?? normalized.path, "browser-open requires url.");
+  if (action === "app-launch") requireString(normalized.app, "app-launch requires app.");
   return record as ComputerUseParams;
 }
 
@@ -649,7 +642,7 @@ async function runAdapterBinary(args: string[], params: ComputerUseParams): Prom
       ok: true,
       adapter: adapterBin,
       args: redactArgsForDetails(args),
-      result: privateInput ? redactTypeDiagnostics(parseJsonOrText(stdout)) : parseJsonOrText(stdout),
+      result: privateInput ? redactTypeDiagnostics(decodeAdapterAction(parseJsonOrText(stdout))) : parseJsonOrText(stdout),
       stderr: privateInput ? "<redacted for type action>" : stderr ? String(stderr) : undefined,
     };
   } catch (err) {
@@ -675,21 +668,22 @@ async function runAdapterBinary(args: string[], params: ComputerUseParams): Prom
   }
 }
 
-// Backend errors can echo private input even when the adapter itself exits zero.
+// Input actions need outcomes, not arbitrary backend diagnostics that may echo their text.
 function redactTypeDiagnostics(value: unknown): unknown {
-  if (typeof value === "string") return "<redacted for type action>";
-  if (Array.isArray(value)) return value.map(redactTypeDiagnostics);
-  if (!value || typeof value !== "object") return value;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, code: "MALFORMED_OUTPUT" };
   const record = value as Record<string, unknown>;
   const fields: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(record)) {
-    if (["stdout", "stderr", "error", "message", "text", "command"].includes(key.toLowerCase())) {
-      fields[key] = "<redacted for type action>";
-    } else {
-      fields[key] = redactTypeDiagnostics(item);
-    }
+  for (const key of ["ok", "supported", "requiresConfirmation", "timedOut", "cancelled", "partial"]) {
+    if (typeof record[key] === "boolean") fields[key] = record[key];
   }
-  // Preserve actionable permission state without retaining backend diagnostic text.
+  for (const key of ["exitCode", "completedSteps", "totalSteps", "failedStep"]) {
+    if (Number.isSafeInteger(record[key])) fields[key] = record[key];
+  }
+  if (["peekaboo", "xdotool", "ydotool", "wtype", "linux"].includes(String(record.backend))) fields.backend = record.backend;
+  const codes = ["ENOENT", "EACCES", "ETIMEDOUT", "CANCELLED", "OUTPUT_LIMIT", "PROCESS_ERROR", "MALFORMED_OUTPUT", "BACKEND_ERROR", "PERMISSION_ERROR"];
+  if (typeof record.code === "string") fields.code = codes.includes(record.code) ? record.code : "BACKEND_ERROR";
+  if (Array.isArray(record.steps)) fields.steps = record.steps.map(redactTypeDiagnostics);
+  if (typeof record.adapter === "string") { fields.adapter = "adapter"; fields.result = redactTypeDiagnostics(record.result); }
   if (looksLikePermissionFailure(value)) fields.permissionError = "PERMISSION_ERROR";
   return fields;
 }

@@ -46,7 +46,7 @@ test("registers computer_use, legacy desktop_use, Control UI descriptor, and app
   assert.match(approval.requireApproval?.title ?? "", /Click/);
 
   for (const toolName of ["computer_use", "desktop_use"]) {
-    for (const params of [null, { action: 1 }, { action: "click", confirm: "true" }, { action: "keypress", keys: ["a".repeat(1024), "b".repeat(1024)] }]) {
+    for (const params of [{ action: "click" }, { action: "type-text" }, { action: "keypress", keys: [""] }, { action: "scroll" }, { action: "focus" }, { action: "shell" }, { action: "file-read" }, { action: "clipboard-write" }, { action: "browser-open" }, { action: "app-launch" }, null, { action: 1 }, { action: "click", confirm: "true" }, { action: "keypress", keys: ["a".repeat(1024), "b".repeat(1024)] }]) {
       const invalid = hooks[0]?.handler({ toolName, params }, {}) as { block?: boolean };
       assert.equal(invalid.block, true);
     }

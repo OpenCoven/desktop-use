@@ -208,3 +208,5 @@ Real adapter health check:
 ```bash
 cargo run -- doctor
 ```
+
+Review hardening validates each action's required arguments before policy/approval, copies only own request properties, rejects sparse key arrays, and consistently withholds shell/health exception diagnostics. Peekaboo process success is decoded separately from its JSON action outcome, including legacy stdout envelopes; malformed or rejected backend output cannot become a successful action.
