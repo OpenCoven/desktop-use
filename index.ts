@@ -6,6 +6,7 @@ import {
   type ComputerUseParams,
   type ComputerUsePolicyContext,
   normalizeComputerUseAction,
+  classifyComputerUseRequest,
 } from "./src/computer-use-policy.js";
 import { computerUseScopeKey } from "./src/computer-use-scope.js";
 import { createComputerUseTool, createDesktopUseTool, normalizeParams, prepareComputerUseRequest } from "./src/plugin-tool.js";
@@ -80,10 +81,13 @@ export default definePluginEntry({
         }
         const action = normalizeComputerUseAction(params.action);
         const known = policyContexts.get(scope(ctx));
-        const fileAction = ["file-list", "file-read", "file-write"].includes(action) || (["inspect", "screenshot"].includes(action) && params.path);
-        if (fileAction && !known?.workspaceDir) return { block: true, blockReason: "Computer-use workspace context is unavailable; file approval cannot be established." };
+        const policyContext = { ...known, agentId: ctx.agentId, sessionKey: ctx.sessionKey };
+        const preliminary = classifyComputerUseRequest(params, policyContext);
+        if (preliminary.status === "blocked") return { block: true, blockReason: preliminary.reason };
+        const scopedAction = ["shell", "file-list", "file-read", "file-write"].includes(action) || (["inspect", "screenshot"].includes(action) && params.path);
+        if (scopedAction && !known?.workspaceDir) return { block: true, blockReason: "Computer-use workspace context is missing or ambiguous; target approval cannot be established." };
         let prepared;
-        try { prepared = await prepareComputerUseRequest(params, { ...known, agentId: ctx.agentId, sessionKey: ctx.sessionKey }); }
+        try { prepared = await prepareComputerUseRequest(params, policyContext); }
         catch { return { block: true, blockReason: "Computer-use target could not be resolved safely." }; }
         params = prepared.params;
         const decision = prepared.decision;
@@ -116,7 +120,7 @@ export default definePluginEntry({
             },
           };
         }
-        return fileAction ? { params } : undefined;
+        return scopedAction ? { params } : undefined;
       },
       { priority: 100 },
     );

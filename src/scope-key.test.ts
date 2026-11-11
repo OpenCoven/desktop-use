@@ -134,3 +134,12 @@ for (const toolName of [COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME]) {
     }
   });
 }
+
+for (const toolName of [COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME]) {
+  test(`${toolName} shell approval requires its own authenticated workspace context`, async () => {
+    const hook = hookFor([{ agentId: "computer-use", sessionKey: "known", workspaceDir: "/tmp/known-workspace" }]);
+    const result = await hook({ toolName, params: { action: "shell", command: process.execPath, args: ["-e", "process.exit(0)"] } }, { agentId: "computer-use", sessionKey: "unknown" }) as any;
+    assert.equal(result.block, true);
+    assert.equal(result.requireApproval, undefined);
+  });
+}
