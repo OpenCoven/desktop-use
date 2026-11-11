@@ -104,7 +104,7 @@ export type ComputerUseDecision = {
 };
 
 export type NormalizedAdapterResult = {
-  status: "success" | "blocked" | "needsApproval" | "unsupported" | "error";
+  status: "success" | "blocked" | "needsApproval" | "unsupported" | "error" | "cancelled" | "timeout";
   success: boolean;
   evidence: Record<string, unknown>;
   result: unknown;
@@ -473,10 +473,10 @@ function isSensitivePath(value: string): boolean {
 }
 
 function isOutsideWorkspace(target: string, workspaceDir: string | undefined): boolean {
-  if (!workspaceDir || !target.trim() || !path.isAbsolute(target)) {
+  if (!workspaceDir || !target.trim()) {
     return false;
   }
-  const relative = path.relative(path.resolve(workspaceDir), path.resolve(target));
+  const relative = path.relative(path.resolve(workspaceDir), path.resolve(workspaceDir, target));
   return relative.startsWith("..") || path.isAbsolute(relative);
 }
 
@@ -524,7 +524,9 @@ export function normalizeAdapterResult(
   const action = payload && typeof payload === "object" && !Array.isArray(payload)
     ? payload as Record<string, unknown> : {};
   let status: NormalizedAdapterResult["status"] = "error";
-  if (action.supported === false) status = "unsupported";
+  if (action.code === "CANCELLED" || action.cancelled === true) status = "cancelled";
+  else if (action.code === "ETIMEDOUT" || action.timedOut === true) status = "timeout";
+  else if (action.supported === false) status = "unsupported";
   else if (action.requiresConfirmation === true) status = "needsApproval";
   else if (action.ok === true) status = "success";
   return { status, success: status === "success", evidence: options.evidence, result };

@@ -3,7 +3,6 @@ import { promises as fs } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 import {
-  redactComputerUseValue,
   type ComputerUseDecision,
   type ComputerUseParams,
   type ComputerUsePolicyContext,
@@ -54,7 +53,15 @@ export function buildComputerUseAuditEvent(params: {
   approvalId?: string;
   now?: Date;
 }): ComputerUseAuditEvent {
-  const redactedParams = redactComputerUseValue(params.request);
+  // Arbitrary paths, URLs, titles, argv, and free-form reasons can contain secrets too.
+  const summarize = (value: unknown, key = ""): unknown => {
+    if (Array.isArray(value)) return value.map(item => summarize(item));
+    if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, summarize(v, k)]));
+    if (typeof value !== "string") return value;
+    if (key === "action") return params.decision.normalizedAction;
+    return `<${Buffer.byteLength(value, "utf8")}-byte ${["text", "clipboardText", "content"].includes(key) ? "text" : "value"}>`;
+  };
+  const redactedParams = summarize(params.request);
   const resultSummary = {
     status: params.result.status,
     success: params.result.success === true,
@@ -66,7 +73,7 @@ export function buildComputerUseAuditEvent(params: {
     ...(params.ctx?.sessionKey ? { sessionKey: params.ctx.sessionKey } : {}),
     ...(params.toolCallId ? { toolCallId: params.toolCallId } : {}),
     action: params.decision.normalizedAction,
-    target: params.decision.target,
+    target: `<${Buffer.byteLength(params.decision.target, "utf8")}-byte target>`,
     risk: params.decision.risk,
     ...(params.approvalId ? { approvalId: params.approvalId } : {}),
     params: redactedParams,

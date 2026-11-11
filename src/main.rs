@@ -1,18 +1,50 @@
+#[cfg(all(test, unix))]
+mod backend_fixtures;
+mod process;
+use std::cell::Cell;
 use std::env;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+thread_local! { static DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) }; }
+fn deadline() -> Instant {
+    DEADLINE.with(|d| {
+        let end = d
+            .get()
+            .unwrap_or_else(|| Instant::now() + Duration::from_secs(30));
+        d.set(Some(end));
+        end
+    })
+}
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() {
+    process::install_cancellation();
     let args: Vec<String> = env::args().skip(1).collect();
     let result = run(args);
     println!("{}", result);
 }
 
 fn run(args: Vec<String>) -> String {
+    let timeout = match value(&args, "--timeout-ms") {
+        None => 30_000,
+        Some(raw) => match raw.parse::<u64>() {
+            Ok(ms @ 1000..=120_000) => ms,
+            _ => {
+                return json_obj(vec![
+                    ("ok", "false".into()),
+                    (
+                        "error",
+                        json_string("--timeout-ms must be an integer from 1000 to 120000."),
+                    ),
+                ])
+            }
+        },
+    };
+    DEADLINE.with(|d| d.set(Some(Instant::now() + Duration::from_millis(timeout))));
     if args.is_empty() || has_flag(&args, "--help") || has_flag(&args, "-h") {
         return help_json();
     }
@@ -129,23 +161,42 @@ fn run_macos(command: &'static str, args: &[String]) -> String {
         "doctor" => run_peekaboo(vec!["permissions".into()], false, true),
         "inspect" => run_peekaboo(build_inspect_args(args), false, false),
         "screenshot" => run_peekaboo(build_screenshot_args(args), false, false),
-        "click" | "type-text" | "keypress" | "scroll" | "focus"
-            if !has_flag(args, "--confirm") =>
-        {
+        "click" | "type-text" | "keypress" | "scroll" | "focus" if !has_flag(args, "--confirm") => {
             confirmation_required(command)
         }
-        "click" => run_peekaboo(build_click_args(&strip_flag(args, "--confirm")), false, false),
+        "click" => run_peekaboo(
+            build_click_args(&strip_flag(args, "--confirm")),
+            false,
+            false,
+        ),
         "type-text" => run_peekaboo(build_type_args(&strip_flag(args, "--confirm")), true, false),
-        "keypress" => run_peekaboo(build_press_args(&strip_flag(args, "--confirm")), false, false),
-        "scroll" => run_peekaboo(build_scroll_args(&strip_flag(args, "--confirm")), false, false),
-        "focus" => run_peekaboo(build_focus_args(&strip_flag(args, "--confirm")), false, false),
-        _ => unreachable!("normalize_command returned {} but match did not handle it", command),
+        "keypress" => run_peekaboo(
+            build_press_args(&strip_flag(args, "--confirm")),
+            false,
+            false,
+        ),
+        "scroll" => run_peekaboo(
+            build_scroll_args(&strip_flag(args, "--confirm")),
+            false,
+            false,
+        ),
+        "focus" => run_peekaboo(
+            build_focus_args(&strip_flag(args, "--confirm")),
+            false,
+            false,
+        ),
+        _ => unreachable!(
+            "normalize_command returned {} but match did not handle it",
+            command
+        ),
     }
 }
 
 fn run_linux(session: LinuxSession, command: &'static str, args: &[String]) -> String {
-    if matches!(command, "click" | "type-text" | "keypress" | "scroll" | "focus")
-        && !has_flag(args, "--confirm")
+    if matches!(
+        command,
+        "click" | "type-text" | "keypress" | "scroll" | "focus"
+    ) && !has_flag(args, "--confirm")
     {
         return confirmation_required(command);
     }
@@ -159,7 +210,10 @@ fn run_linux(session: LinuxSession, command: &'static str, args: &[String]) -> S
         "keypress" => linux_keypress(session, &stripped),
         "scroll" => linux_scroll(session, &stripped),
         "focus" => linux_focus(session, &stripped),
-        _ => unreachable!("normalize_command returned {} but match did not handle it", command),
+        _ => unreachable!(
+            "normalize_command returned {} but match did not handle it",
+            command
+        ),
     }
 }
 
@@ -191,11 +245,45 @@ fn confirmation_required(action: &str) -> String {
     ])
 }
 
+fn takes_value(flag: &str) -> bool {
+    matches!(
+        flag,
+        "--text"
+            | "--keys"
+            | "--app"
+            | "--window-title"
+            | "--window-id"
+            | "--screen-index"
+            | "--mode"
+            | "--path"
+            | "--format"
+            | "--analyze"
+            | "--on"
+            | "--query"
+            | "--coords"
+            | "--direction"
+            | "--amount"
+            | "--timeout-ms"
+    )
+}
+
 fn strip_flag(args: &[String], flag: &str) -> Vec<String> {
-    args.iter()
-        .filter(|arg| arg.as_str() != flag)
-        .cloned()
-        .collect()
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
+        if takes_value(arg) {
+            out.push(arg.clone());
+            i += 1;
+            if let Some(value) = args.get(i) {
+                out.push(value.clone());
+            }
+        } else if arg != flag {
+            out.push(arg.clone());
+        }
+        i += 1;
+    }
+    out
 }
 
 fn build_inspect_args(args: &[String]) -> Vec<OsString> {
@@ -340,53 +428,68 @@ fn run_peekaboo(
     args.push("--no-remote".into());
     let mut cmd = Command::new("peekaboo");
     cmd.args(&args);
-    match cmd.output() {
+    match process::run(&mut cmd, deadline()) {
         Ok(output) => {
-            let ok = output.status.success();
-            let code = output.status.code().unwrap_or(-1);
-            let stdout = if redact_type_text {
-                "<redacted for type action>".to_string()
-            } else {
-                String::from_utf8_lossy(&output.stdout).to_string()
-            };
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            let include_permission_guide = always_include_permission_guide
-                || looks_like_permission_failure(&stdout)
-                || looks_like_permission_failure(&stderr);
+            let permission =
+                looks_like_permission_failure(&String::from_utf8_lossy(&output.stdout))
+                    || looks_like_permission_failure(&String::from_utf8_lossy(&output.stderr));
+            let parsed = serde_json::from_slice::<serde_json::Value>(&output.stdout).ok();
+            let backend_ok = parsed
+                .as_ref()
+                .and_then(|v| v.get("success").or_else(|| v.get("ok")))
+                .and_then(|v| v.as_bool())
+                == Some(true);
+            let ok = output.status.success() && backend_ok;
             let mut fields = vec![
                 ("ok", bool_json(ok)),
-                ("supported", "true".to_string()),
+                ("supported", "true".into()),
                 ("platform", json_string(env::consts::OS)),
                 ("backend", json_string("peekaboo")),
-                ("exitCode", code.to_string()),
-                (
-                    "command",
-                    json_array_strings(&redact_args(&args, redact_type_text)),
-                ),
-                ("stdout", json_string(&stdout)),
-                ("stdoutRedacted", bool_json(redact_type_text)),
-                ("stderr", json_string(&stderr)),
+                ("exitCode", output.status.code().unwrap_or(-1).to_string()),
+                ("stdoutRedacted", bool_json(redact_type_text || !ok)),
             ];
-            if include_permission_guide {
+            if ok && !redact_type_text {
+                fields.push(("result", parsed.unwrap().to_string()));
+            } else if !ok {
+                let code = if permission {
+                    "PERMISSION_ERROR"
+                } else if parsed.is_none() {
+                    "MALFORMED_OUTPUT"
+                } else {
+                    "BACKEND_ERROR"
+                };
+                fields.push(("code", json_string(code)));
+                fields.push((
+                    "error",
+                    json_string(
+                        "Peekaboo did not complete the action. Raw diagnostics were withheld.",
+                    ),
+                ));
+            }
+            if always_include_permission_guide || permission {
                 fields.push(("permissionGuide", permission_guide_json()));
             }
             json_obj(fields)
         }
-        Err(err) => json_obj(vec![
-            ("ok", "false".to_string()),
-            ("supported", "true".to_string()),
-            ("platform", json_string(env::consts::OS)),
-            ("backend", json_string("peekaboo")),
-            ("error", json_string(&err.to_string())),
-            (
-                "hint",
-                json_string(
-                    "Install Peekaboo and grant Screen Recording + Accessibility permissions.",
-                ),
-            ),
-            ("permissionGuide", permission_guide_json()),
-        ]),
+        Err(err) => process_failure_json("peekaboo", &err),
     }
+}
+
+fn process_failure_json(backend: &str, error: &process::Failure) -> String {
+    json_obj(vec![
+        ("ok", "false".into()),
+        ("supported", "true".into()),
+        ("backend", json_string(backend)),
+        ("code", json_string(error.code())),
+        ("timedOut", bool_json(error.code() == "ETIMEDOUT")),
+        ("cancelled", bool_json(error.code() == "CANCELLED")),
+        (
+            "error",
+            json_string(
+                "Helper execution failed; raw command arguments and diagnostics were withheld.",
+            ),
+        ),
+    ])
 }
 
 fn looks_like_permission_failure(text: &str) -> bool {
@@ -565,7 +668,7 @@ fn linux_tool_inventory_json(tools: &[LinuxToolStatus]) -> String {
 
 fn required_tools(session: LinuxSession) -> &'static [&'static str] {
     match session {
-        LinuxSession::X11 => &["scrot", "xdotool"],   // maim is alt for scrot; wmctrl optional
+        LinuxSession::X11 => &["scrot", "xdotool"], // maim is alt for scrot; wmctrl optional
         LinuxSession::Wayland => &["grim", "ydotool"], // wtype optional fallback
     }
 }
@@ -680,22 +783,41 @@ fn x11_screenshot(path: &str, mode: &str, extras: &[(&'static str, String)]) -> 
     if resolve_path_binary("maim").is_some() {
         // maim has no built-in active-window selector; require xdotool for that.
         if matches!(mode, "window" | "frontmost") && resolve_path_binary("xdotool").is_some() {
-            let active = Command::new("xdotool")
-                .args(["getactivewindow"])
-                .output()
-                .ok()
-                .and_then(|o| {
-                    if o.status.success() {
-                        Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
-                    } else {
-                        None
-                    }
-                });
-            if let Some(id) = active {
-                let a: Vec<OsString> = vec!["-i".into(), id.into(), path.into()];
-                return run_linux_command("maim", a, "maim", false, extras);
+            let mut cmd = Command::new("xdotool");
+            cmd.arg("getactivewindow");
+            let output = match process::run(&mut cmd, deadline()) {
+                Ok(o) if o.status.success() => o,
+                Ok(_) => {
+                    return linux_error_json(
+                        "Active window lookup failed; no screenshot was taken.",
+                        None,
+                    )
+                }
+                Err(e) => return process_failure_json("xdotool", &e),
+            };
+            let id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if id.parse::<u64>().is_err() {
+                return linux_error_json(
+                    "Malformed active window id; no screenshot was taken.",
+                    None,
+                );
             }
+            return run_linux_command(
+                "maim",
+                vec!["-i".into(), id.into(), path.into()],
+                "maim",
+                false,
+                extras,
+            );
         }
+        if matches!(mode, "window" | "frontmost") {
+            return missing_tool_json(
+                "xdotool",
+                "Window capture with maim requires xdotool.",
+                "x11-screenshot",
+            );
+        }
+
         let a: Vec<OsString> = vec![path.into()];
         return run_linux_command("maim", a, "maim", false, extras);
     }
@@ -735,14 +857,19 @@ fn linux_click(session: LinuxSession, args: &[String]) -> String {
     let (x, y) = match parse_coords(&coords) {
         Some(c) => c,
         None => {
-            return linux_error_json(
-                "--coords must be in x,y form, e.g. 120,240.",
-                None,
-            );
+            return linux_error_json("--coords must be in x,y form, e.g. 120,240.", None);
         }
     };
-    let button = if has_flag(args, "--right") { 3u32 } else { 1u32 };
-    let times = if has_flag(args, "--double") { 2u32 } else { 1u32 };
+    let button = if has_flag(args, "--right") {
+        3u32
+    } else {
+        1u32
+    };
+    let times = if has_flag(args, "--double") {
+        2u32
+    } else {
+        1u32
+    };
     match session {
         LinuxSession::X11 => x11_click(x, y, button, times),
         LinuxSession::Wayland => wayland_click(x, y, button, times),
@@ -826,11 +953,7 @@ fn x11_type_text(text: &str, clear: bool, press_return: bool) -> String {
     if clear {
         steps.push(LinuxStep {
             program: "xdotool",
-            args: vec![
-                "key".into(),
-                "--clearmodifiers".into(),
-                "ctrl+a".into(),
-            ],
+            args: vec!["key".into(), "--clearmodifiers".into(), "ctrl+a".into()],
         });
         steps.push(LinuxStep {
             program: "xdotool",
@@ -1072,7 +1195,9 @@ fn linux_focus(session: LinuxSession, args: &[String]) -> String {
 
     match session {
         LinuxSession::X11 => x11_focus(app.as_deref(), title.as_deref(), window_id.as_deref()),
-        LinuxSession::Wayland => wayland_focus(app.as_deref(), title.as_deref(), window_id.as_deref()),
+        LinuxSession::Wayland => {
+            wayland_focus(app.as_deref(), title.as_deref(), window_id.as_deref())
+        }
     }
 }
 
@@ -1098,8 +1223,12 @@ fn x11_focus(app: Option<&str>, title: Option<&str>, window_id: Option<&str>) ->
             return run_linux_command("wmctrl", cmd_args, "wmctrl", false, &[]);
         }
         if resolve_path_binary("xdotool").is_some() {
-            let cmd_args: Vec<OsString> =
-                vec!["search".into(), "--class".into(), a.into(), "windowactivate".into()];
+            let cmd_args: Vec<OsString> = vec![
+                "search".into(),
+                "--class".into(),
+                a.into(),
+                "windowactivate".into(),
+            ];
             return run_linux_command("xdotool", cmd_args, "xdotool", false, &[]);
         }
         return missing_tool_json(
@@ -1114,8 +1243,12 @@ fn x11_focus(app: Option<&str>, title: Option<&str>, window_id: Option<&str>) ->
             return run_linux_command("wmctrl", cmd_args, "wmctrl", false, &[]);
         }
         if resolve_path_binary("xdotool").is_some() {
-            let cmd_args: Vec<OsString> =
-                vec!["search".into(), "--name".into(), t.into(), "windowactivate".into()];
+            let cmd_args: Vec<OsString> = vec![
+                "search".into(),
+                "--name".into(),
+                t.into(),
+                "windowactivate".into(),
+            ];
             return run_linux_command("xdotool", cmd_args, "xdotool", false, &[]);
         }
         return missing_tool_json(
@@ -1124,7 +1257,10 @@ fn x11_focus(app: Option<&str>, title: Option<&str>, window_id: Option<&str>) ->
             "x11-focus",
         );
     }
-    linux_error_json("focus requires --app, --window-title, or --window-id on Linux.", None)
+    linux_error_json(
+        "focus requires --app, --window-title, or --window-id on Linux.",
+        None,
+    )
 }
 
 fn wayland_focus(app: Option<&str>, title: Option<&str>, window_id: Option<&str>) -> String {
@@ -1138,7 +1274,10 @@ fn wayland_focus(app: Option<&str>, title: Option<&str>, window_id: Option<&str>
             let escaped = t.replace('"', "\\\"");
             format!("[title=\"{}\"] focus", escaped)
         } else {
-            return linux_error_json("focus requires --app, --window-title, or --window-id on Linux.", None);
+            return linux_error_json(
+                "focus requires --app, --window-title, or --window-id on Linux.",
+                None,
+            );
         };
         let cmd_args: Vec<OsString> = vec![selector.into()];
         return run_linux_command("swaymsg", cmd_args, "swaymsg", false, &[]);
@@ -1224,49 +1363,32 @@ fn run_linux_command(
 ) -> String {
     let mut cmd = Command::new(program);
     cmd.args(&args);
-    match cmd.output() {
+    match process::run(&mut cmd, deadline()) {
         Ok(output) => {
             let ok = output.status.success();
-            let code = output.status.code().unwrap_or(-1);
-            let stdout = if redact_type_text {
-                "<redacted for type action>".to_string()
-            } else {
-                String::from_utf8_lossy(&output.stdout).to_string()
-            };
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
             let mut fields = vec![
                 ("ok", bool_json(ok)),
-                ("supported", "true".to_string()),
+                ("supported", "true".into()),
                 ("platform", json_string(env::consts::OS)),
                 ("backend", json_string(backend_label)),
-                ("exitCode", code.to_string()),
-                (
-                    "command",
-                    json_array_program_args(program, &redact_args(&args, redact_type_text)),
-                ),
-                ("stdout", json_string(&stdout)),
-                ("stdoutRedacted", bool_json(redact_type_text)),
-                ("stderr", json_string(&stderr)),
+                ("exitCode", output.status.code().unwrap_or(-1).to_string()),
+                ("stdoutRedacted", "true".into()),
             ];
+            if !ok {
+                fields.push(("code", json_string("BACKEND_ERROR")));
+                fields.push((
+                    "error",
+                    json_string("Helper rejected the action; raw diagnostics were withheld."),
+                ));
+            }
+            // Diagnostic argv/output may contain text, titles, secrets, or subprocess echoes.
+            let _ = redact_type_text;
             for (k, v) in extra_fields {
                 fields.push((k, v.clone()));
             }
             json_obj(fields)
         }
-        Err(err) => json_obj(vec![
-            ("ok", "false".to_string()),
-            ("supported", "true".to_string()),
-            ("platform", json_string(env::consts::OS)),
-            ("backend", json_string(backend_label)),
-            ("error", json_string(&err.to_string())),
-            (
-                "hint",
-                json_string(&format!(
-                    "Failed to invoke `{}`. Run `coven-desktop-use doctor` for installation guidance.",
-                    program
-                )),
-            ),
-        ]),
+        Err(err) => process_failure_json(backend_label, &err),
     }
 }
 
@@ -1276,58 +1398,47 @@ fn run_linux_steps(
     redact_type_text: bool,
     extra_fields: &[(&'static str, String)],
 ) -> String {
-    let mut step_jsons: Vec<String> = Vec::with_capacity(steps.len());
-    let mut overall_ok = true;
-    let mut last_exit: i32 = 0;
-    for step in &steps {
-        let mut cmd = Command::new(step.program);
-        cmd.args(&step.args);
-        let entry = match cmd.output() {
-            Ok(output) => {
-                let ok = output.status.success();
-                if !ok {
-                    overall_ok = false;
-                }
-                let code = output.status.code().unwrap_or(-1);
-                last_exit = code;
-                let stdout = if redact_type_text {
-                    "<redacted for type action>".to_string()
-                } else {
-                    String::from_utf8_lossy(&output.stdout).to_string()
-                };
-                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                json_obj(vec![
-                    ("program", json_string(step.program)),
-                    (
-                        "args",
-                        json_array_strings(&redact_args(&step.args, redact_type_text)),
-                    ),
-                    ("exitCode", code.to_string()),
-                    ("ok", bool_json(ok)),
-                    ("stdout", json_string(&stdout)),
-                    ("stderr", json_string(&stderr)),
-                ])
-            }
-            Err(err) => {
-                overall_ok = false;
-                json_obj(vec![
-                    ("program", json_string(step.program)),
-                    ("ok", "false".to_string()),
-                    ("error", json_string(&err.to_string())),
-                ])
-            }
-        };
-        step_jsons.push(entry);
+    let mut completed = 0;
+    let mut entries = Vec::new();
+    let mut failure = None;
+    for (index, step) in steps.iter().enumerate() {
+        let entry = run_linux_command(
+            step.program,
+            step.args.clone(),
+            backend_label,
+            redact_type_text,
+            &[],
+        );
+        let result: serde_json::Value = serde_json::from_str(&entry).unwrap();
+        let ok = result["ok"] == true;
+        entries.push(entry);
+        if !ok {
+            failure = Some((index, result));
+            break;
+        }
+        completed += 1;
     }
     let mut fields = vec![
-        ("ok", bool_json(overall_ok)),
-        ("supported", "true".to_string()),
+        ("ok", bool_json(failure.is_none())),
+        ("supported", "true".into()),
         ("platform", json_string(env::consts::OS)),
         ("backend", json_string(backend_label)),
-        ("exitCode", last_exit.to_string()),
-        ("steps", format!("[{}]", step_jsons.join(","))),
-        ("stdoutRedacted", bool_json(redact_type_text)),
+        ("completedSteps", completed.to_string()),
+        ("totalSteps", steps.len().to_string()),
+        ("steps", format!("[{}]", entries.join(","))),
+        ("stdoutRedacted", "true".into()),
     ];
+    if let Some((index, result)) = failure {
+        fields.push(("failedStep", index.to_string()));
+        fields.push(("partial", bool_json(completed > 0)));
+        for key in ["exitCode", "code", "error", "timedOut", "cancelled"] {
+            if let Some(v) = result.get(key) {
+                fields.push((key, v.to_string()));
+            }
+        }
+    } else {
+        fields.push(("exitCode", "0".into()));
+    }
     for (k, v) in extra_fields {
         fields.push((k, v.clone()));
     }
@@ -1366,13 +1477,7 @@ fn linux_error_json(message: &str, hint: Option<&str>) -> String {
     json_obj(fields)
 }
 
-fn json_array_program_args(program: &str, args: &[String]) -> String {
-    let mut all: Vec<String> = Vec::with_capacity(args.len() + 1);
-    all.push(program.to_string());
-    all.extend_from_slice(args);
-    json_array_strings(&all)
-}
-
+#[cfg(test)]
 fn redact_args(args: &[OsString], redact_type_text: bool) -> Vec<String> {
     let mut items: Vec<String> = args
         .iter()
@@ -1399,17 +1504,26 @@ fn redact_args(args: &[OsString], redact_type_text: bool) -> Vec<String> {
 }
 
 fn value(args: &[String], key: &str) -> Option<String> {
-    args.windows(2).find_map(|w| {
-        if w[0] == key {
-            Some(w[1].clone())
-        } else {
-            None
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == key {
+            return args.get(i + 1).cloned();
         }
-    })
+        i += if takes_value(&args[i]) { 2 } else { 1 };
+    }
+    None
 }
 
 fn has_flag<S: AsRef<str>>(args: &[S], key: &str) -> bool {
-    args.iter().any(|arg| arg.as_ref() == key)
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i].as_ref();
+        if arg == key {
+            return true;
+        }
+        i += if takes_value(arg) { 2 } else { 1 };
+    }
+    false
 }
 
 fn output_path(value: Option<String>, kind: &str, format: &str) -> String {
@@ -1612,7 +1726,10 @@ mod tests {
         // ydotool / Peekaboo: `type TEXT`.
         let args = vec![OsString::from("type"), OsString::from("hello")];
         let redacted = redact_args(&args, true);
-        assert_eq!(redacted, vec!["type".to_string(), "<5-byte text>".to_string()]);
+        assert_eq!(
+            redacted,
+            vec!["type".to_string(), "<5-byte text>".to_string()]
+        );
     }
 
     #[test]
@@ -1659,27 +1776,108 @@ mod tests {
     #[test]
     fn linux_minimum_tools_requires_capture_and_input() {
         let none = vec![
-            LinuxToolStatus { name: "scrot", found: false, path: None },
-            LinuxToolStatus { name: "xdotool", found: false, path: None },
+            LinuxToolStatus {
+                name: "scrot",
+                found: false,
+                path: None,
+            },
+            LinuxToolStatus {
+                name: "xdotool",
+                found: false,
+                path: None,
+            },
         ];
         assert!(!linux_minimum_tools_present(LinuxSession::X11, &none));
 
         let only_capture = vec![
-            LinuxToolStatus { name: "scrot", found: true, path: Some("/usr/bin/scrot".into()) },
-            LinuxToolStatus { name: "xdotool", found: false, path: None },
+            LinuxToolStatus {
+                name: "scrot",
+                found: true,
+                path: Some("/usr/bin/scrot".into()),
+            },
+            LinuxToolStatus {
+                name: "xdotool",
+                found: false,
+                path: None,
+            },
         ];
-        assert!(!linux_minimum_tools_present(LinuxSession::X11, &only_capture));
+        assert!(!linux_minimum_tools_present(
+            LinuxSession::X11,
+            &only_capture
+        ));
 
         let both = vec![
-            LinuxToolStatus { name: "scrot", found: true, path: Some("/usr/bin/scrot".into()) },
-            LinuxToolStatus { name: "xdotool", found: true, path: Some("/usr/bin/xdotool".into()) },
+            LinuxToolStatus {
+                name: "scrot",
+                found: true,
+                path: Some("/usr/bin/scrot".into()),
+            },
+            LinuxToolStatus {
+                name: "xdotool",
+                found: true,
+                path: Some("/usr/bin/xdotool".into()),
+            },
         ];
         assert!(linux_minimum_tools_present(LinuxSession::X11, &both));
 
         let wl_ok = vec![
-            LinuxToolStatus { name: "grim", found: true, path: Some("/usr/bin/grim".into()) },
-            LinuxToolStatus { name: "ydotool", found: true, path: Some("/usr/bin/ydotool".into()) },
+            LinuxToolStatus {
+                name: "grim",
+                found: true,
+                path: Some("/usr/bin/grim".into()),
+            },
+            LinuxToolStatus {
+                name: "ydotool",
+                found: true,
+                path: Some("/usr/bin/ydotool".into()),
+            },
         ];
         assert!(linux_minimum_tools_present(LinuxSession::Wayland, &wl_ok));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod helper_regressions {
+    use super::*;
+
+    #[test]
+    fn sequence_stops_at_first_failure_and_reports_partial_progress() {
+        let marker =
+            env::temp_dir().join(format!("desktopuse-must-not-run-{}", std::process::id()));
+        let result = run_linux_steps(
+            vec![
+                LinuxStep {
+                    program: "/bin/sh",
+                    args: vec!["-c".into(), "exit 7".into()],
+                },
+                LinuxStep {
+                    program: "/usr/bin/touch",
+                    args: vec![marker.clone().into_os_string()],
+                },
+            ],
+            "fixture",
+            false,
+            &[],
+        );
+        let ran = marker.exists();
+        let _ = std::fs::remove_file(marker);
+        assert!(!ran, "later action executed after first failure: {result}");
+        assert!(result.contains("\"failedStep\":0"), "{result}");
+        assert!(result.contains("\"completedSteps\":0"), "{result}");
+    }
+
+    #[test]
+    fn typing_failure_never_echoes_private_output_or_stderr() {
+        let result = run_linux_command(
+            "/bin/sh",
+            vec![
+                "-c".into(),
+                "printf arbitrary-private-text; printf arbitrary-private-text >&2; exit 1".into(),
+            ],
+            "fixture",
+            true,
+            &[],
+        );
+        assert!(!result.contains("arbitrary-private-text"), "{result}");
     }
 }

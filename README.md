@@ -208,3 +208,15 @@ Real adapter health check:
 ```bash
 cargo run -- doctor
 ```
+
+## Execution bounds, stop, and privacy
+
+The CLI gives each action a cumulative 30-second helper deadline, including every step of a sequence. `--timeout-ms` accepts an integer from 1000 to 120000. The plugin defaults to 30 seconds, or 45 seconds for inspect/screenshot, and shares that budget across its single observation retry. Timed-out and cancelled work is never retried automatically. Each helper has a 1 MiB combined output limit in the CLI; plugin host helpers have a 64,000-byte combined limit, and the adapter JSON has a 10 MiB limit.
+
+On supported Unix hosts, owned helpers run in a separate process group. The CLI kills and reaps that group on completion, deadline, or SIGTERM/SIGINT cancellation. The plugin requests TERM and escalates to KILL after a 250 ms cleanup grace, so an uncooperative helper cannot hold the call open indefinitely. Result codes distinguish `ETIMEDOUT`, `CANCELLED`, missing dependencies, malformed output, and backend rejection. Multi-step actions stop at the first failure and report completed steps and the failing step; completed input is not rolled back.
+
+Plugin `stop` requests cancellation of active calls in the same agent/session/workspace, including calls from another instance of the tool in this process. It returns `cancelling` while those calls settle. The host may also supply an AbortSignal as the third execute argument. Stop does not revoke future approvals, stop other gateway processes, undo completed effects, or interrupt a filesystem syscall already in progress. Injected adapter runners must honor the AbortSignal; the built-in runner owns and terminates its helper processes.
+
+File targets are resolved through symlinks before approval classification; relative traversal and symlink escapes require approval for the canonical external target. File and clipboard contents are returned only with `includeText:true`. These checks prevent static path escapes; they are not an OS filesystem sandbox against another process concurrently replacing directories or symlinks. Use a workspace without hostile concurrent writers.
+
+Raw failing-helper stdout, stderr, and argv are withheld from process diagnostics. Durable audit events summarize free-form strings, including paths, titles, URLs, argv, and reasons, and never store file/clipboard/text contents. Audit persistence errors add `audit: { written: false, code: "AUDIT_WRITE_FAILED" }` while preserving the operation outcome, since the operation may already have completed. Do not blindly retry an action after an audit failure.
