@@ -62,38 +62,26 @@ sudo apt install scrot xdotool wmctrl
 sudo apt install grim wtype ydotool
 ```
 
-### Wayland notes
+### Wayland capabilities and fallbacks
 
-- `ydotool` synthesises mouse events through `/dev/uinput`. After installing
-  it, enable the daemon and ensure your user can talk to it:
+Doctor reports per-action states (`available`, `degraded`, `unsupported`, or `unverified`) and `runtimeVerified:false`. Available means the required executable/protocol was found; it is not desktop acceptance. When installed, `wayland-info` probes the compositor registry within two seconds of the shared action deadline. A missing or failed probe leaves protocols unverified. Installing a helper alone does not prove compositor support, ydotoold access, uinput permissions, or a successful desktop action.
 
-  ```bash
-  sudo systemctl enable --now ydotoold
-  sudo usermod -aG input "$USER"
-  # log out and back in
-  ```
+- `wtype` needs `zwp_virtual_keyboard_manager_v1`; an advertised registry without it rules out wtype. Without a successful registry probe, protocol support remains unverified regardless of desktop name. A verified wtype provider is preferred; otherwise installed ydotool is preferred over an unverified wtype provider. Input is never automatically resent through a second provider after failure.
+- `ydotool` needs a running ydotoold and working uinput access. Typing is restricted to ASCII and depends on the active keyboard layout; Unicode needs wtype. Literal backslash escapes are disabled. Common keys/chords use evdev keycodes, and unsupported keys are rejected before any input. Do not treat installed-tool inventory as proof of daemon permissions.
+- Scroll uses `ydotool mousemove --wheel` when ydotool is installed. Otherwise wtype sends page/arrow keys and returns an explicit degraded result; amount counts key presses in that fallback. A failed wheel request is not replayed as page keys.
+- `grim` needs `zwlr_screencopy_manager_v1` or, with compatible grim versions, the `ext_image_copy_capture_manager_v1` and `ext_output_image_capture_source_manager_v1` pair. The ext-only path remains unverified until the installed helper succeeds. Window/frontmost capture is unsupported and never silently broadened to the full desktop; request `mode:screen` explicitly. GNOME/KDE capture is unsupported when the registry does not advertise the protocol, or unverified when a probe is unavailable.
+- Focus supports Sway only, with SWAYSOCK and swaymsg. App, title, and numeric id selectors are combined. App ids are exact literal patterns; title fragments are escaped literal patterns, and the JSON IPC response must report success. Other compositor focus is unsupported.
 
-- `wtype` only works on wlroots-based compositors (Sway, Hyprland, river).
-  GNOME Mutter and KDE KWin do not accept `wtype` events; on those
-  compositors the adapter falls back to `ydotool` for typing.
-- Window focus on Wayland is compositor-specific. `focus` works on Sway when
-  `SWAYSOCK` is set and `swaymsg` is on `PATH`. GNOME Mutter has no public
-  CLI for window activation.
-- `scroll` on Wayland degrades to `Page_Up`/`Page_Down` keystrokes via
-  `wtype` because there is no portable scroll-wheel injector across
-  Wayland compositors. Install `wlrctl` if you need real wheel events on
-  wlroots compositors. The response includes `degraded: ...` when this
-  fallback is taken.
+Linux inspect returns a screenshot without AT-SPI element ids. Input uses coordinates or the current focus. App/window/screen/element selectors on Linux actions that cannot honor them are rejected before any helper runs; focus remains a separate approved action. X11 active-window capture uses scrot, or maim with a successful numeric xdotool lookup. Failed lookup never captures the entire screen. Screenshot filenames have explicit argv option boundaries.
 
-### What is *not* supported on Linux yet
+### Linux clipboard and launch integrations
 
-- AT-SPI element annotation. `inspect` captures a screenshot but does not
-  return `B1`/`T2`-style element ids, so `click --on B1` is unavailable.
-  Use `click --coords x,y --confirm` instead, after a screenshot.
-- "Active window" capture on vanilla Wayland (`grim` has no notion of
-  focused window). On X11, `scrot --focused` and `maim -i $(xdotool
-  getactivewindow)` both work and are picked automatically when
-  `--mode window` is requested.
+The plugin supports clipboard reads/writes through wl-paste/wl-copy in Wayland, or xclip with xsel as an X11 fallback. Clipboard actions retain the existing explicit approval gate, write text through stdin, and return contents only with includeText. Wayland does not silently substitute the XWayland clipboard. Missing tools or a headless session produce a clear unsupported response; compositor/selection access failures produce bounded process errors.
+
+Linux browser-open uses installed xdg-open for absolute HTTP(S) URLs without embedded credentials. App-launch uses installed gtk-launch with an installed desktop entry id such as org.example.App.desktop. Both retain the existing approval policy. A successful launch helper acknowledges handoff; it does not prove a page or window appeared.
+
+Clipboard writers and launchers deliberately hand ownership to a clipboard selection server or launched app on success. Those processes can outlive the action and are not killed by a later stop. A timeout, cancellation, or failed handoff still terminates the owned launcher group. All integrations use the documented helper bounds and output limits. No system helpers are installed automatically.
+
 
 ## macOS onboarding
 
@@ -227,6 +215,10 @@ Explicit screenshot/inspect destinations, including aliases, require write appro
 
 Text file reads require regular files and are capped at 1 MiB with incremental cancellation/deadline checks. Directory lists stop after 500 entries. Writes stage private content in the destination directory and check cancellation before the atomic publish; overwrite:false uses an atomic no-replace link. FIFOs and other special files are rejected. A filesystem syscall already in progress cannot be interrupted, and an already published change is not rolled back by Stop.
 
+Linux captures are written into a fresh private staging directory beside the destination, validated as a new nonempty regular file, and atomically published only after success and a cancellation/deadline check. A stale existing destination cannot satisfy capture success. X11 focus resolves all supplied selectors together through wmctrl inventory and rejects ambiguous matches; xdotool fallback accepts only a single selector. Sway combines escaped literal criteria rather than treating identifiers as caller-provided regex.
+
 The approval hook resolves filesystem targets using the authenticated tool-factory workspace before showing the prompt and carries the canonical path into execution. If that path resolves elsewhere after approval, execution clears confirmation and requires a new approval. Missing workspace context fails visibly. Missing path ancestors use platform-aware relative paths, including Windows drive roots; Windows graphical support remains unimplemented.
 
 Timeout/cancellation cleanup reserves up to 250 ms for the adapter to report completedSteps, totalSteps, failedStep, and partial. Only validated counters are retained; raw diagnostics are withheld. When no valid report is available, progressUnknown:true makes that uncertainty explicit. Where the configured budget permits, the Rust deadline expires 100 ms before the host timer. A timeout option without a value is rejected before dispatch.
+
+Screenshot encoding follows --format independently of the destination suffix. A ydotool-only input request skips the optional Wayland registry probe because the wtype protocol cannot affect its provider choice.

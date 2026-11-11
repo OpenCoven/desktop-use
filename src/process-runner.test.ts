@@ -27,3 +27,16 @@ test("abort terminates active helper", async () => {
 test("missing helper yields a bounded safe error", async () => {
   await assert.rejects(runProcess("/no/such/private-text", [], { timeoutMs: 1000 }), (e: any) => e.code === "ENOENT" && !String(e).includes("private-text"));
 });
+
+test("timeout removes inherited-pipe descendants after the parent exits", async (t) => {
+  const { mkdtemp, readFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const root = await mkdtemp(join(tmpdir(), "desktopuse-descendant-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const marker = join(root, "should-not-exist");
+  const script = `const {spawn}=require('child_process');spawn(process.execPath,['-e',${JSON.stringify(`setTimeout(()=>require('fs').writeFileSync(${JSON.stringify(marker)},'leaked'),600);`)}],{stdio:['ignore',1,2]}).unref();`;
+  await assert.rejects(runProcess(node, ["-e", script], { timeoutMs: 100 }), (e: any) => e.code === "ETIMEDOUT");
+  await new Promise(r => setTimeout(r, 650));
+  await assert.rejects(readFile(marker), { code: "ENOENT" });
+});

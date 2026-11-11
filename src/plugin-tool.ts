@@ -1,3 +1,4 @@
+import { installedBinary, planHostAction } from "./host-actions.js";
 import { FileActionError, listDirectory, readRegularFile, writeRegularFile } from "./file-actions.js";
 import { runProcess, ProcessFailure } from "./process-runner.js";
 import { createHash } from "node:crypto";
@@ -416,77 +417,34 @@ async function writeTextFile(params: ComputerUseParams, ctx: ComputerUsePolicyCo
     sha256: createHash("sha256").update(content).digest("hex"), overwrote: existed };
 }
 
+async function runHostAction(params: ComputerUseParams, signal?: AbortSignal): Promise<ToolResult["details"]> {
+  const plan = planHostAction(platform(), process.env, installedBinary, params);
+  if (!plan.file || !plan.args) return unsupported(params.action, plan.message ?? "Host integration unavailable.");
+  const { stdout } = await runProcess(plan.file, plan.args, { ...plan, timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS, signal });
+  if (params.action === "clipboard-read" || params.action === "clipboard-write") {
+    const text = params.action === "clipboard-read" ? stdout : params.clipboardText ?? params.text ?? "";
+    return { status: "success", success: true, action: params.action,
+      bytes: Buffer.byteLength(text, "utf8"), sha256: createHash("sha256").update(text).digest("hex"),
+      ...(params.action === "clipboard-read" && params.includeText === true ? { text: truncateText(text) } : {}) };
+  }
+  return { status: "success", success: true, action: params.action, launched: true,
+    result: { message: "Launch helper accepted the request. A rendered page or application window has not been observed." } };
+}
+
 async function readClipboard(params: ComputerUseParams, _ctx: ComputerUsePolicyContext, signal?: AbortSignal): Promise<ToolResult["details"]> {
-  if (platform() !== "darwin") {
-    return unsupported("clipboard-read", "Clipboard adapter currently supports macOS pbpaste only.");
-  }
-  const { stdout } = await runProcess("/usr/bin/pbpaste", [], {
-    timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    signal,
-    maxBuffer: MAX_STDIO_BYTES,
-  });
-  const text = String(stdout ?? "");
-  return {
-    status: "success",
-    success: true,
-    action: "clipboard-read",
-    bytes: Buffer.byteLength(text, "utf8"),
-    sha256: createHash("sha256").update(text).digest("hex"),
-    text: params.includeText === true ? truncateText(text) : undefined,
-
-  };
+  return runHostAction(params, signal);
 }
-
 async function writeClipboard(params: ComputerUseParams, _ctx: ComputerUsePolicyContext, signal?: AbortSignal): Promise<ToolResult["details"]> {
-  if (platform() !== "darwin") {
-    return unsupported("clipboard-write", "Clipboard adapter currently supports macOS pbcopy only.");
-  }
-  const text = params.clipboardText ?? params.text;
-  if (typeof text !== "string") {
-    throw new ToolInputError("clipboard-write requires clipboardText or text.");
-  }
-  await runProcess("/usr/bin/pbcopy", [], { input: text, timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS, signal });
-  return {
-    status: "success",
-    success: true,
-    action: "clipboard-write",
-    bytes: Buffer.byteLength(text, "utf8"),
-    sha256: createHash("sha256").update(text).digest("hex"),
-  };
+  if (typeof (params.clipboardText ?? params.text) !== "string") throw new ToolInputError("clipboard-write requires clipboardText or text.");
+  return runHostAction(params, signal);
 }
-
 async function openBrowser(params: ComputerUseParams, _ctx: ComputerUsePolicyContext, signal?: AbortSignal): Promise<ToolResult["details"]> {
-  const url = requireString(params.url ?? params.path, "browser-open requires url.");
-  if (platform() !== "darwin") {
-    return unsupported("browser-open", "Browser launch currently supports macOS open only.");
-  }
-  await runProcess("/usr/bin/open", [url], {
-    timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    signal,
-  });
-  return {
-    status: "success",
-    success: true,
-    action: "browser-open",
-    url,
-  };
+  requireString(params.url ?? params.path, "browser-open requires url.");
+  return runHostAction(params, signal);
 }
-
 async function launchApp(params: ComputerUseParams, _ctx: ComputerUsePolicyContext, signal?: AbortSignal): Promise<ToolResult["details"]> {
-  const app = requireString(params.app, "app-launch requires app.");
-  if (platform() !== "darwin") {
-    return unsupported("app-launch", "App launch currently supports macOS open -a only.");
-  }
-  await runProcess("/usr/bin/open", ["-a", app], {
-    timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    signal,
-  });
-  return {
-    status: "success",
-    success: true,
-    action: "app-launch",
-    app,
-  };
+  requireString(params.app, "app-launch requires app.");
+  return runHostAction(params, signal);
 }
 
 function unsupported(action: string, message: string): ToolResult["details"] {

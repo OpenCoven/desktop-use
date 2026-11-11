@@ -35,6 +35,7 @@ impl Fixture {
             .env("PATH", &self.root)
             .env("FIXTURE_CONFIG", config.to_string())
             .env("FIXTURE_OUTPUT", self.root.join("result.json"))
+            .env("FIXTURE_READY", self.root.join("ready"))
             .env("FIXTURE_LOG", self.root.join("argv.log"));
         for key in [
             "SWAYSOCK",
@@ -52,7 +53,26 @@ impl Fixture {
                 child.env(key, value.as_str().unwrap());
             }
         }
-        let output = child.output().unwrap();
+        child
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut running = child.spawn().unwrap();
+        if let Some(ms) = config["cancelAfterMs"].as_u64() {
+            let ready = self.root.join("ready");
+            let end = Instant::now() + Duration::from_secs(2);
+            while !ready.exists() && Instant::now() < end {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            if !ready.exists() {
+                let _ = running.kill();
+                panic!("fixture did not initialize cancellation");
+            }
+            std::thread::sleep(Duration::from_millis(ms));
+            unsafe {
+                libc::kill(running.id() as i32, libc::SIGTERM);
+            }
+        }
+        let output = running.wait_with_output().unwrap();
         assert!(
             output.status.success(),
             "{}",
@@ -73,6 +93,8 @@ impl Drop for Fixture {
 #[test]
 #[ignore = "subprocess fixture entry only"]
 fn entry() {
+    process::install_cancellation();
+    fs::write(env::var("FIXTURE_READY").unwrap(), "ready").unwrap();
     let config: Value = serde_json::from_str(&env::var("FIXTURE_CONFIG").unwrap()).unwrap();
     DEADLINE.with(|d| {
         d.set(Some(
@@ -152,6 +174,336 @@ fn type_text_preserves_literal_argv_and_redacts_success_diagnostics() {
     assert!(f.log().contains(text));
     assert!(!result.to_string().contains("private-diagnostic"));
     assert!(!result.to_string().contains(text));
+}
+
+#[test]
+fn wayland_uses_protocol_inventory_and_avoids_wtype_without_virtual_keyboard() {
+    let f = Fixture::new();
+    f.tool(
+        "wayland-info",
+        "printf '%s' \"interface: 'wl_compositor', version: 5, name: 1\"",
+    );
+    f.tool("wtype", r#"printf 'wtype\n' >> "$FIXTURE_LOG"; exit 1"#);
+    f.tool("ydotool", r#"printf '%s\n' "$@" >> "$FIXTURE_LOG"; exit 0"#);
+    let result = f.run(json!({"platform":"wayland","env":{"XDG_CURRENT_DESKTOP":"GNOME"},"args":["type-text","--text","--private-literal","--confirm"]}));
+    assert_eq!(result["ok"], true);
+    assert_eq!(result["backend"], "ydotool");
+    assert!(!f.log().contains("wtype"));
+    assert!(f.log().contains("type\n--escape\n0\n--\n--private-literal"));
+}
+
+#[test]
+fn wayland_doctor_does_not_claim_installed_tools_prove_protocols_or_daemon_access() {
+    let f = Fixture::new();
+    for name in ["grim", "wtype", "ydotool"] {
+        f.tool(name, "exit 0");
+    }
+    f.tool(
+        "wayland-info",
+        "printf '%s' \"interface: 'wl_compositor', version: 5, name: 1\"",
+    );
+    let result = f.run(json!({"platform":"wayland","args":["doctor"]}));
+    assert_eq!(result["ok"], false);
+    assert_eq!(result["capabilities"]["screenshot"]["state"], "unsupported");
+    assert_eq!(result["capabilities"]["typing"]["state"], "unverified");
+    assert_eq!(result["capabilities"]["focus"]["state"], "unsupported");
+}
+
+#[test]
+fn wayland_scroll_degrades_to_page_keys_with_only_wtype() {
+    let f = Fixture::new();
+    f.tool("wtype", r#"printf '%s\n' "$@" >> "$FIXTURE_LOG"; exit 0"#);
+    let result = f.run(json!({"platform":"wayland","args":["scroll","--direction","down","--amount","2","--confirm"]}));
+    assert_eq!(result["ok"], true);
+    assert!(result["degraded"].is_string());
+    assert_eq!(f.log(), "-k\nPage_Down\n-k\nPage_Down\n");
+}
+
+#[test]
+fn wayland_targeted_screenshot_never_silently_captures_entire_desktop() {
+    let f = Fixture::new();
+    f.tool("grim", r#"printf called >> "$FIXTURE_LOG"; exit 0"#);
+    let result = f.run(json!({"platform":"wayland","args":["screenshot","--mode","window"]}));
+    assert_eq!(result["ok"], false);
+    assert_eq!(result["supported"], false);
+    assert!(f.log().is_empty());
+}
+
+#[test]
+fn sway_focus_rejects_command_injection_and_exit_zero_failure_json() {
+    let f = Fixture::new();
+    f.tool("swaymsg", r#"printf '%s\n' "$@" >> "$FIXTURE_LOG"; printf '[{"success":false,"error":"private-diagnostic"}]'"#);
+    let env = json!({"SWAYSOCK":"/fixture-sway"});
+    let result = f.run(json!({"platform":"wayland","env":env,"args":["focus","--window-id","1] focus; exec private-command","--confirm"]}));
+    assert_eq!(result["ok"], false);
+    assert!(f.log().is_empty());
+    let result = f.run(
+        json!({"platform":"wayland","env":env,"args":["focus","--window-id","123","--confirm"]}),
+    );
+    assert_eq!(result["ok"], false);
+    assert!(!result.to_string().contains("private-diagnostic"));
+}
+
+#[test]
+fn ydotool_wheel_and_literal_typing_options_are_correct() {
+    let f = Fixture::new();
+    f.tool("ydotool", r#"printf '%s\n' "$@" >> "$FIXTURE_LOG"; exit 0"#);
+    let result = f.run(json!({"platform":"wayland","args":["scroll","--direction","down","--amount","2","--confirm"]}));
+    assert_eq!(result["ok"], true);
+    assert!(result.get("degraded").is_none());
+    assert_eq!(f.log(), "mousemove\n--wheel\n-x\n0\n-y\n-2\n");
+    fs::write(f.root.join("argv.log"), "").unwrap();
+    let result = f.run(json!({"platform":"wayland","args":["type-text","--text",r"literal\n$(false)","--confirm"]}));
+    assert_eq!(result["ok"], true);
+    assert!(f.log().contains("--escape\n0\n--\nliteral\\n$(false)"));
+}
+
+#[test]
+fn screenshot_paths_cannot_become_helper_options() {
+    let f = Fixture::new();
+    let script = r#"for arg in "$@"; do
+if [ "$arg" = '--' ]; then break; fi
+case "$arg" in --exec=*) printf unsafe-option >> "$FIXTURE_LOG";; esac
+done
+printf '%s\n' "$@" >> "$FIXTURE_LOG"
+exit 0"#;
+    for helper in ["scrot", "maim"] {
+        f.tool(helper, script);
+        let result = f
+            .run(json!({"platform":"x11","args":["screenshot","--path","--exec=private-command"]}));
+        assert_eq!(result["code"], "CAPTURE_MISSING");
+        assert!(!f.log().contains("unsafe-option"));
+        assert!(f.log().contains("--\n"));
+        assert!(!f.log().contains("--exec=private-command"));
+        let _ = fs::remove_file(f.root.join(helper));
+        fs::write(f.root.join("argv.log"), "").unwrap();
+    }
+}
+
+#[test]
+fn linux_rejects_unimplemented_target_selectors_before_any_desktop_helper() {
+    let f = Fixture::new();
+    for helper in ["scrot", "grim", "xdotool", "ydotool", "wtype"] {
+        f.tool(helper, r#"printf called >> "$FIXTURE_LOG"; exit 0"#);
+    }
+    for platform in ["x11", "wayland"] {
+        for args in [
+            vec!["screenshot", "--window-id", "12"],
+            vec!["inspect", "--screen-index", "1"],
+            vec![
+                "type-text",
+                "--app",
+                "fixture-app",
+                "--text",
+                "test",
+                "--clear",
+                "--return",
+                "--confirm",
+            ],
+            vec![
+                "click",
+                "--coords",
+                "1,1",
+                "--app",
+                "fixture-app",
+                "--confirm",
+            ],
+            vec!["scroll", "--on", "B1", "--confirm"],
+            vec![
+                "keypress",
+                "--keys",
+                "tab",
+                "--window-title",
+                "fixture",
+                "--confirm",
+            ],
+        ] {
+            let result = f.run(json!({"platform":platform,"args":args}));
+            assert_eq!(result["supported"], false, "{result}");
+            assert!(f.log().is_empty());
+        }
+    }
+}
+
+#[test]
+fn invalid_scroll_direction_never_reaches_xdotool() {
+    let f = Fixture::new();
+    f.tool("xdotool", r#"printf called >> "$FIXTURE_LOG"; exit 0"#);
+    let result =
+        f.run(json!({"platform":"x11","args":["scroll","--direction","invalid","--confirm"]}));
+    assert_eq!(result["ok"], false);
+    assert!(f.log().is_empty());
+}
+
+#[test]
+fn macos_type_passes_flag_like_text_as_literal_positional_input() {
+    let f = Fixture::new();
+    f.tool(
+        "peekaboo",
+        r#"printf '%s\n' "$@" >> "$FIXTURE_LOG"; printf '{"success":true}'"#,
+    );
+    let result = f.run(json!({"platform":"macos","args":["type-text","--text","--help","--clear","--return","--confirm"]}));
+    assert_eq!(result["ok"], true);
+    assert_eq!(
+        f.log(),
+        "type\n--clear\n--return\n--json\n--no-remote\n--\n--help\n"
+    );
+}
+
+#[test]
+fn ext_capture_protocol_is_unverified_helper_compatibility_instead_of_falsely_unsupported() {
+    let f = Fixture::new();
+    f.tool("wayland-info", "printf '%s' \"interface: 'ext_image_copy_capture_manager_v1' interface: 'ext_output_image_capture_source_manager_v1'\"");
+    f.tool("grim", r#"printf '%s\n' "$@" >> "$FIXTURE_LOG"; for arg in "$@"; do target="$arg"; done; printf fixture-image > "$target""#);
+    let result = f.run(json!({"platform":"wayland","args":["doctor"]}));
+    assert_eq!(result["capabilities"]["screenshot"]["state"], "unverified");
+    let result = f.run(json!({"platform":"wayland","args":["screenshot","--mode","screen","--path",f.root.join("capture.png").to_string_lossy()]}));
+    assert_eq!(result["ok"], true);
+    assert!(!f.log().is_empty());
+}
+
+#[test]
+fn advertised_virtual_keyboard_prefers_wtype_and_supports_chords() {
+    let f = Fixture::new();
+    f.tool("wayland-info", "printf '%s' \"interface: 'zwp_virtual_keyboard_manager_v1' interface: 'zwlr_screencopy_manager_v1'\"");
+    f.tool("wtype", r#"printf '%s\n' "$@" >> "$FIXTURE_LOG"; exit 0"#);
+    f.tool("ydotool", "exit 9");
+    let result =
+        f.run(json!({"platform":"wayland","args":["type-text","--text","unicode-é","--confirm"]}));
+    assert_eq!(result["ok"], true);
+    assert_eq!(result["backend"], "wtype");
+    fs::write(f.root.join("argv.log"), "").unwrap();
+    let result =
+        f.run(json!({"platform":"wayland","args":["keypress","--keys","ctrl+a","--confirm"]}));
+    assert_eq!(result["ok"], true);
+    assert_eq!(f.log(), "-M\nctrl\n-k\na\n-m\nctrl\n");
+}
+
+#[test]
+fn screenshot_exit_zero_without_an_artifact_is_not_success() {
+    let f = Fixture::new();
+    f.tool("scrot", "exit 0");
+    let path = f.root.join("capture.png").to_string_lossy().to_string();
+    let result = f.run(json!({"platform":"x11","args":["screenshot","--path",path]}));
+    assert_eq!(result["ok"], false);
+    assert_eq!(result["code"], "CAPTURE_MISSING");
+    f.tool(
+        "scrot",
+        r#"for arg in "$@"; do target="$arg"; done; printf fixture-image > "$target""#,
+    );
+    let result = f.run(json!({"platform":"x11","args":["screenshot","--path",path]}));
+    assert_eq!(result["ok"], true);
+}
+
+#[test]
+fn desktop_name_without_registry_evidence_leaves_protocols_unverified() {
+    let f = Fixture::new();
+    f.tool("wtype", "exit 1");
+    f.tool("grim", "exit 1");
+    let result =
+        f.run(json!({"platform":"wayland","env":{"XDG_CURRENT_DESKTOP":"KDE"},"args":["doctor"]}));
+    assert_eq!(result["capabilities"]["typing"]["state"], "unverified");
+    assert_eq!(result["capabilities"]["screenshot"]["state"], "unverified");
+}
+
+#[test]
+fn capture_does_not_accept_a_stale_destination_as_new_evidence() {
+    let f = Fixture::new();
+    let path = f.root.join("old.png");
+    fs::write(&path, "old-image").unwrap();
+    f.tool("scrot", "exit 0");
+    let result =
+        f.run(json!({"platform":"x11","args":["screenshot","--path",path.to_string_lossy()]}));
+    assert_eq!(result["ok"], false);
+    assert_eq!(result["code"], "CAPTURE_MISSING");
+    assert_eq!(fs::read_to_string(&path).unwrap(), "old-image");
+}
+
+#[test]
+fn sway_focus_combines_targets_and_treats_regex_punctuation_literally() {
+    let f = Fixture::new();
+    f.tool(
+        "swaymsg",
+        r#"printf '%s\n' "$@" >> "$FIXTURE_LOG"; printf '[{"success":true}]'"#,
+    );
+    let result = f.run(json!({"platform":"wayland","env":{"SWAYSOCK":"/fixture"},"args":["focus","--app","org.example.App","--window-title","Draft [1]","--confirm"]}));
+    assert_eq!(result["ok"], true);
+    assert_eq!(
+        f.log().lines().last().unwrap(),
+        r#"[app_id="^org\\.example\\.App$" title="Draft \\[1\\]"] focus"#
+    );
+}
+
+#[test]
+fn x11_focus_matches_app_and_title_together_without_regex_broadening() {
+    let f = Fixture::new();
+    f.tool("wmctrl", r#"if [ "$1" = '-lx' ]; then
+printf '%s\n' '0x00000001 0 org.example.App fixture-host Other' '0x00000002 0 org.example.App fixture-host Draft [1]' '0x00000003 0 orgXexampleXApp fixture-host Draft [1]'
+else printf '%s\n' "$@" >> "$FIXTURE_LOG"; fi"#);
+    let result = f.run(json!({"platform":"x11","args":["focus","--app","org.example.App","--window-title","Draft [1]","--confirm"]}));
+    assert_eq!(result["ok"], true);
+    assert_eq!(f.log(), "-i\n-a\n0x00000002\n");
+}
+
+#[test]
+fn cancelled_wayland_doctor_never_becomes_successful_unknown_capabilities() {
+    let f = Fixture::new();
+    for name in ["grim", "ydotool"] {
+        f.tool(name, "exit 0");
+    }
+    f.tool("wayland-info", "/bin/sleep 5");
+    let result = f.run(json!({"platform":"wayland","args":["doctor"],"cancelAfterMs":50}));
+    assert_eq!(result["ok"], false);
+    assert_eq!(result["code"], "CANCELLED");
+}
+
+#[test]
+fn peekaboo_query_and_key_positionals_cannot_become_options() {
+    let f = Fixture::new();
+    f.tool(
+        "peekaboo",
+        r#"printf '%s\n' "$@" >> "$FIXTURE_LOG"; printf '{"success":true}'"#,
+    );
+    let result = f.run(json!({"platform":"macos","args":["click","--query","--help","--confirm"]}));
+    assert_eq!(result["ok"], true);
+    assert_eq!(f.log(), "click\n--json\n--no-remote\n--\n--help\n");
+    fs::write(f.root.join("argv.log"), "").unwrap();
+    let result =
+        f.run(json!({"platform":"macos","args":["keypress","--keys","--help,tab","--confirm"]}));
+    assert_eq!(result["ok"], true);
+    assert_eq!(f.log(), "press\n--json\n--no-remote\n--\n--help\ntab\n");
+}
+
+#[test]
+fn ydotool_only_input_skips_irrelevant_wayland_registry_probe() {
+    let f = Fixture::new();
+    f.tool(
+        "wayland-info",
+        r#"printf 'probe\n' >> "$FIXTURE_LOG"; /bin/sleep 5"#,
+    );
+    f.tool("ydotool", r#"printf 'input\n' >> "$FIXTURE_LOG"; exit 0"#);
+    let result=f.run(json!({"platform":"wayland","args":["type-text","--text","fixture","--confirm"],"timeoutMs":1000}));
+    assert_eq!(result["ok"], true);
+    assert_eq!(f.log(), "input\n");
+}
+
+#[test]
+fn wayland_capture_encoding_follows_requested_format_not_destination_suffix() {
+    let f = Fixture::new();
+    f.tool("grim",r#"printf '%s\n' "$@" >> "$FIXTURE_LOG"; for arg in "$@"; do target="$arg"; done; printf image > "$target""#);
+    for (format, name, encoding) in [
+        ("png", "capture.jpg", "png"),
+        ("jpg", "capture.png", "jpeg"),
+    ] {
+        fs::write(f.root.join("argv.log"), "").unwrap();
+        let result=f.run(json!({"platform":"wayland","args":["screenshot","--format",format,"--path",f.root.join(name).to_string_lossy()]}));
+        assert_eq!(result["ok"], true);
+        assert!(
+            f.log().starts_with(&format!("-t\n{encoding}\n")),
+            "{}",
+            f.log()
+        );
+    }
 }
 
 #[test]

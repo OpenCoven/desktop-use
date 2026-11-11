@@ -24,6 +24,16 @@ impl Failure {
     }
 }
 
+pub fn check(deadline: Instant) -> Result<(), Failure> {
+    if CANCELLED.load(Ordering::Relaxed) {
+        Err(Failure::Cancelled)
+    } else if Instant::now() >= deadline {
+        Err(Failure::Timeout)
+    } else {
+        Ok(())
+    }
+}
+
 #[cfg(unix)]
 extern "C" fn cancel(_: libc::c_int) {
     CANCELLED.store(true, Ordering::Relaxed);

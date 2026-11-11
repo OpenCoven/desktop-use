@@ -97,6 +97,31 @@ test("malformed adapter output is an error without private diagnostic text", asy
   assert.ok(!JSON.stringify(result).includes("arbitrary-private-text"));
 });
 
+test("gateway abort cancels owned helpers without stopping a different session", async (t) => {
+  const { inside } = await workspace(t);
+  const controller = new AbortController();
+  const tool = createComputerUseTool({ ctx: { workspaceDir: inside, sessionKey: "gateway-abort" }, appendAuditEvent: async () => {} });
+  const active = tool.execute("gateway", { action: "shell", confirm: true, command: process.execPath, args: ["-e", "setInterval(()=>{},1000)"] }, controller.signal);
+  controller.abort();
+  const result = await active;
+  assert.equal(result.details.status, "cancelled");
+  const other = createComputerUseTool({ ctx: { workspaceDir: inside, sessionKey: "other-session" }, appendAuditEvent: async () => {} });
+  const independent = await other.execute("independent", { action: "shell", confirm: true, command: process.execPath, args: ["-e", "process.stdout.write('okay')"] });
+  assert.equal(independent.details.status, "success");
+  assert.equal(independent.details.stdout, "okay");
+});
+
+test("typed-input backend diagnostics retain only safe outcome fields", async () => {
+  const tool = createComputerUseTool({
+    runAdapter: async () => ({ ok: false, backend: "peekaboo", args: ["arbitrary-private-text"], arbitraryBackendField: "arbitrary-private-text", code: "arbitrary-private-text", completedSteps: 1, failedStep: 1 }),
+    appendAuditEvent: async () => {},
+  });
+  const result = await tool.execute("private-diagnostics", { action: "type-text", text: "arbitrary-private-text", confirm: true });
+  assert.equal(result.details.status, "error");
+  assert.equal((result.details.result as any).completedSteps, 1);
+  assert.ok(!JSON.stringify(result).includes("arbitrary-private-text"));
+});
+
 test("explicit capture destinations require write approval before adapter execution", async t => {
   const {root,inside}=await workspace(t); const outside=join(root,"existing.png"); await writeFile(outside,"original");
   let calls=0;
