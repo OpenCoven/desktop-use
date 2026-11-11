@@ -473,3 +473,47 @@ fn peekaboo_query_and_key_positionals_cannot_become_options() {
     assert_eq!(result["ok"], true);
     assert_eq!(f.log(), "press\n--json\n--no-remote\n--\n--help\ntab\n");
 }
+
+#[test]
+fn ydotool_only_input_skips_irrelevant_wayland_registry_probe() {
+    let f = Fixture::new();
+    f.tool(
+        "wayland-info",
+        r#"printf 'probe\n' >> "$FIXTURE_LOG"; /bin/sleep 5"#,
+    );
+    f.tool("ydotool", r#"printf 'input\n' >> "$FIXTURE_LOG"; exit 0"#);
+    let result=f.run(json!({"platform":"wayland","args":["type-text","--text","fixture","--confirm"],"timeoutMs":1000}));
+    assert_eq!(result["ok"], true);
+    assert_eq!(f.log(), "input\n");
+}
+
+#[test]
+fn wayland_capture_encoding_follows_requested_format_not_destination_suffix() {
+    let f = Fixture::new();
+    f.tool("grim",r#"printf '%s\n' "$@" >> "$FIXTURE_LOG"; for arg in "$@"; do target="$arg"; done; printf image > "$target""#);
+    for (format, name, encoding) in [
+        ("png", "capture.jpg", "png"),
+        ("jpg", "capture.png", "jpeg"),
+    ] {
+        fs::write(f.root.join("argv.log"), "").unwrap();
+        let result=f.run(json!({"platform":"wayland","args":["screenshot","--format",format,"--path",f.root.join(name).to_string_lossy()]}));
+        assert_eq!(result["ok"], true);
+        assert!(
+            f.log().starts_with(&format!("-t\n{encoding}\n")),
+            "{}",
+            f.log()
+        );
+    }
+}
+
+#[test]
+fn timeout_flag_without_value_is_rejected_before_input_dispatch() {
+    let f = Fixture::new();
+    for tool in ["peekaboo", "xdotool"] {
+        f.tool(tool, r#"printf called >> "$FIXTURE_LOG"; exit 0"#);
+    }
+    let result=f.run(json!({"platform":"cli","env":{"DISPLAY":":fixture"},"args":["type-text","--text","hello","--confirm","--timeout-ms"]}));
+    assert_eq!(result["ok"], false);
+    assert!(result["error"].as_str().unwrap().contains("--timeout-ms"));
+    assert!(f.log().is_empty());
+}

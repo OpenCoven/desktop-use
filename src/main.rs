@@ -31,6 +31,15 @@ fn main() {
 
 fn run(args: Vec<String>) -> String {
     let timeout = match value(&args, "--timeout-ms") {
+        None if has_flag(&args, "--timeout-ms") => {
+            return json_obj(vec![
+                ("ok", "false".into()),
+                (
+                    "error",
+                    json_string("--timeout-ms requires an integer value from 1000 to 120000."),
+                ),
+            ])
+        }
         None => 30_000,
         Some(raw) => match raw.parse::<u64>() {
             Ok(ms @ 1000..=120_000) => ms,
@@ -834,18 +843,21 @@ fn linux_inspect(session: LinuxSession, args: &[String]) -> String {
             ),
         ),
     ];
-    capture_screenshot(session, &path, &mode, &extras)
+    capture_screenshot(session, &path, &mode, "png", &extras)
 }
 
 fn linux_screenshot(session: LinuxSession, args: &[String]) -> String {
     let format = value(args, "--format").unwrap_or_else(|| "png".to_string());
+    if !["png", "jpg"].contains(&format.as_str()) {
+        return linux_error_json("Unsupported screenshot format; expected png or jpg.", None);
+    }
     let path = output_path(value(args, "--path"), "screenshot", &format);
     let mode = value(args, "--mode").unwrap_or_else(|| "screen".to_string());
     let extras: Vec<(&'static str, String)> = vec![
         ("purpose", json_string("screenshot")),
         ("path", json_string(&path)),
     ];
-    capture_screenshot(session, &path, &mode, &extras)
+    capture_screenshot(session, &path, &mode, &format, &extras)
 }
 
 struct CaptureStaging(PathBuf);
@@ -859,6 +871,7 @@ fn capture_screenshot(
     session: LinuxSession,
     path: &str,
     mode: &str,
+    format: &str,
     extras: &[(&'static str, String)],
 ) -> String {
     if let Err(error) = process::check(deadline()) {
@@ -883,16 +896,12 @@ fn capture_screenshot(
         );
     }
     let staging = CaptureStaging(directory);
-    let extension = if path.ends_with(".jpg") || path.ends_with(".jpeg") {
-        "jpg"
-    } else {
-        "png"
-    };
+    let extension = if format == "jpg" { "jpg" } else { "png" };
     let image = staging.0.join(format!("capture.{extension}"));
     let image_path = image.to_string_lossy();
     let result = match session {
         LinuxSession::X11 => x11_screenshot(&image_path, mode, extras),
-        LinuxSession::Wayland => wayland_screenshot(&image_path, mode, extras),
+        LinuxSession::Wayland => wayland_screenshot(&image_path, mode, format, extras),
     };
     let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
     if parsed["ok"] != true {
@@ -971,7 +980,12 @@ fn x11_screenshot(path: &str, mode: &str, extras: &[(&'static str, String)]) -> 
     )
 }
 
-fn wayland_screenshot(path: &str, mode: &str, extras: &[(&'static str, String)]) -> String {
+fn wayland_screenshot(
+    path: &str,
+    mode: &str,
+    format: &str,
+    extras: &[(&'static str, String)],
+) -> String {
     if matches!(mode, "window" | "frontmost") {
         return linux_capabilities::unsupported("Targeted Wayland capture is unsupported; request mode=screen explicitly. No screenshot was taken.");
     }
@@ -985,14 +999,10 @@ fn wayland_screenshot(path: &str, mode: &str, extras: &[(&'static str, String)])
             "wayland-screenshot",
         );
     }
-    let format = if path.ends_with(".jpg") || path.ends_with(".jpeg") {
-        "jpeg"
-    } else {
-        "png"
-    };
+    let encoding = if format == "jpg" { "jpeg" } else { "png" };
     run_linux_command(
         "grim",
-        vec!["-t".into(), format.into(), "--".into(), path.into()],
+        vec!["-t".into(), encoding.into(), "--".into(), path.into()],
         "grim",
         false,
         extras,

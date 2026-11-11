@@ -38,10 +38,11 @@ pub fn protocols() -> Protocols {
 }
 
 pub fn use_wtype() -> bool {
+    if resolve_path_binary("wtype").is_none() {
+        return false;
+    }
     let keyboard = protocols().keyboard;
-    resolve_path_binary("wtype").is_some()
-        && keyboard != Some(false)
-        && (keyboard == Some(true) || resolve_path_binary("ydotool").is_none())
+    keyboard != Some(false) && (keyboard == Some(true) || resolve_path_binary("ydotool").is_none())
 }
 
 pub fn capabilities(session: LinuxSession, tools: &[LinuxToolStatus]) -> Value {
