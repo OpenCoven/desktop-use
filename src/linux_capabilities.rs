@@ -33,18 +33,8 @@ pub fn protocols() -> Protocols {
             }
         }
     }
-    // Desktop names are negative hints only; never certify a protocol from a name.
-    let desktop = env::var("XDG_CURRENT_DESKTOP")
-        .unwrap_or_default()
-        .to_lowercase();
-    Protocols {
-        keyboard: if desktop.contains("gnome") || desktop.contains("kde") {
-            Some(false)
-        } else {
-            None
-        },
-        capture: None,
-    }
+    // Desktop names do not prove which protocols this session advertises.
+    Protocols::default()
 }
 
 pub fn use_wtype() -> bool {

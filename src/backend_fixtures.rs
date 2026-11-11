@@ -371,3 +371,14 @@ fn screenshot_exit_zero_without_an_artifact_is_not_success() {
     let result = f.run(json!({"platform":"x11","args":["screenshot","--path",path]}));
     assert_eq!(result["ok"], true);
 }
+
+#[test]
+fn desktop_name_without_registry_evidence_leaves_protocols_unverified() {
+    let f = Fixture::new();
+    f.tool("wtype", "exit 1");
+    f.tool("grim", "exit 1");
+    let result =
+        f.run(json!({"platform":"wayland","env":{"XDG_CURRENT_DESKTOP":"KDE"},"args":["doctor"]}));
+    assert_eq!(result["capabilities"]["typing"]["state"], "unverified");
+    assert_eq!(result["capabilities"]["screenshot"]["state"], "unverified");
+}

@@ -107,3 +107,14 @@ test("gateway abort cancels owned helpers without stopping a different session",
   assert.equal(independent.details.status, "success");
   assert.equal(independent.details.stdout, "okay");
 });
+
+test("typed-input backend diagnostics retain only safe outcome fields", async () => {
+  const tool = createComputerUseTool({
+    runAdapter: async () => ({ ok: false, backend: "peekaboo", args: ["arbitrary-private-text"], arbitraryBackendField: "arbitrary-private-text", code: "arbitrary-private-text", completedSteps: 1, failedStep: 1 }),
+    appendAuditEvent: async () => {},
+  });
+  const result = await tool.execute("private-diagnostics", { action: "type-text", text: "arbitrary-private-text", confirm: true });
+  assert.equal(result.details.status, "error");
+  assert.equal((result.details.result as any).completedSteps, 1);
+  assert.ok(!JSON.stringify(result).includes("arbitrary-private-text"));
+});

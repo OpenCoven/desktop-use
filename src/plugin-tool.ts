@@ -241,11 +241,12 @@ async function executeAllowedAction(
       runAdapter,
       action,
     );
-    const normalized = normalizeAdapterResult(raw, { evidence });
+    const safe = action === "type-text" ? redactTypeDiagnostics(raw) : raw;
+    const normalized = normalizeAdapterResult(safe, { evidence });
     return {
       ...normalized,
       action,
-      permissionFlow: permissionFlowForResult(raw, action),
+      permissionFlow: permissionFlowForResult(safe, action),
     };
   }
 
@@ -574,20 +575,22 @@ async function runAdapterBinary(args: string[], params: ComputerUseParams, signa
   }
 }
 
-// Backend errors can echo private input even when the adapter itself exits zero.
+// Input actions need outcomes, not arbitrary backend diagnostics that may echo their text.
 function redactTypeDiagnostics(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(redactTypeDiagnostics);
-  if (!value || typeof value !== "object") return value;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, code: "MALFORMED_OUTPUT" };
   const record = value as Record<string, unknown>;
   const fields: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(record)) {
-    if (["stdout", "stderr", "error", "message", "text", "command"].includes(key.toLowerCase())) {
-      fields[key] = "<redacted for type action>";
-    } else {
-      fields[key] = redactTypeDiagnostics(item);
-    }
+  for (const key of ["ok", "supported", "requiresConfirmation", "timedOut", "cancelled", "partial"]) {
+    if (typeof record[key] === "boolean") fields[key] = record[key];
   }
-  // Preserve actionable permission state without retaining backend diagnostic text.
+  for (const key of ["exitCode", "completedSteps", "totalSteps", "failedStep"]) {
+    if (Number.isSafeInteger(record[key])) fields[key] = record[key];
+  }
+  if (["peekaboo", "xdotool", "ydotool", "wtype", "linux"].includes(String(record.backend))) fields.backend = record.backend;
+  const codes = ["ENOENT", "EACCES", "ETIMEDOUT", "CANCELLED", "OUTPUT_LIMIT", "PROCESS_ERROR", "MALFORMED_OUTPUT", "BACKEND_ERROR", "PERMISSION_ERROR"];
+  if (typeof record.code === "string") fields.code = codes.includes(record.code) ? record.code : "BACKEND_ERROR";
+  if (Array.isArray(record.steps)) fields.steps = record.steps.map(redactTypeDiagnostics);
+  if (typeof record.adapter === "string") { fields.adapter = "adapter"; fields.result = redactTypeDiagnostics(record.result); }
   if (looksLikePermissionFailure(value)) fields.permissionError = "PERMISSION_ERROR";
   return fields;
 }
