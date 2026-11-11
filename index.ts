@@ -6,7 +6,7 @@ import {
   classifyComputerUseRequest,
   type ComputerUseParams,
 } from "./src/computer-use-policy.js";
-import { createComputerUseTool, createDesktopUseTool } from "./src/plugin-tool.js";
+import { createComputerUseTool, createDesktopUseTool, normalizeParams } from "./src/plugin-tool.js";
 
 type OptionalComputerUseApi = {
   registerToolMetadata?: (metadata: {
@@ -53,7 +53,12 @@ export default definePluginEntry({
         if (event.toolName !== "computer_use" && event.toolName !== "desktop_use") {
           return undefined;
         }
-        const params = event.params as ComputerUseParams;
+        let params: ComputerUseParams;
+        try {
+          params = normalizeParams(event.params);
+        } catch {
+          return { block: true, blockReason: "Invalid computer-use parameters." };
+        }
         const decision = classifyComputerUseRequest(params, {
           agentId: ctx.agentId,
           sessionKey: ctx.sessionKey,

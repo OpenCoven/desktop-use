@@ -518,26 +518,14 @@ export function normalizeAdapterResult(
   options: { evidence: Record<string, unknown> },
 ): NormalizedAdapterResult {
   const record = result && typeof result === "object" ? (result as Record<string, unknown>) : {};
-  if (record.supported === false) {
-    return {
-      status: "unsupported",
-      success: false,
-      evidence: options.evidence,
-      result,
-    };
-  }
-  if (record.ok === true) {
-    return {
-      status: "success",
-      success: true,
-      evidence: options.evidence,
-      result,
-    };
-  }
-  return {
-    status: "error",
-    success: false,
-    evidence: options.evidence,
-    result,
-  };
+  // Successful process execution is separate from the adapter's action outcome.
+  const payload = record.ok === true && typeof record.adapter === "string"
+    ? record.result : record;
+  const action = payload && typeof payload === "object" && !Array.isArray(payload)
+    ? payload as Record<string, unknown> : {};
+  let status: NormalizedAdapterResult["status"] = "error";
+  if (action.supported === false) status = "unsupported";
+  else if (action.requiresConfirmation === true) status = "needsApproval";
+  else if (action.ok === true) status = "success";
+  return { status, success: status === "success", evidence: options.evidence, result };
 }

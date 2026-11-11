@@ -175,18 +175,35 @@ export function createComputerUseTool(options: CreateComputerUseToolOptions = {}
           params: redactComputerUseValue(params),
         };
       } else {
-        details = await executeAllowedAction(params, ctx, runAdapter);
+        try {
+          details = await executeAllowedAction(params, ctx, runAdapter);
+        } catch (error) {
+          // Child-process messages can echo argv. Keep arbitrary exception text out of results.
+          const code = (error as { code?: unknown } | null)?.code;
+          details = {
+            status: "error",
+            success: false,
+            action: decision.normalizedAction,
+            code: error instanceof ToolInputError ? "INVALID_INPUT"
+              : typeof code === "string" && ["ENOENT", "EACCES", "EPERM", "EISDIR", "ENOTDIR", "EEXIST", "EIO", "ENOSPC"].includes(code)
+                ? code : "ACTION_FAILED",
+            error: error instanceof ToolInputError ? error.message : "Computer-use action failed.",
+          };
+        }
       }
 
-      await appendAuditEvent(
-        buildComputerUseAuditEvent({
+      try {
+        await appendAuditEvent(buildComputerUseAuditEvent({
           toolCallId,
           request: params,
           decision,
           result: details,
           ctx,
-        }),
-      ).catch(() => undefined);
+        }));
+      } catch {
+        // An action may already be complete. Preserve its outcome and never replay it.
+        details.audit = { written: false, code: "AUDIT_WRITE_FAILED" };
+      }
 
       return jsonResult(details);
     },
@@ -327,7 +344,10 @@ function shouldRetryAdapterResult(result: unknown, action: string): boolean {
     return false;
   }
   const record = result as Record<string, unknown>;
-  if (record.ok === true || record.supported === false) {
+  if (record.ok === true && typeof record.adapter === "string") {
+    return shouldRetryAdapterResult(record.result, action);
+  }
+  if (record.ok === true || record.supported === false || record.requiresConfirmation === true) {
     return false;
   }
   if (looksLikePermissionFailure(result)) {
@@ -558,31 +578,55 @@ function writeProcessStdin(
   });
 }
 
-function normalizeParams(params: unknown): ComputerUseParams {
-  if (!params || typeof params !== "object") {
-    throw new ToolInputError("Parameters are required.");
+export function normalizeParams(params: unknown): ComputerUseParams {
+  if (!params || typeof params !== "object" || Array.isArray(params)) {
+    throw new ToolInputError("Parameters must be an object.");
   }
-  const record = params as Partial<ComputerUseParams>;
-  if (!record.action) {
-    throw new ToolInputError("action is required.");
+  const record = params as Record<string, unknown>;
+  if (typeof record.action !== "string" || !record.action) {
+    throw new ToolInputError("action is required and must be a string.");
   }
+  const properties: Record<string, {
+    type: string;
+    enum?: readonly string[];
+    minimum?: number;
+    maximum?: number;
+  }> = ComputerUseToolSchema.properties;
   for (const [label, value] of Object.entries(record)) {
-    if (typeof value === "string") {
-      assertMaxBytes(
-        value,
-        label,
-        label === "text" || label === "clipboardText" || label === "content"
-          ? MAX_TEXT_BYTES
-          : MAX_ARG_BYTES,
-      );
-    }
-    if (Array.isArray(value)) {
-      for (const item of value) {
-        if (typeof item === "string") assertMaxBytes(item, label, MAX_ARG_BYTES);
+    if (!Object.hasOwn(properties, label)) throw new ToolInputError("Unknown computer-use parameter.");
+    const schema = properties[label];
+    if (schema.type === "array") {
+      if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+        throw new ToolInputError(`${label} must be an array of strings.`);
       }
+      if (value.length > 256) throw new ToolInputError(`${label} exceeds 256 items.`);
+      for (const item of value) {
+        if (item.includes("\0")) throw new ToolInputError(`${label} must not contain NUL bytes.`);
+        assertMaxBytes(item, label, MAX_ARG_BYTES);
+      }
+    } else if (typeof value !== schema.type) {
+      throw new ToolInputError(`${label} has an invalid type.`);
+    }
+    if (schema.enum && !schema.enum.includes(value as string)) {
+      throw new ToolInputError(`${label} has an unsupported value.`);
+    }
+    if (typeof value === "number" && (
+      !Number.isSafeInteger(value) ||
+      (schema.minimum !== undefined && value < schema.minimum) ||
+      (schema.maximum !== undefined && value > schema.maximum)
+    )) {
+      throw new ToolInputError(`${label} must be an integer within the allowed range.`);
+    }
+    if (typeof value === "string") {
+      if (value.includes("\0")) throw new ToolInputError(`${label} must not contain NUL bytes.`);
+      assertMaxBytes(value, label,
+        ["text", "clipboardText", "content"].includes(label) ? MAX_TEXT_BYTES : MAX_ARG_BYTES);
     }
   }
-  if (record.coords && !/^\d{1,5},\d{1,5}$/.test(record.coords.trim())) {
+  if (Array.isArray(record.keys)) {
+    assertMaxBytes(record.keys.join(","), "keys", MAX_ARG_BYTES);
+  }
+  if (record.coords && !/^\d{1,5},\d{1,5}$/.test((record.coords as string).trim())) {
     throw new ToolInputError("coords must be in x,y form, for example 120,240.");
   }
   return record as ComputerUseParams;
@@ -596,6 +640,7 @@ async function runAdapterBinary(args: string[], params: ComputerUseParams): Prom
       ? CAPTURE_TIMEOUT_MS
       : DEFAULT_TIMEOUT_MS);
   const adapterBin = resolveAdapterBin();
+  const privateInput = normalizeComputerUseAction(params.action) === "type-text";
   try {
     const { stdout, stderr } = await execFileAsync(adapterBin, args, {
       timeout,
@@ -605,27 +650,48 @@ async function runAdapterBinary(args: string[], params: ComputerUseParams): Prom
       ok: true,
       adapter: adapterBin,
       args: redactArgsForDetails(args),
-      result: parseJsonOrText(stdout),
-      stderr: stderr ? String(stderr) : undefined,
+      result: privateInput ? redactTypeDiagnostics(parseJsonOrText(stdout)) : parseJsonOrText(stdout),
+      stderr: privateInput ? "<redacted for type action>" : stderr ? String(stderr) : undefined,
     };
   } catch (err) {
     const error = err as Error & {
       stdout?: string | Buffer;
       stderr?: string | Buffer;
       code?: string | number;
+      killed?: boolean;
+      signal?: string;
     };
     return {
       ok: false,
       adapter: adapterBin,
       args: redactArgsForDetails(args),
-      error: error.message,
-      code: error.code,
-      stdout: error.stdout ? parseJsonOrText(error.stdout) : undefined,
-      stderr: error.stderr ? String(error.stderr).slice(0, 4000) : undefined,
+      error: "Adapter process failed.",
+      code: error.killed && error.signal === "SIGTERM" && error.code == null
+        ? "ETIMEDOUT" : error.code,
+      stdout: !privateInput && error.stdout ? parseJsonOrText(error.stdout) : undefined,
+      stderr: privateInput ? "<redacted for type action>" : error.stderr ? String(error.stderr).slice(0, 4000) : undefined,
       hint: missingAdapterHint(adapterBin),
       adapterSetup: adapterSetupGuide(adapterBin),
     };
   }
+}
+
+// Backend errors can echo private input even when the adapter itself exits zero.
+function redactTypeDiagnostics(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactTypeDiagnostics);
+  if (!value || typeof value !== "object") return value;
+  const record = value as Record<string, unknown>;
+  const fields: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(record)) {
+    if (["stdout", "stderr", "error", "message", "text", "command"].includes(key.toLowerCase())) {
+      fields[key] = "<redacted for type action>";
+    } else {
+      fields[key] = redactTypeDiagnostics(item);
+    }
+  }
+  // Preserve actionable permission state without retaining backend diagnostic text.
+  if (looksLikePermissionFailure(value)) fields.permissionError = "PERMISSION_ERROR";
+  return fields;
 }
 
 function resolveAdapterBin(): string {

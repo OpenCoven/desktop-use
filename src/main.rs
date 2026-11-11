@@ -1523,13 +1523,17 @@ mod tests {
 
     #[test]
     fn interactive_aliases_still_require_confirmation() {
-        let result = run(vec![
-            "press".to_string(),
-            "--keys".to_string(),
-            "tab".to_string(),
-        ]);
-        assert!(result.contains("requiresConfirmation"));
-        assert!(result.contains("keypress"));
+        let command = normalize_command("press").unwrap();
+        let args = vec!["--keys".to_string(), "tab".to_string()];
+        // Verify every backend gate without requiring a display session on CI.
+        for result in [
+            run_macos(command, &args),
+            run_linux(LinuxSession::X11, command, &args),
+            run_linux(LinuxSession::Wayland, command, &args),
+        ] {
+            assert!(result.contains("requiresConfirmation"));
+            assert!(result.contains("keypress"));
+        }
     }
 
     #[test]
