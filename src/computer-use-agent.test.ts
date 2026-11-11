@@ -20,7 +20,7 @@ test("defines a dedicated computer-use agent identity and state roots", () => {
 
 test("keeps the dedicated agent tool policy narrow", () => {
   assert.deepEqual(COMPUTER_USE_AGENT.toolPolicy.allow, [COMPUTER_USE_TOOL_NAME]);
-  assert.equal(COMPUTER_USE_AGENT.toolPolicy.profile, "minimal");
+  assert.equal(COMPUTER_USE_AGENT.toolPolicy.profile, "full");
   assert.equal(COMPUTER_USE_AGENT.auth.inheritsMainOAuth, true);
   assert.equal(COMPUTER_USE_AGENT.auth.copyOAuthSecrets, false);
 });
@@ -87,4 +87,17 @@ test("keeps the packaged agent template in step with the exported agent", () => 
   assert.deepEqual(config.tools.deny, COMPUTER_USE_AGENT.toolPolicy.deny);
   assert.deepEqual(config.health, COMPUTER_USE_HEALTH_CHECK);
   assert.equal(words(read("IDENTITY.md")), words(COMPUTER_USE_AGENT.identityMarkdown));
+});
+
+test("keeps the packaged and documented tool policy in sync with the exported agent", () => {
+  const config = JSON.parse(
+    readFileSync(new URL("../agents/computer-use/openclaw-agent.json", import.meta.url), "utf8"),
+  );
+  const docs = readFileSync(new URL("../docs/computer-use-agent.md", import.meta.url), "utf8");
+  const example = docs.match(/```json\n([\s\S]*?)\n```/);
+  assert.ok(example, "missing documented JSON config example");
+
+  // Compare the whole policy so profile cannot drift independently of allow/deny.
+  assert.deepEqual(config.tools, COMPUTER_USE_AGENT.toolPolicy);
+  assert.deepEqual(JSON.parse(example[1]).tools, COMPUTER_USE_AGENT.toolPolicy);
 });

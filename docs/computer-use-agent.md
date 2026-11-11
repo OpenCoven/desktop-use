@@ -87,11 +87,19 @@ working. New config should allow only `computer_use` for this agent:
 ```json
 {
   "tools": {
+    "profile": "full",
     "allow": ["computer_use"],
     "deny": ["exec", "bash", "shell", "apply_patch"]
   }
 }
 ```
+
+Set the agent profile explicitly to `full` and restrict its tools with `allow: ["computer_use"]`. In OpenClaw 2026.4.26, profile filtering runs before the agent allowlist, so `minimal` removes the plugin tool even when it appears in `allow`. The explicit profile also overrides an inherited global profile; other policy scopes can still restrict access, and deny takes precedence over allow. See the versioned source evidence below.
+
+- `node_modules/openclaw/dist/tool-policy-CC72sL8W.js:357-364,398-406`: `minimal: { allow: listCoreToolIdsForProfile("minimal") }`, `full: {}`, and `if (!resolved.allow && !resolved.deny) return;`.
+- `node_modules/openclaw/dist/tool-policy-pipeline-ChGQVHbp.js:21-48,67-98`: the profile step precedes the agent step, and each step updates `filtered = expanded ? filterToolsByPolicy(filtered, expanded) : filtered;`.
+- `node_modules/openclaw/dist/pi-tools.policy-CndtGqzr.js:174-178`: `const profile = agentTools?.profile ?? globalTools?.profile;`.
+- `node_modules/openclaw/dist/tool-policy-match-DidHscN9.js:13-20`: `if (matchesAnyGlobPattern(normalized, deny)) return false;` runs before the allow match.
 
 Supported actions:
 
