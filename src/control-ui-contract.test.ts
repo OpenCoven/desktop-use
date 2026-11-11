@@ -1,3 +1,4 @@
+import { COMPUTER_USE_TOOL_NAME } from "./tool-names.js";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -10,8 +11,8 @@ test("the panel only offers plugin controls with executable action mappings", as
   const descriptor = COMPUTER_USE_CONTROL_UI_DESCRIPTOR as any;
   assert.deepEqual(Object.keys(descriptor.schema.properties.controls.properties).sort(), ["runHealthCheck", "stop"]);
   assert.deepEqual(descriptor.actions, {
-    stop: { tool: "computer_use", args: { action: "stop" } },
-    runHealthCheck: { tool: "computer_use", args: { action: "health" } },
+    stop: { tool: COMPUTER_USE_TOOL_NAME, args: { action: "stop" } },
+    runHealthCheck: { tool: COMPUTER_USE_TOOL_NAME, args: { action: "health" } },
   });
   const root = await mkdtemp(join(tmpdir(), "desktopuse-panel-"));
   t.after(() => rm(root, { recursive: true, force: true }));

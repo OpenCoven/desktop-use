@@ -1,3 +1,4 @@
+import { COMPUTER_USE_TOOL_NAME } from "./tool-names.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createComputerUseTool } from "./plugin-tool.js";
@@ -171,7 +172,7 @@ test("names the canonical computer_use tool in every setup and repair guide", as
     for (const action of ["doctor", "health"]) {
       const result = await tool.execute(`guide-${doctor.platform}-${action}`, { action });
       const flow = result.details.permissionFlow as { verification?: { tool?: string } };
-      assert.equal(flow.verification?.tool, "computer_use");
+      assert.equal(flow.verification?.tool, COMPUTER_USE_TOOL_NAME);
       assert.doesNotMatch(JSON.stringify(result.details), /desktop_use/);
     }
   }

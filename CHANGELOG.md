@@ -8,6 +8,7 @@
 - Resolve workspace file paths before approval, including relative traversal and static symlink escapes; summarize durable audit values and require explicit content return.
 - Report Linux capabilities from helper/protocol evidence, reject unsupported targeting, validate Sway replies, and select honest Wayland input/scroll/capture fallbacks.
 - Add approved, bounded Linux clipboard and browser/app launch integrations with explicit unsupported responses and graphical acceptance gates.
+- Define the tool names once and share one scope key between the approval hook and Stop; a call without a session key no longer shares a scope with a session keyed `"default"` or `""`.
 
 - Validate requests before approval hooks and execution, including types, actions, enums, integer bounds, byte limits, and malformed argv.
 - Preserve backend action errors, unsupported results, and confirmation requirements despite successful adapter process exits, with bounded observation retries.

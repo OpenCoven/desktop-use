@@ -1,3 +1,5 @@
+import { COMPUTER_USE_TOOL_NAME } from "./tool-names.js";
+
 export const COMPUTER_USE_AGENT = {
   id: "computer-use",
   name: "Computer Use",
@@ -14,7 +16,7 @@ export const COMPUTER_USE_AGENT = {
   },
   toolPolicy: {
     profile: "minimal",
-    allow: ["computer_use"],
+    allow: [COMPUTER_USE_TOOL_NAME],
     deny: ["exec", "bash", "shell", "apply_patch"],
   },
   logs: {
@@ -34,7 +36,7 @@ Do not make the default OpenClaw agent inherit your machine-control powers.
 } as const;
 
 export const COMPUTER_USE_HEALTH_CHECK = {
-  tool: "computer_use",
+  tool: COMPUTER_USE_TOOL_NAME,
   args: { action: "health" },
 } as const;
 
@@ -48,8 +50,8 @@ export const COMPUTER_USE_CONTROL_UI_DESCRIPTOR = {
   requiredScopes: ["operator.read"],
   // Optional host integration metadata, not a state store or a gateway RPC.
   actions: {
-    stop: { tool: "computer_use", args: { action: "stop" } },
-    runHealthCheck: { tool: "computer_use", args: { action: "health" } },
+    stop: { tool: COMPUTER_USE_TOOL_NAME, args: { action: "stop" } },
+    runHealthCheck: { tool: COMPUTER_USE_TOOL_NAME, args: { action: "health" } },
   },
   stateSources: {
     health: { owner: "plugin", source: "health action result", availability: "after an explicit health call" },

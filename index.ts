@@ -7,7 +7,9 @@ import {
   type ComputerUsePolicyContext,
   normalizeComputerUseAction,
 } from "./src/computer-use-policy.js";
+import { computerUseScopeKey } from "./src/computer-use-scope.js";
 import { createComputerUseTool, createDesktopUseTool, normalizeParams, prepareComputerUseRequest } from "./src/plugin-tool.js";
+import { COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME, isComputerUseToolName } from "./src/tool-names.js";
 
 type OptionalComputerUseApi = {
   registerToolMetadata?: (metadata: {
@@ -24,25 +26,25 @@ export default definePluginEntry({
   id: "opencoven-desktop-use",
   name: "OpenCoven Desktop Use",
   description:
-    "Registers the dedicated computer_use agent tool and delegates desktop automation to the external OpenCoven coven-desktop-use adapter.",
+    `Registers the dedicated ${COMPUTER_USE_TOOL_NAME} agent tool and delegates desktop automation to the external OpenCoven coven-desktop-use adapter.`,
   register(api) {
     const optionalApi = api as typeof api & OptionalComputerUseApi;
     // Hook contexts omit workspaceDir in this SDK. Retain the authenticated tool-factory context.
     const policyContexts = new Map<string, ComputerUsePolicyContext>();
-    const scope = (ctx: ComputerUsePolicyContext) => JSON.stringify([ctx.agentId ?? "computer-use", ctx.sessionKey ?? ""]);
+    const scope = (ctx: ComputerUsePolicyContext) => computerUseScopeKey(ctx, "session");
     const remember = (ctx: ComputerUsePolicyContext) => {
       const snapshot = { ...ctx }; const key = scope(snapshot);
       policyContexts.delete(key); policyContexts.set(key, snapshot);
       if (policyContexts.size > 256) policyContexts.delete(policyContexts.keys().next().value!);
       return snapshot;
     };
-    api.registerTool((ctx) => createComputerUseTool({ ctx: remember(ctx) }), { name: "computer_use" });
+    api.registerTool((ctx) => createComputerUseTool({ ctx: remember(ctx) }), { name: COMPUTER_USE_TOOL_NAME });
     api.registerTool((ctx) => createDesktopUseTool({ ctx: remember(ctx) }), {
-      name: "desktop_use",
+      name: DESKTOP_USE_TOOL_NAME,
       optional: true,
     });
     optionalApi.registerToolMetadata?.({
-      toolName: "computer_use",
+      toolName: COMPUTER_USE_TOOL_NAME,
       displayName: "Computer Use",
       risk: "high",
       tags: ["opencoven", "computer-use", "approval-gated"],
@@ -50,17 +52,17 @@ export default definePluginEntry({
         "Dedicated OpenCoven computer-use tool with policy, approval, audit, and health boundaries.",
     });
     optionalApi.registerToolMetadata?.({
-      toolName: "desktop_use",
+      toolName: DESKTOP_USE_TOOL_NAME,
       displayName: "Desktop Use",
       risk: "high",
       tags: ["opencoven", "computer-use", "approval-gated", "legacy"],
-      description: "Legacy alias for computer_use.",
+      description: `Legacy alias for ${COMPUTER_USE_TOOL_NAME}.`,
     });
     optionalApi.registerControlUiDescriptor?.(COMPUTER_USE_CONTROL_UI_DESCRIPTOR);
     api.on(
       "before_tool_call",
       async (event, ctx) => {
-        if (event.toolName !== "computer_use" && event.toolName !== "desktop_use") {
+        if (!isComputerUseToolName(event.toolName)) {
           return undefined;
         }
         let params: ComputerUseParams;
