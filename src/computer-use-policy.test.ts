@@ -49,13 +49,13 @@ test("blocks attempts to bypass macOS security boundaries", () => {
   assert.match(decision.reason ?? "", /security boundary/i);
 });
 
-test("allows read-only shell commands but approval-gates package installs", () => {
+test("approval-gates general shell commands and package installs", () => {
   const readOnly = classifyComputerUseRequest(
     { action: "shell", command: "git", args: ["status", "--short"] },
     { workspaceDir: WORKSPACE, agentId: "computer-use" },
   );
-  assert.equal(readOnly.status, "allow");
-  assert.equal(readOnly.risk, "local-nondestructive");
+  assert.equal(readOnly.status, "needsApproval");
+  assert.equal(readOnly.risk, "local-destructive");
 
   const installer = classifyComputerUseRequest(
     { action: "shell", command: "npm", args: ["install", "-g", "some-package"] },
@@ -123,4 +123,14 @@ test("normalizes adapter envelopes to structured result statuses", () => {
       result: { ok: false, supported: false, message: "unsupported" },
     },
   );
+});
+
+test("general command authorization requires approval rather than guessing from executable names", () => {
+  for (const request of [
+    {action:"shell" as const,command:"node",args:["-e","require('fs').unlinkSync('/tmp/file')"]},
+    {action:"shell" as const,command:"/usr/bin/curl",args:["https://example.invalid"]},
+  ]) {
+    assert.equal(classifyComputerUseRequest(request).status,"needsApproval");
+    assert.equal(classifyComputerUseRequest({...request,confirm:true}).status,"allow");
+  }
 });

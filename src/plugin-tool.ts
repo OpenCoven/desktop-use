@@ -1,10 +1,10 @@
-import { execFile, spawn } from "node:child_process";
+import { FileActionError, listDirectory, readRegularFile, writeRegularFile } from "./file-actions.js";
+import { runProcess, ProcessFailure } from "./process-runner.js";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { realpath } from "node:fs/promises";
 import { homedir, platform } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { promisify } from "node:util";
 import {
   COMPUTER_USE_AGENT,
   COMPUTER_USE_HEALTH_CHECK,
@@ -25,7 +25,10 @@ import {
   type ComputerUsePolicyContext,
 } from "./computer-use-policy.js";
 
-const execFileAsync = promisify(execFile);
+const activeCalls = new Map<string, Set<AbortController>>();
+function scopeKey(ctx: ComputerUsePolicyContext): string {
+  return JSON.stringify([ctx.agentId ?? COMPUTER_USE_AGENT.id, ctx.sessionKey ?? "default", ctx.workspaceDir ?? ""]);
+}
 
 const MAX_TEXT_BYTES = 100_000;
 const MAX_ARG_BYTES = 2_048;
@@ -44,7 +47,7 @@ type ToolResult = {
   };
 };
 
-type AdapterRunner = (args: string[], params: ComputerUseParams) => Promise<unknown>;
+type AdapterRunner = (args: string[], params: ComputerUseParams, signal?: AbortSignal) => Promise<unknown>;
 type AuditWriter = (event: ComputerUseAuditEvent) => Promise<unknown>;
 
 export type CreateComputerUseToolOptions = {
@@ -158,42 +161,46 @@ export function createComputerUseTool(options: CreateComputerUseToolOptions = {}
     description:
       "OpenCoven computer-use agent tool for health checks, observation, approved desktop input, scoped shell/file actions, browser/app launches, and clipboard workflows.",
     parameters: ComputerUseToolSchema,
-    async execute(toolCallId: string, rawParams: unknown): Promise<ToolResult> {
-      const params = normalizeParams(rawParams);
-      const decision = classifyComputerUseRequest(params, ctx);
+    async execute(toolCallId: string, rawParams: unknown, gatewaySignal?: AbortSignal): Promise<ToolResult> {
+      let params = normalizeParams(rawParams);
+      const controller = new AbortController();
+      const abort = () => controller.abort();
+      gatewaySignal?.addEventListener("abort", abort, { once: true });
+      if (gatewaySignal?.aborted) controller.abort();
+      const scope = scopeKey(ctx);
+      const calls = activeCalls.get(scope) ?? new Set<AbortController>();
+      activeCalls.set(scope, calls);
+      if (params.action !== "stop") calls.add(controller);
+      let decision = classifyComputerUseRequest(params, ctx);
       let details: ToolResult["details"];
-
-      if (decision.status === "blocked" || decision.status === "needsApproval") {
-        details = {
-          status: decision.status,
-          success: false,
-          action: decision.normalizedAction,
-          target: decision.target,
-          risk: decision.risk,
-          reason: decision.reason,
-          requiresApproval: decision.requiresApproval,
-          approvalPrompt: decision.approvalPrompt,
-          params: redactComputerUseValue(params),
-        };
-      } else {
-        try {
-          details = await executeAllowedAction(params, ctx, runAdapter);
-        } catch (error) {
-          // Child-process messages can echo argv. Keep arbitrary exception text out of results.
-          details = { status: "error", success: false, action: decision.normalizedAction, ...safeExecutionError(error) };
-        }
-      }
-
       try {
-        await appendAuditEvent(buildComputerUseAuditEvent({
-          toolCallId,
-          request: params,
-          decision,
-          result: details,
-          ctx,
-        }));
+        const prepared = await prepareComputerUseRequest(params, ctx);
+        params = prepared.params;
+        decision = prepared.decision;
+        if (controller.signal.aborted) throw new ProcessFailure("CANCELLED");
+        if (decision.status === "blocked" || decision.status === "needsApproval") {
+          details = {
+            status: decision.status, success: false, action: decision.normalizedAction,
+            target: decision.target, risk: decision.risk, reason: decision.reason,
+            requiresApproval: decision.requiresApproval, approvalPrompt: decision.approvalPrompt,
+            params: redactComputerUseValue(params),
+          };
+        } else {
+          const boundedAdapter: AdapterRunner = (args, request) => runAdapter(args, request, controller.signal);
+          details = await executeAllowedAction(params, ctx, boundedAdapter, controller.signal);
+        }
+      } catch (error) {
+        const code = error instanceof ProcessFailure || error instanceof FileActionError ? error.code : error instanceof ToolInputError ? "INVALID_INPUT" : ["ENOENT", "EACCES", "EPERM", "EISDIR", "ENOTDIR", "EEXIST", "EIO", "ENOSPC"].includes((error as NodeJS.ErrnoException)?.code ?? "") ? (error as NodeJS.ErrnoException).code! : "ACTION_FAILED";
+        details = { status: code === "CANCELLED" ? "cancelled" : code === "ETIMEDOUT" ? "timeout" : "error", success: false,
+          action: params.action, code, error: error instanceof ToolInputError ? error.message : "Action failed; raw diagnostics withheld." };
+      } finally {
+        calls.delete(controller);
+        if (!calls.size) activeCalls.delete(scope);
+        gatewaySignal?.removeEventListener("abort", abort);
+      }
+      try {
+        await appendAuditEvent(buildComputerUseAuditEvent({ toolCallId, request: params, decision, result: details, ctx }));
       } catch {
-        // An action may already be complete. Preserve its outcome and never replay it.
         details.audit = { written: false, code: "AUDIT_WRITE_FAILED" };
       }
 
@@ -217,6 +224,7 @@ async function executeAllowedAction(
   params: ComputerUseParams,
   ctx: ComputerUsePolicyContext,
   runAdapter: AdapterRunner,
+  signal?: AbortSignal,
 ): Promise<ToolResult["details"]> {
   const action = normalizeComputerUseAction(params.action);
   const evidence = {
@@ -243,25 +251,25 @@ async function executeAllowedAction(
 
   switch (action) {
     case "health":
-      return runHealth(ctx, runAdapter);
+      return runHealth(ctx, runAdapter, params, signal);
     case "stop":
       return stopComputerUse(ctx);
     case "shell":
-      return runShell(params, ctx);
+      return runShell(params, ctx, signal);
     case "file-list":
-      return listFiles(params, ctx);
+      return listFiles(params, ctx, signal);
     case "file-read":
-      return readTextFile(params, ctx);
+      return readTextFile(params, ctx, signal);
     case "file-write":
-      return writeTextFile(params, ctx);
+      return writeTextFile(params, ctx, signal);
     case "clipboard-read":
-      return readClipboard(params, ctx);
+      return readClipboard(params, ctx, signal);
     case "clipboard-write":
-      return writeClipboard(params, ctx);
+      return writeClipboard(params, ctx, signal);
     case "browser-open":
-      return openBrowser(params, ctx);
+      return openBrowser(params, ctx, signal);
     case "app-launch":
-      return launchApp(params, ctx);
+      return launchApp(params, ctx, signal);
     default:
       return {
         status: "unsupported",
@@ -273,13 +281,13 @@ async function executeAllowedAction(
   }
 }
 
-async function runHealth(ctx: ComputerUsePolicyContext, runAdapter: AdapterRunner): Promise<ToolResult["details"]> {
+async function runHealth(ctx: ComputerUsePolicyContext, runAdapter: AdapterRunner, params: ComputerUseParams, _signal?: AbortSignal): Promise<ToolResult["details"]> {
   const adapterBin = resolveAdapterBin();
   let adapterResult: unknown;
   try {
     adapterResult = await runAdapterWithTransientObservationRetry(
       ["doctor"],
-      { action: "doctor" },
+      { action: "doctor", timeoutMs: params.timeoutMs },
       runAdapter,
       "health",
     );
@@ -312,17 +320,11 @@ function safeExecutionError(error: unknown): { code: string; error: string } {
 }
 
 function stopComputerUse(ctx: ComputerUsePolicyContext): ToolResult["details"] {
-  return {
-    status: "success",
-    success: true,
-    action: "stop",
-    agentId: ctx.agentId ?? COMPUTER_USE_AGENT.id,
-    state: "idle",
-    result: {
-      message:
-        "Computer-use stop acknowledged. This tool does not keep a background runner; active host calls are bounded by timeout and gateway cancellation.",
-    },
-  };
+  const calls = activeCalls.get(scopeKey(ctx));
+  const count = calls?.size ?? 0;
+  for (const controller of calls ?? []) controller.abort();
+  return { status: "success", success: true, action: "stop", cancellationRequested: count,
+    state: count ? "cancelling" : "idle", result: { message: "Cancellation requested for active calls in this agent/session/workspace. Owned helpers terminate within the 250 ms cleanup grace. Completed side effects are not undone; injected runners must honor AbortSignal." } };
 }
 
 async function runAdapterWithTransientObservationRetry(
@@ -331,11 +333,12 @@ async function runAdapterWithTransientObservationRetry(
   runAdapter: AdapterRunner,
   action: string,
 ): Promise<unknown> {
-  const first = await runAdapter(args, params);
-  if (!shouldRetryAdapterResult(first, action)) {
-    return first;
-  }
-  return runAdapter(args, params);
+  const budget = params.timeoutMs ?? (action === "inspect" || action === "screenshot" ? CAPTURE_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
+  const end = Date.now() + budget;
+  const first = await runAdapter(args, { ...params, timeoutMs: budget });
+  const remaining = end - Date.now();
+  if (!shouldRetryAdapterResult(first, action) || remaining < 1) return first;
+  return runAdapter(args, { ...params, timeoutMs: remaining });
 }
 
 function shouldRetryAdapterResult(result: unknown, action: string): boolean {
@@ -344,7 +347,7 @@ function shouldRetryAdapterResult(result: unknown, action: string): boolean {
     return false;
   }
   const record = decodeAdapterAction(result);
-  if (record.ok === true || record.supported === false || record.requiresConfirmation === true) {
+  if (record.ok === true || record.supported === false || record.code === "CANCELLED" || record.code === "ETIMEDOUT") {
     return false;
   }
   if (looksLikePermissionFailure(result)) {
@@ -364,97 +367,62 @@ function shouldRetryAdapterResult(result: unknown, action: string): boolean {
   );
 }
 
-async function runShell(params: ComputerUseParams, ctx: ComputerUsePolicyContext): Promise<ToolResult["details"]> {
+async function runShell(params: ComputerUseParams, ctx: ComputerUsePolicyContext, signal?: AbortSignal): Promise<ToolResult["details"]> {
   const command = requireString(params.command, "shell requires command.");
   const args = params.args ?? [];
-  const cwd = resolveCwd(params.cwd, ctx.workspaceDir);
+  const canonicalWorkspace = ctx.workspaceDir ? await realpath(ctx.workspaceDir) : undefined;
+  const cwd = resolveCwd(await canonicalTarget(params.cwd ?? ctx.workspaceDir ?? process.cwd(), ctx.workspaceDir), canonicalWorkspace);
   const timeout = params.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  try {
-    const { stdout, stderr } = await execFileAsync(command, args, {
-      cwd,
-      timeout,
-      maxBuffer: MAX_STDIO_BYTES,
-    });
-    return {
-      status: "success",
-      success: true,
-      action: "shell",
-      cwd,
-      command: redactComputerUseValue({ command, args }),
-      stdout: truncateText(String(stdout ?? "")),
-      stderr: truncateText(String(stderr ?? "")),
-      exitCode: 0,
-    };
-  } catch (error) {
-    throw error; // The shared safe exception boundary owns failed process diagnostics.
-  }
+  const { stdout, stderr } = await runProcess(command, args, {
+    cwd,
+    timeoutMs: timeout,
+    signal,
+    maxBuffer: MAX_STDIO_BYTES,
+  });
+  return {
+    status: "success",
+    success: true,
+    action: "shell",
+    cwd,
+    command: redactComputerUseValue({ command, args }),
+    stdout: truncateText(String(stdout ?? "")),
+    stderr: truncateText(String(stderr ?? "")),
+    exitCode: 0,
+  };
 }
 
-async function listFiles(params: ComputerUseParams, ctx: ComputerUsePolicyContext): Promise<ToolResult["details"]> {
+async function listFiles(params: ComputerUseParams, ctx: ComputerUsePolicyContext, signal?: AbortSignal): Promise<ToolResult["details"]> {
   const target = resolveTargetPath(params.path ?? ctx.workspaceDir ?? ".", ctx.workspaceDir);
-  const entries = await readdir(target, { withFileTypes: true });
-  return {
-    status: "success",
-    success: true,
-    action: "file-list",
-    path: target,
-    entries: entries.slice(0, 500).map((entry) => ({
-      name: entry.name,
-      kind: entry.isDirectory() ? "directory" : entry.isFile() ? "file" : "other",
-    })),
-    truncated: entries.length > 500,
-  };
+  const result = await listDirectory(target, signal, Date.now() + (params.timeoutMs ?? DEFAULT_TIMEOUT_MS));
+  return { status: "success", success: true, action: "file-list", path: target, ...result };
 }
 
-async function readTextFile(params: ComputerUseParams, ctx: ComputerUsePolicyContext): Promise<ToolResult["details"]> {
+async function readTextFile(params: ComputerUseParams, ctx: ComputerUsePolicyContext, signal?: AbortSignal): Promise<ToolResult["details"]> {
   const target = resolveTargetPath(requireString(params.path, "file-read requires path."), ctx.workspaceDir);
-  const file = await readFile(target);
-  const text = file.toString("utf8");
-  return {
-    status: "success",
-    success: true,
-    action: "file-read",
-    path: target,
-    bytes: file.byteLength,
-    sha256: createHash("sha256").update(file).digest("hex"),
-    text: params.includeText === true ? truncateText(text) : undefined,
-    preview: truncateText(text, 1_000),
-  };
+  const file = await readRegularFile(target, signal, Date.now() + (params.timeoutMs ?? DEFAULT_TIMEOUT_MS));
+  return { status: "success", success: true, action: "file-read", path: target, bytes: file.byteLength,
+    sha256: createHash("sha256").update(file).digest("hex"), text: params.includeText === true ? truncateText(file.toString("utf8")) : undefined };
 }
 
-async function writeTextFile(params: ComputerUseParams, ctx: ComputerUsePolicyContext): Promise<ToolResult["details"]> {
+async function writeTextFile(params: ComputerUseParams, ctx: ComputerUsePolicyContext, signal?: AbortSignal): Promise<ToolResult["details"]> {
   const target = resolveTargetPath(requireString(params.path, "file-write requires path."), ctx.workspaceDir);
   const content = requireString(params.content, "file-write requires content.");
   assertMaxBytes(content, "content", MAX_TEXT_BYTES);
   const existed = existsSync(target);
-  if (existed && params.overwrite !== true) {
-    return {
-      status: "needsApproval",
-      success: false,
-      action: "file-write",
-      path: target,
-      reason: "file exists; repeat with overwrite:true after reviewing the existing file.",
-    };
-  }
-  await mkdir(dirname(target), { recursive: true });
-  await writeFile(target, content, { flag: existed ? "w" : "wx", mode: 0o600 });
-  return {
-    status: "success",
-    success: true,
-    action: "file-write",
-    path: target,
-    bytes: Buffer.byteLength(content, "utf8"),
-    sha256: createHash("sha256").update(content).digest("hex"),
-    overwrote: existed,
-  };
+  if (existed && params.overwrite !== true) return { status: "needsApproval", success: false, action: "file-write", path: target,
+    reason: "file exists; repeat with overwrite:true after reviewing the existing file." };
+  await writeRegularFile(target, content, params.overwrite === true, signal, Date.now() + (params.timeoutMs ?? DEFAULT_TIMEOUT_MS));
+  return { status: "success", success: true, action: "file-write", path: target, bytes: Buffer.byteLength(content, "utf8"),
+    sha256: createHash("sha256").update(content).digest("hex"), overwrote: existed };
 }
 
-async function readClipboard(params: ComputerUseParams, _ctx: ComputerUsePolicyContext): Promise<ToolResult["details"]> {
+async function readClipboard(params: ComputerUseParams, _ctx: ComputerUsePolicyContext, signal?: AbortSignal): Promise<ToolResult["details"]> {
   if (platform() !== "darwin") {
     return unsupported("clipboard-read", "Clipboard adapter currently supports macOS pbpaste only.");
   }
-  const { stdout } = await execFileAsync("/usr/bin/pbpaste", [], {
-    timeout: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+  const { stdout } = await runProcess("/usr/bin/pbpaste", [], {
+    timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    signal,
     maxBuffer: MAX_STDIO_BYTES,
   });
   const text = String(stdout ?? "");
@@ -465,11 +433,11 @@ async function readClipboard(params: ComputerUseParams, _ctx: ComputerUsePolicyC
     bytes: Buffer.byteLength(text, "utf8"),
     sha256: createHash("sha256").update(text).digest("hex"),
     text: params.includeText === true ? truncateText(text) : undefined,
-    preview: truncateText(text, 200),
+
   };
 }
 
-async function writeClipboard(params: ComputerUseParams, _ctx: ComputerUsePolicyContext): Promise<ToolResult["details"]> {
+async function writeClipboard(params: ComputerUseParams, _ctx: ComputerUsePolicyContext, signal?: AbortSignal): Promise<ToolResult["details"]> {
   if (platform() !== "darwin") {
     return unsupported("clipboard-write", "Clipboard adapter currently supports macOS pbcopy only.");
   }
@@ -477,7 +445,7 @@ async function writeClipboard(params: ComputerUseParams, _ctx: ComputerUsePolicy
   if (typeof text !== "string") {
     throw new ToolInputError("clipboard-write requires clipboardText or text.");
   }
-  await writeProcessStdin("/usr/bin/pbcopy", [], text, params.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  await runProcess("/usr/bin/pbcopy", [], { input: text, timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS, signal });
   return {
     status: "success",
     success: true,
@@ -487,13 +455,14 @@ async function writeClipboard(params: ComputerUseParams, _ctx: ComputerUsePolicy
   };
 }
 
-async function openBrowser(params: ComputerUseParams, _ctx: ComputerUsePolicyContext): Promise<ToolResult["details"]> {
+async function openBrowser(params: ComputerUseParams, _ctx: ComputerUsePolicyContext, signal?: AbortSignal): Promise<ToolResult["details"]> {
   const url = requireString(params.url ?? params.path, "browser-open requires url.");
   if (platform() !== "darwin") {
     return unsupported("browser-open", "Browser launch currently supports macOS open only.");
   }
-  await execFileAsync("/usr/bin/open", [url], {
-    timeout: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+  await runProcess("/usr/bin/open", [url], {
+    timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    signal,
   });
   return {
     status: "success",
@@ -503,13 +472,14 @@ async function openBrowser(params: ComputerUseParams, _ctx: ComputerUsePolicyCon
   };
 }
 
-async function launchApp(params: ComputerUseParams, _ctx: ComputerUsePolicyContext): Promise<ToolResult["details"]> {
+async function launchApp(params: ComputerUseParams, _ctx: ComputerUsePolicyContext, signal?: AbortSignal): Promise<ToolResult["details"]> {
   const app = requireString(params.app, "app-launch requires app.");
   if (platform() !== "darwin") {
     return unsupported("app-launch", "App launch currently supports macOS open -a only.");
   }
-  await execFileAsync("/usr/bin/open", ["-a", app], {
-    timeout: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+  await runProcess("/usr/bin/open", ["-a", app], {
+    timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    signal,
   });
   return {
     status: "success",
@@ -528,37 +498,6 @@ function unsupported(action: string, message: string): ToolResult["details"] {
   };
 }
 
-function writeProcessStdin(
-  file: string,
-  args: string[],
-  input: string,
-  timeoutMs: number,
-): Promise<void> {
-  return new Promise((resolvePromise, reject) => {
-    const child = spawn(file, args, { stdio: ["pipe", "ignore", "pipe"] });
-    let stderr = "";
-    const timeout = setTimeout(() => {
-      child.kill("SIGTERM");
-      reject(new Error(`${file} timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-    child.stderr?.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf8");
-    });
-    child.on("error", (error) => {
-      clearTimeout(timeout);
-      reject(error);
-    });
-    child.on("close", (code) => {
-      clearTimeout(timeout);
-      if (code === 0) {
-        resolvePromise();
-      } else {
-        reject(new Error(`${file} exited ${code ?? "unknown"}${stderr ? `: ${stderr}` : ""}`));
-      }
-    });
-    child.stdin.end(input);
-  });
-}
 
 export function normalizeParams(params: unknown): ComputerUseParams {
   if (!params || typeof params !== "object" || Array.isArray(params)) {
@@ -624,47 +563,24 @@ export function normalizeParams(params: unknown): ComputerUseParams {
   return record as ComputerUseParams;
 }
 
-async function runAdapterBinary(args: string[], params: ComputerUseParams): Promise<unknown> {
-  const timeout =
-    params.timeoutMs ??
-    (normalizeComputerUseAction(params.action) === "inspect" ||
-    normalizeComputerUseAction(params.action) === "screenshot"
-      ? CAPTURE_TIMEOUT_MS
-      : DEFAULT_TIMEOUT_MS);
+async function runAdapterBinary(args: string[], params: ComputerUseParams, signal?: AbortSignal): Promise<unknown> {
+  const timeout = params.timeoutMs ?? (params.action === "inspect" || params.action === "screenshot" ? CAPTURE_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
   const adapterBin = resolveAdapterBin();
-  const privateInput = normalizeComputerUseAction(params.action) === "type-text";
   try {
-    const { stdout, stderr } = await execFileAsync(adapterBin, args, {
-      timeout,
-      maxBuffer: 10 * 1024 * 1024,
+    const { stdout } = await runProcess(adapterBin, [...args, "--timeout-ms", String(Math.max(1000, Math.floor(timeout - 100)))], {
+      timeoutMs: timeout, signal, maxBuffer: 10 * 1024 * 1024, reportProgress: true,
     });
-    return {
-      ok: true,
-      adapter: adapterBin,
-      args: redactArgsForDetails(args),
-      result: privateInput ? redactTypeDiagnostics(decodeAdapterAction(parseJsonOrText(stdout))) : parseJsonOrText(stdout),
-      stderr: privateInput ? "<redacted for type action>" : stderr ? String(stderr) : undefined,
-    };
-  } catch (err) {
-    const error = err as Error & {
-      stdout?: string | Buffer;
-      stderr?: string | Buffer;
-      code?: string | number;
-      killed?: boolean;
-      signal?: string;
-    };
-    return {
-      ok: false,
-      adapter: adapterBin,
-      args: redactArgsForDetails(args),
-      error: "Adapter process failed.",
-      code: error.killed && error.signal === "SIGTERM" && error.code == null
-        ? "ETIMEDOUT" : error.code,
-      stdout: !privateInput && error.stdout ? parseJsonOrText(error.stdout) : undefined,
-      stderr: privateInput ? "<redacted for type action>" : error.stderr ? String(error.stderr).slice(0, 4000) : undefined,
-      hint: missingAdapterHint(adapterBin),
-      adapterSetup: adapterSetupGuide(adapterBin),
-    };
+    let result: unknown;
+    try { result = JSON.parse(stdout); } catch { return { ok: false, code: "MALFORMED_OUTPUT", error: "Adapter returned malformed JSON; output withheld." }; }
+    if (!result || typeof result !== "object" || Array.isArray(result) || typeof (result as any).ok !== "boolean") {
+      return { ok: false, code: "MALFORMED_OUTPUT", error: "Adapter returned an invalid envelope; output withheld." };
+    }
+    return normalizeComputerUseAction(params.action) === "type-text" ? redactTypeDiagnostics(result) : result;
+  } catch (error) {
+    const code = error instanceof ProcessFailure || error instanceof FileActionError ? error.code : "BACKEND_ERROR";
+    return { ok: false, code, error: "Adapter execution failed; raw diagnostics withheld.",
+      ...(["ETIMEDOUT", "CANCELLED"].includes(code) ? error instanceof ProcessFailure && error.progress ? error.progress : { progressUnknown: true } : {}),
+      ...(code === "ENOENT" ? { hint: missingAdapterHint(adapterBin), adapterSetup: adapterSetupGuide(adapterBin) } : {}) };
   }
 }
 
@@ -673,7 +589,7 @@ function redactTypeDiagnostics(value: unknown): unknown {
   if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, code: "MALFORMED_OUTPUT" };
   const record = value as Record<string, unknown>;
   const fields: Record<string, unknown> = {};
-  for (const key of ["ok", "supported", "requiresConfirmation", "timedOut", "cancelled", "partial"]) {
+  for (const key of ["ok", "supported", "requiresConfirmation", "timedOut", "cancelled", "partial", "progressUnknown"]) {
     if (typeof record[key] === "boolean") fields[key] = record[key];
   }
   for (const key of ["exitCode", "completedSteps", "totalSteps", "failedStep"]) {
@@ -799,15 +715,6 @@ function addCommonTargetArgs(args: string[], params: ComputerUseParams): void {
   if (typeof params.windowId === "number") args.push("--window-id", String(params.windowId));
 }
 
-function parseJsonOrText(stdout: string | Buffer): unknown {
-  const text = String(stdout || "").trim();
-  if (!text) return null;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { text: text.slice(0, 8000) };
-  }
-}
 
 function permissionFlowForResult(result: unknown, action: string): unknown | undefined {
   const platform = readStringField(result, "platform");
@@ -957,14 +864,6 @@ function adapterSetupGuide(adapterBin: string): unknown {
   };
 }
 
-function redactArgsForDetails(args: string[]): string[] {
-  const redacted = [...args];
-  const textIndex = redacted.indexOf("--text");
-  if (textIndex >= 0 && redacted[textIndex + 1]) {
-    redacted[textIndex + 1] = `<${Buffer.byteLength(redacted[textIndex + 1], "utf8")}-byte text>`;
-  }
-  return redacted;
-}
 
 function jsonResult(details: ToolResult["details"]): ToolResult {
   return {
@@ -979,6 +878,31 @@ function resolveCwd(cwd: string | undefined, workspaceDir: string | undefined): 
     throw new ToolInputError("cwd is outside the configured computer-use workspace.");
   }
   return resolved;
+}
+
+export async function prepareComputerUseRequest(rawParams: unknown, ctx: ComputerUsePolicyContext = {}) {
+  let params = normalizeParams(rawParams);
+  const action = normalizeComputerUseAction(params.action);
+  if (["file-list", "file-read", "file-write"].includes(action) || (["inspect", "screenshot"].includes(action) && params.path)) {
+    const workspaceDir = ctx.workspaceDir ? await realpath(ctx.workspaceDir) : undefined;
+    const requested = resolve(workspaceDir ?? process.cwd(), params.path ?? workspaceDir ?? ".");
+    const canonical = await canonicalTarget(requested);
+    // The hook carries the canonical path into execution. A changed parent cannot reuse its approval.
+    params = { ...params, path: canonical, ...(params.confirm === true && requested !== canonical ? { confirm: false } : {}) };
+    return { params, decision: classifyComputerUseRequest(params, { ...ctx, workspaceDir }) };
+  }
+  return { params, decision: classifyComputerUseRequest(params, ctx) };
+}
+
+async function canonicalTarget(target: string, workspaceDir?: string): Promise<string> {
+  const absolute = resolve(workspaceDir ?? process.cwd(), target);
+  try { return await realpath(absolute); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    const parent = dirname(absolute);
+    if (parent === absolute) throw error;
+    return join(await canonicalTarget(parent), relative(parent, absolute));
+  }
 }
 
 function resolveTargetPath(target: string, workspaceDir: string | undefined): string {

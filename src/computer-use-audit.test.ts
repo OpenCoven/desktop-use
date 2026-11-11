@@ -27,3 +27,9 @@ test("audit events redact sensitive params and summarize results", () => {
   assert.doesNotMatch(JSON.stringify(event), /secret clipboard/);
   assert.match(JSON.stringify(event), /<16-byte text>/);
 });
+
+test("durable audit never stores arbitrary private argv, URLs, paths, or reasons", () => {
+  const request = { action: "shell" as const, command: "echo", args: ["arbitrary-private-value"], reason: "arbitrary-private-reason", path: "/tmp/arbitrary-private-path", url: "https://user:arbitrary-private-password@example.com" };
+  const event = buildComputerUseAuditEvent({ request, decision: classifyComputerUseRequest(request), result: { status: "success" } });
+  assert.doesNotMatch(JSON.stringify(event), /arbitrary-private/);
+});

@@ -66,7 +66,8 @@ test("actual adapter envelopes control action status, retries, and durable audit
       assert.equal(result.details.success, expected === "success");
       const calls = (await readFile(receipt, "utf8")).trim().split("\n").map(line => JSON.parse(line));
       assert.equal(calls.length, count);
-      assert.deepEqual(calls[0], action === "click" ? ["click", "--confirm", "--on", "B1"] : [action]);
+      assert.deepEqual(calls[0].slice(0, -2), action === "click" ? ["click", "--confirm", "--on", "B1"] : [action]);
+      assert.equal(calls[0].at(-2), "--timeout-ms");
     }
     const events = (await readFile(join(dir, "audit/computer-use.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
     assert.equal(events.length, 9);
@@ -156,7 +157,7 @@ test("failed adapter process does not echo typed text from process diagnostics",
   }
 });
 
-test("actual observation process timeout is retried only once", async () => {
+test("actual observation process timeout exhausts the shared budget without retry", async () => {
   const dir = await mkdtemp(join(tmpdir(), "desktop-use-timeout-"));
   const executable = join(dir, "adapter");
   const receipt = join(dir, "calls");
@@ -166,8 +167,8 @@ test("actual observation process timeout is retried only once", async () => {
     process.env.COVEN_DESKTOP_USE_BIN = executable;
     const tool = createComputerUseTool({ appendAuditEvent: async () => undefined });
     const result = await tool.execute("timeout", { action: "inspect", timeoutMs: 1000 });
-    assert.equal(result.details.status, "error");
-    assert.equal((await readFile(receipt, "utf8")).trim().split("\n").length, 2);
+    assert.equal(result.details.status, "timeout");
+    assert.equal((await readFile(receipt, "utf8")).trim().split("\n").length, 1);
   } finally {
     if (previous === undefined) delete process.env.COVEN_DESKTOP_USE_BIN;
     else process.env.COVEN_DESKTOP_USE_BIN = previous;

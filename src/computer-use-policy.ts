@@ -104,7 +104,7 @@ export type ComputerUseDecision = {
 };
 
 export type NormalizedAdapterResult = {
-  status: "success" | "blocked" | "needsApproval" | "unsupported" | "error";
+  status: "success" | "blocked" | "needsApproval" | "unsupported" | "error" | "cancelled" | "timeout";
   success: boolean;
   evidence: Record<string, unknown>;
   result: unknown;
@@ -140,6 +140,11 @@ export function classifyComputerUseRequest(
     return blocked("observe", action, "unknown", "Missing computer-use action.");
   }
 
+  if ((action === "inspect" || action === "screenshot") && params.path) {
+    return approvalDecision({ action, risk: "local-destructive", target: params.path,
+      approved: params.confirm === true, reason: "An explicit capture destination can replace an existing file.",
+      title: "Write Capture File", exactInput: params.path, rollback: "Restore the destination from a backup if it is replaced." });
+  }
   if (OBSERVE_ACTIONS.has(action)) {
     return allow("observe", action, describeTarget(params, ctx));
   }
@@ -233,7 +238,7 @@ function classifyShell(params: ComputerUseParams, ctx: ComputerUsePolicyContext)
   if (!command) {
     return blocked("local-nondestructive", "shell", target, "shell requires command.");
   }
-  const lowerCommand = command.toLowerCase();
+  const lowerCommand = path.basename(command).toLowerCase();
   const lowerPreview = preview.toLowerCase();
   if (isSecurityBoundaryBypass(lowerCommand, lowerPreview)) {
     return blocked(
@@ -291,7 +296,9 @@ function classifyShell(params: ComputerUseParams, ctx: ComputerUsePolicyContext)
       exactInput: bounded(preview),
     });
   }
-  return allow("local-nondestructive", "shell", target);
+  return approvalDecision({ action: "shell", risk: "local-destructive", target, approved: params.confirm === true,
+    reason: "General command effects cannot be inferred safely from argv; OpenClaw approval is required.",
+    title: "Run Shell Command", exactInput: bounded(preview) });
 }
 
 function allow(risk: ComputerUseRisk, action: string, target: string): ComputerUseDecision {
@@ -473,10 +480,10 @@ function isSensitivePath(value: string): boolean {
 }
 
 function isOutsideWorkspace(target: string, workspaceDir: string | undefined): boolean {
-  if (!workspaceDir || !target.trim() || !path.isAbsolute(target)) {
+  if (!workspaceDir || !target.trim()) {
     return false;
   }
-  const relative = path.relative(path.resolve(workspaceDir), path.resolve(target));
+  const relative = path.relative(path.resolve(workspaceDir), path.resolve(workspaceDir, target));
   return relative.startsWith("..") || path.isAbsolute(relative);
 }
 
@@ -537,7 +544,9 @@ export function normalizeAdapterResult(
 ): NormalizedAdapterResult {
   const action = decodeAdapterAction(result);
   let status: NormalizedAdapterResult["status"] = "error";
-  if (action.supported === false) status = "unsupported";
+  if (action.code === "CANCELLED" || action.cancelled === true) status = "cancelled";
+  else if (action.code === "ETIMEDOUT" || action.timedOut === true) status = "timeout";
+  else if (action.supported === false) status = "unsupported";
   else if (action.requiresConfirmation === true) status = "needsApproval";
   else if (action.ok === true) status = "success";
   return { status, success: status === "success", evidence: options.evidence, result };
