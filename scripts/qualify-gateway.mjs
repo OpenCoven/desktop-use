@@ -2,11 +2,11 @@
 import assert from "node:assert/strict";
 import { createServer, request as httpRequest } from "node:http";
 import { createRequire } from "node:module";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomUUID, randomBytes } from "node:crypto";
 import { mkdir, readFile, writeFile, open, symlink, access, rename, realpath } from "node:fs/promises";
 import { resolve, dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const pluginRoot = resolve(process.argv[4] ?? repo);
@@ -84,6 +84,15 @@ const configPath = join(root, "openclaw.json"); await save("openclaw.json", conf
 const log = await open(join(root, "console.log"), "w", 0o600);
 const env = Object.fromEntries(["PATH", "TMPDIR", "LANG", "USER"].filter(k => process.env[k]).map(k => [k, process.env[k]]));
 Object.assign(env, { OPENCLAW_STATE_DIR: join(root, "state"), OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_HOME: join(root, "home"), OPENCLAW_PLUGIN_LOAD_PROFILE: "1", OPENCLAW_LIVE_GATEWAY: "1", OPENCLAW_LIVE_GATEWAY_PROVIDERS: "qualification" });
+// Refuse to start a gateway if this package would escape the explicit state root.
+// This dry resolver call has no audit write or gateway/profile initialization.
+const auditProbe = spawnSync(process.execPath, ["--import", createRequire(join(repo, "package.json")).resolve("tsx"), "--input-type=module", "-e",
+  "const audit = await import(process.argv[1]); console.log(JSON.stringify(['computer-use','legacy-qualification'].map(agentId => audit.resolveComputerUseAuditLogPath({agentId}))));",
+  pathToFileURL(join(pluginRoot, "src/computer-use-audit.ts")).href,
+], { cwd: repo, env, encoding: "utf8" });
+assert.equal(auditProbe.status, 0, auditProbe.stderr);
+assert.deepEqual(JSON.parse(auditProbe.stdout.trim()), [join(root, "state/agents/computer-use/audit/computer-use.jsonl"), join(root, "state/agents/legacy-qualification/audit/computer-use.jsonl")]);
+await save("audit-path-preflight.json", { isolated: true });
 const gateway = spawn(process.execPath, [join(host, "openclaw.mjs"), "gateway", "run"], { cwd: repo, env, stdio: ["ignore", log.fd, log.fd] });
 let gatewayExit; gateway.on("exit", (code, signal) => { gatewayExit = { code, signal }; });
 let socket;
