@@ -582,8 +582,7 @@ export function normalizeParams(params: unknown): ComputerUseParams {
   if (!params || typeof params !== "object" || Array.isArray(params)) {
     throw new ToolInputError("Parameters must be an object.");
   }
-  const record = params as Record<string, unknown>;
-  if (typeof record.action !== "string" || !record.action) {
+  const record = Object.fromEntries(Object.entries(params)) as Record<string, unknown>;
     throw new ToolInputError("action is required and must be a string.");
   }
   const properties: Record<string, {
