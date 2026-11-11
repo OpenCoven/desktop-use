@@ -130,21 +130,23 @@ content, tokens, cookies, and credentials are not written to durable logs.
 
 ## Control UI State
 
-The plugin registers `computer-use-panel` when the host supports Control UI
-descriptors. The descriptor schema covers:
+The plugin offers `computer-use-panel` through the optional host `registerControlUiDescriptor` API. This is integration metadata, not a running panel, state store, subscription, or gateway RPC. Hosts without that API do not get a panel merely by loading the plugin. Rendering and connecting the panel are host responsibilities.
 
-- `health`
-- `permissions`
-- `activeTarget`
-- `latestObservation`
-- `pendingApprovals`
-- `recentActions`
-- `errors`
-- `repairHints`
-- `controls`
+Only two plugin controls are advertised. The descriptor's `actions.stop` maps to `computer_use action=stop`; `actions.runHealthCheck` maps to `computer_use action=health`. The host enables them only when it can invoke that tool under the current agent policy and gateway authentication. `requiredScopes: ["operator.read"]` describes reading panel state, not permission to invoke controls. Tool calls retain their normal authorization. Stop requests cancellation for active calls in the same agent/session/workspace; it does not pause future work, revoke approvals, or clear a retained target. Those operations belong to a host that implements them and are not advertised as plugin controls.
 
-This is a state contract for the dedicated agent panel; it is intentionally not
-a broad grant to the default agent.
+The schema describes host-rendered state. `stateSources` identifies the producer and availability of every field; it does not imply that the plugin emits a combined state object. Hosts translate available results into the schema and leave unavailable fields absent instead of inventing successful or empty state.
+
+| Field | Producer and source | Availability |
+| --- | --- | --- |
+| `health` | Plugin health action result; host renders state, check time, adapter, and gateway context | After an explicit health call; a missing backend remains a failed health result |
+| `permissions` | Plugin doctor result and `permissionFlow`; host projects individual permission states | After doctor/health; missing backend or protocol evidence remains unavailable/unverified |
+| `activeTarget` | Host-selected app/window/URL | Only if the host tracks a target; the plugin has no active-target store |
+| `latestObservation` | Host projection of inspect/screenshot results | After an observation; the plugin does not retain observations |
+| `pendingApprovals` | Host subscription to gateway plugin-approval events or authenticated pending-request lookup | Only with gateway approval integration; the plugin does not own the approval queue |
+| `recentActions` | Host projection of tool results or redacted JSONL action audits | Only if the host reads those results or records; audit records are not a full input history |
+| `errors` | Host projection of structured failed action results | After a failed call; the plugin does not retain an error store |
+| `repairHints` | Plugin health `repairHints` and `permissionFlow` | After an explicit health call |
+| `controls` | Host combines descriptor action mappings with current tool availability and policy | Only when the host can invoke the mapped tool; unsupported operations remain absent |
 
 ## Reliability
 
