@@ -1,3 +1,4 @@
+import { COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME } from "../src/tool-names.ts";
 // Real pinned gateway + local deterministic model transport; no live provider or desktop input.
 import assert from "node:assert/strict";
 import { createServer, request as httpRequest } from "node:http";
@@ -39,11 +40,11 @@ const model = createServer(async (req, res) => {
     const marker = JSON.stringify(messages[userIndex]?.content).match(/QUALIFICATION_CASE:([a-z0-9-]+)/)?.[1];
     assert.ok(marker && cases.has(marker), `Unexpected model request ${req.url}`);
     const plan = cases.get(marker);
-    assert.deepEqual((body.tools ?? []).map(t => t.function?.name), [plan.tool ?? "computer_use"], "Actual model tool inventory");
+    assert.deepEqual((body.tools ?? []).map(t => t.function?.name), [plan.tool ?? COMPUTER_USE_TOOL_NAME], "Actual model tool inventory");
     const finished = messages.slice(userIndex + 1).some(m => m.role === "tool");
     requests.push({ case: marker, url: req.url, tools: (body.tools ?? []).map(t => t.function?.name), finished });
     await save("model-requests.json", requests);
-    const toolCall = { index: 0, id: `call_${marker}`, type: "function", function: { name: plan.tool ?? "computer_use", arguments: JSON.stringify(plan.args) } };
+    const toolCall = { index: 0, id: `call_${marker}`, type: "function", function: { name: plan.tool ?? COMPUTER_USE_TOOL_NAME, arguments: JSON.stringify(plan.args) } };
     res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
     const chunk = (delta, finish_reason = null) => res.write(`data: ${JSON.stringify({ id: `chatcmpl-${marker}`, object: "chat.completion.chunk", created: Math.floor(Date.now() / 1000), model: "fixture", choices: [{ index: 0, delta, finish_reason }] })}\n\n`);
     chunk({ role: "assistant" });
@@ -77,7 +78,8 @@ const config = {
     defaults: { workspace, skipBootstrap: true, model: { primary: "qualification/fixture" }, timeoutSeconds: 420, heartbeat: { every: "0m" } },
     list: [
       { id: "computer-use", default: true, workspace, agentDir, tools: template.tools },
-      { id: "legacy-qualification", workspace: legacyWorkspace, agentDir: join(root, "state/agents/legacy-qualification/agent"), tools: { ...template.tools, allow: ["desktop_use"] } },
+      { id: "minimal-qualification", workspace, agentDir: join(root, "state/agents/minimal-qualification/agent"), tools: { ...template.tools, profile: "minimal" } },
+      { id: "legacy-qualification", workspace: legacyWorkspace, agentDir: join(root, "state/agents/legacy-qualification/agent"), tools: { ...template.tools, allow: [DESKTOP_USE_TOOL_NAME] } },
     ],
   },
 };
@@ -139,7 +141,7 @@ try {
   const session = "agent:computer-use:qualification";
   await rpc("sessions.patch", { key: session, label: "qualification" });
   const inventory = await rpc("tools.effective", { sessionKey: session }); await save("effective-tools.json", inventory);
-  assert.deepEqual(inventory.groups.flatMap(g => g.tools.map(t => t.id)), ["computer_use"]);
+  assert.deepEqual(inventory.groups.flatMap(g => g.tools.map(t => t.id)), [COMPUTER_USE_TOOL_NAME]);
   async function httpInvoke(tool, args, sessionKey = session) {
     return new Promise((resolve, reject) => {
       const request = httpRequest(`http://127.0.0.1:${port}/tools/invoke`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" } }, response => {
@@ -151,10 +153,17 @@ try {
       request.on("error", reject); request.end(JSON.stringify({ tool, args, sessionKey }));
     });
   }
-  const health = await httpInvoke("computer_use", { action: "health" }); await save("health.json", health);
+  const minimalSession = "agent:minimal-qualification:qualification";
+  await rpc("sessions.patch", { key: minimalSession });
+  const minimalInventory = await rpc("tools.effective", { sessionKey: minimalSession });
+  await save("minimal-effective-tools.json", minimalInventory);
+  assert.equal(minimalInventory.profile, "minimal");
+  assert.deepEqual(minimalInventory.groups, []);
+  assert.equal((await httpInvoke(COMPUTER_USE_TOOL_NAME, { action: "stop" }, minimalSession)).status, 404);
+  const health = await httpInvoke(COMPUTER_USE_TOOL_NAME, { action: "health" }); await save("health.json", health);
   assert.equal(health.status, 200); assert.deepEqual(health.body.result.details.agent.toolPolicy, template.tools);
-  for (const name of ["exec", "bash", "shell", "apply_patch", "desktop_use"]) assert.equal((await httpInvoke(name, {})).status, 404, name);
-  async function runCase(name, args, decision = "allow-once", sessionKey = session, tool = "computer_use", options = {}) {
+  for (const name of ["exec", "bash", "shell", "apply_patch", DESKTOP_USE_TOOL_NAME]) assert.equal((await httpInvoke(name, {})).status, 404, name);
+  async function runCase(name, args, decision = "allow-once", sessionKey = session, tool = COMPUTER_USE_TOOL_NAME, options = {}) {
     cases.set(name, { args, tool });
     const start = events.length;
     const accepted = await rpc("agent", { message: `QUALIFICATION_CASE:${name}`, agentId: sessionKey.split(":")[1], sessionKey, idempotencyKey: randomUUID(), deliver: false, timeout: 420 });
@@ -168,11 +177,12 @@ try {
       if (decision !== "expire") await rpc("plugin.approval.resolve", { id: approval.payload.id, decision });
     }
     const outcome = await completed; await save(`${name}-outcome.json`, outcome);
+    console.log(`Gateway agent finished ${name}: ${outcome.status}`);
     const history = await rpc("chat.history", { sessionKey, limit: 100 }); await save(`${name}-history.json`, history);
     if (!options.abort) assert.equal(outcome.status, "ok", JSON.stringify(outcome));
     return { history, events: events.slice(start) };
   }
-  const toolResult = (history, name = "computer_use") => {
+  const toolResult = (history, name = COMPUTER_USE_TOOL_NAME) => {
     const message = history.messages?.findLast(m => m.role === "toolResult" && m.toolName === name);
     assert.ok(message, `No ${name} tool result in gateway history`);
     const text = message.content?.filter(c => c.type === "text").map(c => c.text).join("\n");
@@ -185,7 +195,7 @@ try {
   const external = join(root, "external"); await mkdir(external);
   await symlink(external, join(workspace, "alias"));
   const allowedPath = join(external, "allowed.txt");
-  const allowed = await runCase("canonical-allow", { action: "file-write", path: "alias/allowed.txt", content: secret }, "allow-once", session, "computer_use", {
+  const allowed = await runCase("canonical-allow", { action: "file-write", path: "alias/allowed.txt", content: secret }, "allow-once", session, COMPUTER_USE_TOOL_NAME, {
     beforeDecision: async approval => {
       assert.ok(approval.request.description.includes(await realpath(external)));
       assert.ok(!approval.request.description.includes(secret));
@@ -198,39 +208,41 @@ try {
     await noFile(join(workspace, `${name}.txt`));
   }
   const real = join(workspace, "real"), rebound = join(root, "rebound"); await mkdir(real); await mkdir(rebound);
-  const rebind = await runCase("target-rebind", { action: "file-write", path: "real/note.txt", content: secret }, "allow-once", session, "computer_use", {
+  const rebind = await runCase("target-rebind", { action: "file-write", path: "real/note.txt", content: secret }, "allow-once", session, COMPUTER_USE_TOOL_NAME, {
     beforeDecision: async () => { await rename(real, join(workspace, "old")); await symlink(rebound, real); },
   });
   assert.equal(toolResult(rebind.history).status, "needsApproval"); await noFile(join(rebound, "note.txt"));
   const legacySession = "agent:legacy-qualification:qualification";
   await rpc("sessions.patch", { key: legacySession });
   const legacyInventory = await rpc("tools.effective", { sessionKey: legacySession }); await save("legacy-effective-tools.json", legacyInventory);
-  assert.deepEqual(legacyInventory.groups.flatMap(g => g.tools.map(t => t.id)), ["desktop_use"]);
-  const legacy = await runCase("legacy-denied", { action: "file-write", path: "legacy.txt", content: secret, confirm: true }, "deny", legacySession, "desktop_use");
+  assert.deepEqual(legacyInventory.groups.flatMap(g => g.tools.map(t => t.id)), [DESKTOP_USE_TOOL_NAME]);
+  const legacy = await runCase("legacy-denied", { action: "file-write", path: "legacy.txt", content: secret, confirm: true }, "deny", legacySession, DESKTOP_USE_TOOL_NAME);
   await noFile(join(legacyWorkspace, "legacy.txt"));
   // Gateway construction can load bundled provider metadata before dispatching
   // the tool; warm each control route before timing cancellation of live work.
-  await httpInvoke("computer_use", { action: "stop" }, session);
-  await httpInvoke("desktop_use", { action: "stop" }, legacySession);
+  await httpInvoke(COMPUTER_USE_TOOL_NAME, { action: "stop" }, session);
+  await httpInvoke(DESKTOP_USE_TOOL_NAME, { action: "stop" }, legacySession);
   const helper = join(workspace, "stalled-helper.cjs");
   await writeFile(helper, "const fs=require('fs');process.on('SIGTERM',()=>{});fs.writeFileSync(process.argv[2],String(process.pid));setInterval(()=>{},1000);\n");
   const processGone = async pid => until(() => { try { process.kill(pid, 0); return false; } catch (e) { assert.equal(e.code, "ESRCH"); return true; } }, 2000);
   for (const mode of ["stop", "abort"]) {
     const caseName = `owned-${mode}`, key = `agent:computer-use:${caseName}`, ready = join(workspace, `${caseName}.pid`);
     await rpc("sessions.patch", { key });
-    await httpInvoke("computer_use", { action: "stop" }, key);
+    await httpInvoke(COMPUTER_USE_TOOL_NAME, { action: "stop" }, key);
     let run;
-    const active = runCase(caseName, { action: "shell", command: process.execPath, args: ["stalled-helper.cjs", `${caseName}.pid`], timeoutMs: 30000 }, "allow-once", key, "computer_use", { abort: mode === "abort", onAccepted: accepted => run = accepted });
+    const active = runCase(caseName, { action: "shell", command: process.execPath, args: ["stalled-helper.cjs", `${caseName}.pid`], timeoutMs: 30000 }, "allow-once", key, COMPUTER_USE_TOOL_NAME, { abort: mode === "abort", onAccepted: accepted => run = accepted });
     active.catch(() => {});
     const pid = await until(async () => { const n = Number(await readFile(ready, "utf8")); return Number.isSafeInteger(n) && n > 0 ? n : undefined; }, 45000);
-    const otherSessionStop = await httpInvoke("computer_use", { action: "stop" }, session);
+    const otherSessionStop = await httpInvoke(COMPUTER_USE_TOOL_NAME, { action: "stop" }, session);
     assert.equal(otherSessionStop.body.result.details.cancellationRequested, 0);
-    const otherAgentStop = await httpInvoke("desktop_use", { action: "stop" }, legacySession);
+    const otherAgentStop = await httpInvoke(DESKTOP_USE_TOOL_NAME, { action: "stop" }, legacySession);
     assert.equal(otherAgentStop.body.result.details.cancellationRequested, 0);
     process.kill(pid, 0);
     const start = Date.now();
-    const cancellation = mode === "stop" ? await httpInvoke("computer_use", { action: "stop" }, key) : await rpc("sessions.abort", { key, runId: run.runId });
+    const cancellation = mode === "stop" ? await httpInvoke(COMPUTER_USE_TOOL_NAME, { action: "stop" }, key) : await rpc("sessions.abort", { key, runId: run.runId });
+    const acceptedMs = Date.now() - start;
     await processGone(pid);
+    const helperGoneMs = Date.now() - start;
     const result = await active;
     const cancellationAudit = await until(async () => {
       const records = (await readFile(join(dirname(agentDir), "audit/computer-use.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
@@ -238,8 +250,9 @@ try {
     });
     assert.equal(cancellationAudit.result.status, "cancelled", `Audit the actual ${mode} outcome`);
     if (mode === "stop") { assert.equal(cancellation.body.result.details.cancellationRequested, 1); assert.equal(toolResult(result.history).status, "cancelled"); }
-    await save(`${caseName}-cancellation.json`, { cancellation, elapsedMs: Date.now() - start, helperGone: true });
+    await save(`${caseName}-cancellation.json`, { cancellation, acceptedMs, helperGoneMs, settledMs: Date.now() - start, helperGone: true });
   }
+  console.log("Waiting for the gateway's real five-minute approval expiry.");
   const expiryStarted = Date.now();
   const expired = await runCase("expired-write", { action: "file-write", path: "expired.txt", content: secret }, "expire");
   const expiryApproval = JSON.parse(await readFile(join(root, "expired-write-approval.json"), "utf8"));
