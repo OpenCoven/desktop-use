@@ -745,8 +745,8 @@ function linuxPermissionFlow(result: unknown, action: string): unknown | undefin
     tools: tools ?? null,
     sessionNotes: collectSessionNotes(setupGuide),
     afterInstall:
-      "After installing the listed packages, rerun desktop_use action=doctor. Wayland users may also need to start the ydotoold service and add their user to the 'input' group.",
-    verification: { tool: "desktop_use", args: { action: "doctor" } },
+      "After installing the listed packages, rerun computer_use action=doctor. Wayland users may also need to start the ydotoold service and add their user to the 'input' group.",
+    verification: { tool: "computer_use", args: { action: "doctor" } },
   };
 }
 

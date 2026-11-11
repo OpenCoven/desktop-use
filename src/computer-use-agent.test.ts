@@ -72,3 +72,18 @@ test("ships a packaged identity and config template for the dedicated agent", ()
   assert.equal(config.health.tool, "computer_use");
   assert.deepEqual(config.health.args, { action: "health" });
 });
+
+test("keeps the packaged agent template in step with the exported agent", () => {
+  const read = (name: string) =>
+    readFileSync(new URL(`../agents/computer-use/${name}`, import.meta.url), "utf8");
+  const config = JSON.parse(read("openclaw-agent.json"));
+  const words = (value: string) => value.split(/\s+/).filter(Boolean).join(" ");
+
+  for (const key of ["id", "name", "workspace", "agentDir", "memory", "auth", "logs"] as const) {
+    assert.deepEqual(config[key], COMPUTER_USE_AGENT[key], key);
+  }
+  assert.deepEqual(config.tools.allow, COMPUTER_USE_AGENT.toolPolicy.allow);
+  assert.deepEqual(config.tools.deny, COMPUTER_USE_AGENT.toolPolicy.deny);
+  assert.deepEqual(config.health, COMPUTER_USE_HEALTH_CHECK);
+  assert.equal(words(read("IDENTITY.md")), words(COMPUTER_USE_AGENT.identityMarkdown));
+});

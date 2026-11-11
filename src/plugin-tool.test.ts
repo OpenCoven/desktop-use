@@ -157,3 +157,22 @@ test("blocks dangerous shell attempts before adapter or host execution", async (
   assert.equal(result.details.status, "blocked");
   assert.match(result.details.reason ?? "", /privileged/i);
 });
+
+test("names the canonical computer_use tool in every setup and repair guide", async () => {
+  for (const doctor of [
+    { ok: true, platform: "linux", session: "wayland", setupGuide: { summary: "fixture" } },
+    { ok: true, platform: "macos" },
+  ]) {
+    const tool = createComputerUseTool({
+      ctx: { agentId: "computer-use", sessionKey: "agent:computer-use:main" },
+      runAdapter: async () => doctor,
+      appendAuditEvent: async () => undefined,
+    });
+    for (const action of ["doctor", "health"]) {
+      const result = await tool.execute(`guide-${doctor.platform}-${action}`, { action });
+      const flow = result.details.permissionFlow as { verification?: { tool?: string } };
+      assert.equal(flow.verification?.tool, "computer_use");
+      assert.doesNotMatch(JSON.stringify(result.details), /desktop_use/);
+    }
+  }
+});

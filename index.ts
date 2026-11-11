@@ -53,7 +53,7 @@ export default definePluginEntry({
       toolName: "desktop_use",
       displayName: "Desktop Use",
       risk: "high",
-      tags: ["opencoven", "computer-use", "legacy"],
+      tags: ["opencoven", "computer-use", "approval-gated", "legacy"],
       description: "Legacy alias for computer_use.",
     });
     optionalApi.registerControlUiDescriptor?.(COMPUTER_USE_CONTROL_UI_DESCRIPTOR);
