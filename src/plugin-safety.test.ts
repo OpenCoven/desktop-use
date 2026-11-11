@@ -76,7 +76,10 @@ test("approved write under symlink parent uses the exact canonical external targ
   const events: unknown[] = [];
   const tool = createComputerUseTool({ ctx: { workspaceDir: inside }, appendAuditEvent: async event => { events.push(event); } });
   const result = await tool.execute("write", { action: "file-write", path: "link/new/leaf.txt", content: "private file contents", confirm: true });
-  assert.equal(result.details.status, "success");
+  assert.equal(result.details.status, "needsApproval");
+  const canonical = join(await import("node:fs/promises").then(fs => fs.realpath(root)), "new/leaf.txt");
+  const approved = await tool.execute("write-canonical", { action: "file-write", path: canonical, content: "private file contents", confirm: true });
+  assert.equal(approved.details.status, "success");
   assert.equal(await readFile(join(root, "new/leaf.txt"), "utf8"), "private file contents");
   assert.ok(!JSON.stringify(events).includes("private file contents"));
 });
@@ -104,3 +107,21 @@ test("explicit capture destinations require write approval before adapter execut
   }
   assert.equal(calls,0); assert.equal(await readFile(outside,"utf8"),"original");
 });
+
+for (const cancellation of [false,true]) {
+ test(`adapter ${cancellation ? "cancellation" : "timeout"} retains safe completed-step progress`,async t=>{
+  const {root,inside}=await workspace(t), fixture=join(root,"progress-adapter"),ready=join(root,"ready-progress");
+  const payload={ok:false,code:"CANCELLED",completedSteps:1,totalSteps:3,failedStep:1,partial:true,error:"private-progress-diagnostic",stdout:"private-progress-diagnostic"};
+  await writeFile(fixture,`#!${process.execPath}\nprocess.on('SIGTERM',()=>{console.log(${JSON.stringify(JSON.stringify(payload))});console.error('private-progress-diagnostic');process.exit(0)});require('fs').writeFileSync(${JSON.stringify(ready)},'ready');setInterval(()=>{},1000);`,{mode:0o700});
+  const previous=process.env.COVEN_DESKTOP_USE_BIN;process.env.COVEN_DESKTOP_USE_BIN=fixture;
+  t.after(()=>{if(previous===undefined)delete process.env.COVEN_DESKTOP_USE_BIN;else process.env.COVEN_DESKTOP_USE_BIN=previous;});
+  const controller=new AbortController();
+  const active=createComputerUseTool({ctx:{workspaceDir:inside},appendAuditEvent:async()=>{}}).execute("progress",{action:"type-text",text:"fixture",confirm:true,timeoutMs:1000},controller.signal);
+  if(cancellation){for(let i=0;i<100;i++){try{await readFile(ready);break;}catch{await new Promise(r=>setTimeout(r,10));}}controller.abort();}
+  const result=await active;
+  assert.equal(result.details.status,cancellation?"cancelled":"timeout");
+  const envelope=result.details.result as any;
+  assert.equal(envelope.completedSteps,1);assert.equal(envelope.failedStep,1);assert.equal(envelope.totalSteps,3);assert.equal(envelope.partial,true);
+  assert.ok(!JSON.stringify(result).includes("private-progress-diagnostic"));
+ });
+}

@@ -1,7 +1,20 @@
 import { spawn } from "node:child_process";
 
+export type ActionProgress = { completedSteps: number; totalSteps: number; failedStep?: number; partial: boolean };
+
+function validatedProgress(output: Buffer): ActionProgress | undefined {
+  try {
+    const record = JSON.parse(output.toString("utf8"));
+    if (!record || typeof record !== "object" || typeof record.ok !== "boolean") return undefined;
+    const { completedSteps, totalSteps, failedStep } = record;
+    if (!Number.isSafeInteger(completedSteps) || !Number.isSafeInteger(totalSteps) || totalSteps < 1 || completedSteps < 0 || completedSteps > totalSteps) return undefined;
+    if (failedStep !== undefined && (!Number.isSafeInteger(failedStep) || failedStep < 0 || failedStep >= totalSteps || failedStep !== completedSteps)) return undefined;
+    return { completedSteps, totalSteps, ...(failedStep !== undefined ? { failedStep } : {}), partial: completedSteps > 0 && completedSteps < totalSteps };
+  } catch { return undefined; }
+}
+
 export class ProcessFailure extends Error {
-  constructor(readonly code: string, readonly exitCode?: number | null) {
+  constructor(readonly code: string, readonly exitCode?: number | null, readonly progress?: ActionProgress) {
     super(`Helper execution failed (${code}); raw arguments and diagnostics withheld.`);
     this.name = "ProcessFailure";
   }
@@ -14,6 +27,7 @@ export type ProcessOptions = {
   input?: string;
   maxBuffer?: number;
   capture?: boolean;
+  reportProgress?: boolean;
   // Clipboard tools deliberately transfer ownership to their own background selection server.
   retainGroupOnSuccess?: boolean;
 };
@@ -47,7 +61,10 @@ export function runProcess(file: string, args: string[], options: ProcessOptions
       child.stdin?.destroy();
       child.stdout?.destroy();
       child.stderr?.destroy();
-      if (error) reject(error);
+      if (error) {
+        const progress = options.reportProgress && ["ETIMEDOUT", "CANCELLED"].includes(error.code) ? validatedProgress(out) : undefined;
+        reject(new ProcessFailure(error.code, error.exitCode, progress));
+      }
       else resolve({ stdout: out.toString("utf8"), stderr: err.toString("utf8") });
     };
     const stop = (error: ProcessFailure) => {
@@ -61,9 +78,9 @@ export function runProcess(file: string, args: string[], options: ProcessOptions
     options.signal?.addEventListener("abort", abort, { once: true });
     if (options.signal?.aborted) abort();
     const collect = (kind: "out" | "err", chunk: Buffer) => {
-      if (failure || done) return;
+      if (done) return;
       if (out.length + err.length + chunk.length > (options.maxBuffer ?? 64_000)) {
-        stop(new ProcessFailure("OUTPUT_LIMIT"));
+        if (!failure) stop(new ProcessFailure("OUTPUT_LIMIT"));
       } else if (kind === "out") out = Buffer.concat([out, chunk]);
       else err = Buffer.concat([err, chunk]);
     };

@@ -3,10 +3,11 @@ import {
   COMPUTER_USE_CONTROL_UI_DESCRIPTOR,
 } from "./src/computer-use-agent.js";
 import {
-  classifyComputerUseRequest,
   type ComputerUseParams,
+  type ComputerUsePolicyContext,
+  normalizeComputerUseAction,
 } from "./src/computer-use-policy.js";
-import { createComputerUseTool, createDesktopUseTool, normalizeParams } from "./src/plugin-tool.js";
+import { createComputerUseTool, createDesktopUseTool, normalizeParams, prepareComputerUseRequest } from "./src/plugin-tool.js";
 
 type OptionalComputerUseApi = {
   registerToolMetadata?: (metadata: {
@@ -26,8 +27,17 @@ export default definePluginEntry({
     "Registers the dedicated computer_use agent tool and delegates desktop automation to the external OpenCoven coven-desktop-use adapter.",
   register(api) {
     const optionalApi = api as typeof api & OptionalComputerUseApi;
-    api.registerTool((ctx) => createComputerUseTool({ ctx }), { name: "computer_use" });
-    api.registerTool((ctx) => createDesktopUseTool({ ctx }), {
+    // Hook contexts omit workspaceDir in this SDK. Retain the authenticated tool-factory context.
+    const policyContexts = new Map<string, ComputerUsePolicyContext>();
+    const scope = (ctx: ComputerUsePolicyContext) => JSON.stringify([ctx.agentId ?? "computer-use", ctx.sessionKey ?? ""]);
+    const remember = (ctx: ComputerUsePolicyContext) => {
+      const snapshot = { ...ctx }; const key = scope(snapshot);
+      policyContexts.delete(key); policyContexts.set(key, snapshot);
+      if (policyContexts.size > 256) policyContexts.delete(policyContexts.keys().next().value!);
+      return snapshot;
+    };
+    api.registerTool((ctx) => createComputerUseTool({ ctx: remember(ctx) }), { name: "computer_use" });
+    api.registerTool((ctx) => createDesktopUseTool({ ctx: remember(ctx) }), {
       name: "desktop_use",
       optional: true,
     });
@@ -49,7 +59,7 @@ export default definePluginEntry({
     optionalApi.registerControlUiDescriptor?.(COMPUTER_USE_CONTROL_UI_DESCRIPTOR);
     api.on(
       "before_tool_call",
-      (event, ctx) => {
+      async (event, ctx) => {
         if (event.toolName !== "computer_use" && event.toolName !== "desktop_use") {
           return undefined;
         }
@@ -59,10 +69,16 @@ export default definePluginEntry({
         } catch {
           return { block: true, blockReason: "Invalid computer-use parameters." };
         }
-        const decision = classifyComputerUseRequest(params, {
-          agentId: ctx.agentId,
-          sessionKey: ctx.sessionKey,
-        });
+        const action = normalizeComputerUseAction(params.action);
+        const candidates = [...policyContexts.values()].filter(value => (value.agentId ?? "computer-use") === (ctx.agentId ?? "computer-use"));
+        const known = policyContexts.get(scope(ctx)) ?? (new Set(candidates.map(value => value.workspaceDir)).size === 1 ? candidates[0] : undefined);
+        const fileAction = ["file-list", "file-read", "file-write"].includes(action) || (["inspect", "screenshot"].includes(action) && params.path);
+        if (fileAction && !known?.workspaceDir) return { block: true, blockReason: "Computer-use workspace context is unavailable; file approval cannot be established." };
+        let prepared;
+        try { prepared = await prepareComputerUseRequest(params, { ...known, agentId: ctx.agentId, sessionKey: ctx.sessionKey }); }
+        catch { return { block: true, blockReason: "Computer-use target could not be resolved safely." }; }
+        params = prepared.params;
+        const decision = prepared.decision;
         if (decision.status === "blocked") {
           return {
             block: true,
@@ -92,7 +108,7 @@ export default definePluginEntry({
             },
           };
         }
-        return undefined;
+        return fileAction ? { params } : undefined;
       },
       { priority: 100 },
     );

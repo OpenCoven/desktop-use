@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import plugin from "../index.js";
 
-test("registers computer_use, legacy desktop_use, Control UI descriptor, and approval hook", () => {
+test("registers computer_use, legacy desktop_use, Control UI descriptor, and approval hook", async () => {
   const tools: Array<{ opts?: { name?: string; optional?: boolean } }> = [];
   const descriptors: unknown[] = [];
   const metadata: unknown[] = [];
@@ -38,7 +38,7 @@ test("registers computer_use, legacy desktop_use, Control UI descriptor, and app
   assert.equal(descriptors.length, 1);
   assert.equal(hooks[0]?.name, "before_tool_call");
 
-  const approval = hooks[0]?.handler(
+  const approval = await hooks[0]?.handler(
     { toolName: "computer_use", params: { action: "click", on: "B1" } },
     { agentId: "computer-use", sessionKey: "agent:computer-use:main" },
   ) as { params?: { confirm?: boolean }; requireApproval?: { title?: string } };
@@ -47,12 +47,12 @@ test("registers computer_use, legacy desktop_use, Control UI descriptor, and app
 
   for (const toolName of ["computer_use", "desktop_use"]) {
     for (const params of [{ action: "click" }, { action: "type-text" }, { action: "keypress", keys: [""] }, { action: "scroll" }, { action: "focus" }, { action: "shell" }, { action: "file-read" }, { action: "clipboard-write" }, { action: "browser-open" }, { action: "app-launch" }, null, { action: 1 }, { action: "click", confirm: "true" }, { action: "keypress", keys: ["a".repeat(1024), "b".repeat(1024)] }]) {
-      const invalid = hooks[0]?.handler({ toolName, params }, {}) as { block?: boolean };
+      const invalid = await hooks[0]?.handler({ toolName, params }, {}) as { block?: boolean };
       assert.equal(invalid.block, true);
     }
   }
 
-  const blocked = hooks[0]?.handler(
+  const blocked = await hooks[0]?.handler(
     {
       toolName: "computer_use",
       params: { action: "shell", command: "tccutil", args: ["reset", "Accessibility"] },

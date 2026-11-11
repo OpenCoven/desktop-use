@@ -174,11 +174,9 @@ export function createComputerUseTool(options: CreateComputerUseToolOptions = {}
       let decision = classifyComputerUseRequest(params, ctx);
       let details: ToolResult["details"];
       try {
-        // Resolve symlink aliases before deciding whether a file target needs approval.
-        if (["file-list", "file-read", "file-write"].includes(params.action) || (["inspect", "screenshot"].includes(normalizeComputerUseAction(params.action)) && params.path)) {
-          params = { ...params, path: await canonicalTarget(params.path ?? ctx.workspaceDir ?? ".", ctx.workspaceDir) };
-          decision = classifyComputerUseRequest(params, { ...ctx, workspaceDir: ctx.workspaceDir ? await realpath(ctx.workspaceDir) : undefined });
-        }
+        const prepared = await prepareComputerUseRequest(params, ctx);
+        params = prepared.params;
+        decision = prepared.decision;
         if (controller.signal.aborted) throw new ProcessFailure("CANCELLED");
         if (decision.status === "blocked" || decision.status === "needsApproval") {
           details = {
@@ -569,8 +567,8 @@ async function runAdapterBinary(args: string[], params: ComputerUseParams, signa
   const timeout = params.timeoutMs ?? (params.action === "inspect" || params.action === "screenshot" ? CAPTURE_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
   const adapterBin = resolveAdapterBin();
   try {
-    const { stdout } = await runProcess(adapterBin, [...args, "--timeout-ms", String(Math.max(1000, Math.floor(timeout)))], {
-      timeoutMs: timeout, signal, maxBuffer: 10 * 1024 * 1024,
+    const { stdout } = await runProcess(adapterBin, [...args, "--timeout-ms", String(Math.max(1000, Math.floor(timeout - 100)))], {
+      timeoutMs: timeout, signal, maxBuffer: 10 * 1024 * 1024, reportProgress: true,
     });
     let result: unknown;
     try { result = JSON.parse(stdout); } catch { return { ok: false, code: "MALFORMED_OUTPUT", error: "Adapter returned malformed JSON; output withheld." }; }
@@ -581,6 +579,7 @@ async function runAdapterBinary(args: string[], params: ComputerUseParams, signa
   } catch (error) {
     const code = error instanceof ProcessFailure || error instanceof FileActionError ? error.code : "BACKEND_ERROR";
     return { ok: false, code, error: "Adapter execution failed; raw diagnostics withheld.",
+      ...(["ETIMEDOUT", "CANCELLED"].includes(code) ? error instanceof ProcessFailure && error.progress ? error.progress : { progressUnknown: true } : {}),
       ...(code === "ENOENT" ? { hint: missingAdapterHint(adapterBin), adapterSetup: adapterSetupGuide(adapterBin) } : {}) };
   }
 }
@@ -590,7 +589,7 @@ function redactTypeDiagnostics(value: unknown): unknown {
   if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, code: "MALFORMED_OUTPUT" };
   const record = value as Record<string, unknown>;
   const fields: Record<string, unknown> = {};
-  for (const key of ["ok", "supported", "requiresConfirmation", "timedOut", "cancelled", "partial"]) {
+  for (const key of ["ok", "supported", "requiresConfirmation", "timedOut", "cancelled", "partial", "progressUnknown"]) {
     if (typeof record[key] === "boolean") fields[key] = record[key];
   }
   for (const key of ["exitCode", "completedSteps", "totalSteps", "failedStep"]) {
@@ -881,6 +880,20 @@ function resolveCwd(cwd: string | undefined, workspaceDir: string | undefined): 
   return resolved;
 }
 
+export async function prepareComputerUseRequest(rawParams: unknown, ctx: ComputerUsePolicyContext = {}) {
+  let params = normalizeParams(rawParams);
+  const action = normalizeComputerUseAction(params.action);
+  if (["file-list", "file-read", "file-write"].includes(action) || (["inspect", "screenshot"].includes(action) && params.path)) {
+    const workspaceDir = ctx.workspaceDir ? await realpath(ctx.workspaceDir) : undefined;
+    const requested = resolve(workspaceDir ?? process.cwd(), params.path ?? workspaceDir ?? ".");
+    const canonical = await canonicalTarget(requested);
+    // The hook carries the canonical path into execution. A changed parent cannot reuse its approval.
+    params = { ...params, path: canonical, ...(params.confirm === true && requested !== canonical ? { confirm: false } : {}) };
+    return { params, decision: classifyComputerUseRequest(params, { ...ctx, workspaceDir }) };
+  }
+  return { params, decision: classifyComputerUseRequest(params, ctx) };
+}
+
 async function canonicalTarget(target: string, workspaceDir?: string): Promise<string> {
   const absolute = resolve(workspaceDir ?? process.cwd(), target);
   try { return await realpath(absolute); }
@@ -888,7 +901,7 @@ async function canonicalTarget(target: string, workspaceDir?: string): Promise<s
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     const parent = dirname(absolute);
     if (parent === absolute) throw error;
-    return join(await canonicalTarget(parent), absolute.slice(parent.length + (parent.endsWith("/") ? 0 : 1)));
+    return join(await canonicalTarget(parent), relative(parent, absolute));
   }
 }
 

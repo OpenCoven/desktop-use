@@ -30,6 +30,15 @@ fn main() {
 
 fn run(args: Vec<String>) -> String {
     let timeout = match value(&args, "--timeout-ms") {
+        None if has_flag(&args, "--timeout-ms") => {
+            return json_obj(vec![
+                ("ok", "false".into()),
+                (
+                    "error",
+                    json_string("--timeout-ms requires an integer value from 1000 to 120000."),
+                ),
+            ])
+        }
         None => 30_000,
         Some(raw) => match raw.parse::<u64>() {
             Ok(ms @ 1000..=120_000) => ms,

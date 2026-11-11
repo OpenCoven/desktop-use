@@ -153,3 +153,15 @@ fn type_text_preserves_literal_argv_and_redacts_success_diagnostics() {
     assert!(!result.to_string().contains("private-diagnostic"));
     assert!(!result.to_string().contains(text));
 }
+
+#[test]
+fn timeout_flag_without_value_is_rejected_before_input_dispatch() {
+    let f = Fixture::new();
+    for tool in ["peekaboo", "xdotool"] {
+        f.tool(tool, r#"printf called >> "$FIXTURE_LOG"; exit 0"#);
+    }
+    let result=f.run(json!({"platform":"cli","env":{"DISPLAY":":fixture"},"args":["type-text","--text","hello","--confirm","--timeout-ms"]}));
+    assert_eq!(result["ok"], false);
+    assert!(result["error"].as_str().unwrap().contains("--timeout-ms"));
+    assert!(f.log().is_empty());
+}
