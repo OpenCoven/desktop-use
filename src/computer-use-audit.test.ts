@@ -1,6 +1,6 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { appendComputerUseAuditEvent, resolveComputerUseAuditLogPath, buildComputerUseAuditEvent } from "./computer-use-audit.js";
@@ -52,4 +52,21 @@ test("gateway calls without agentDir audit within the configured disposable stat
   for (const agentId of ["../outside", "/absolute", "nested/agent", "..", ""]) {
     assert.throws(() => resolveComputerUseAuditLogPath({ agentId }));
   }
+});
+
+test("fallback audit paths follow gateway home overrides and tilde expansion", async t => {
+  const root = await mkdtemp(join(tmpdir(), "desktopuse-audit-home-"));
+  const previousState = process.env.OPENCLAW_STATE_DIR, previousHome = process.env.OPENCLAW_HOME;
+  t.after(async () => {
+    if (previousState === undefined) delete process.env.OPENCLAW_STATE_DIR; else process.env.OPENCLAW_STATE_DIR = previousState;
+    if (previousHome === undefined) delete process.env.OPENCLAW_HOME; else process.env.OPENCLAW_HOME = previousHome;
+    await rm(root, { recursive: true, force: true });
+  });
+  const home = join(root, "virtual-home"); process.env.OPENCLAW_HOME = home;
+  process.env.OPENCLAW_STATE_DIR = "~/isolated-openclaw";
+  assert.equal(resolveComputerUseAuditLogPath({ agentId: "probe" }), join(home, "isolated-openclaw/agents/probe/audit/computer-use.jsonl"));
+  delete process.env.OPENCLAW_STATE_DIR;
+  assert.equal(resolveComputerUseAuditLogPath({ agentId: "probe" }), join(home, ".openclaw/agents/probe/audit/computer-use.jsonl"));
+  process.env.OPENCLAW_STATE_DIR = "./relative-qualification-state";
+  assert.equal(resolveComputerUseAuditLogPath({ agentId: "probe" }), resolve("relative-qualification-state/agents/probe/audit/computer-use.jsonl"));
 });
