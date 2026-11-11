@@ -24,7 +24,7 @@ async function until(fn, timeoutMs = 30000) {
   throw error ?? new Error("Condition did not converge before deadline");
 }
 const listen = server => new Promise(r => server.listen(0, "127.0.0.1", r));
-const host = resolve(process.argv[3] ?? join(repo, "node_modules/openclaw"));
+const host = await realpath(resolve(process.argv[3] ?? join(repo, "node_modules/openclaw")));
 const pkg = JSON.parse(await readFile(join(host, "package.json"), "utf8"));
 assert.equal(pkg.version, "2026.4.26");
 const WebSocket = createRequire(join(host, "package.json"))("ws");
@@ -83,7 +83,7 @@ const config = {
 const configPath = join(root, "openclaw.json"); await save("openclaw.json", config);
 const log = await open(join(root, "console.log"), "w", 0o600);
 const env = Object.fromEntries(["PATH", "TMPDIR", "LANG", "USER"].filter(k => process.env[k]).map(k => [k, process.env[k]]));
-Object.assign(env, { OPENCLAW_STATE_DIR: join(root, "state"), OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_HOME: join(root, "home"), OPENCLAW_PLUGIN_LOAD_PROFILE: "1" });
+Object.assign(env, { OPENCLAW_STATE_DIR: join(root, "state"), OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_HOME: join(root, "home"), OPENCLAW_PLUGIN_LOAD_PROFILE: "1", OPENCLAW_LIVE_GATEWAY: "1", OPENCLAW_LIVE_GATEWAY_PROVIDERS: "qualification" });
 const gateway = spawn(process.execPath, [join(host, "openclaw.mjs"), "gateway", "run"], { cwd: repo, env, stdio: ["ignore", log.fd, log.fd] });
 let gatewayExit; gateway.on("exit", (code, signal) => { gatewayExit = { code, signal }; });
 let socket;
@@ -121,7 +121,7 @@ try {
       }
     });
   });
-  await save("runtime-version.json", { package: pkg.version, server: hello.server.version, defaultBundledPlugins: true });
+  await save("runtime-version.json", { package: pkg.version, server: hello.server.version, defaultBundledPlugins: true, providerDiscovery: "qualification only via upstream live-gateway configuration" });
   const session = "agent:computer-use:qualification";
   await rpc("sessions.patch", { key: session, label: "qualification" });
   const inventory = await rpc("tools.effective", { sessionKey: session }); await save("effective-tools.json", inventory);
