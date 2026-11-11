@@ -13,7 +13,7 @@ export const COMPUTER_USE_AGENT = {
     binding: "per-agent auth order; OAuth refresh tokens stay in the owning profile store",
   },
   toolPolicy: {
-    profile: "minimal",
+    profile: "full",
     allow: ["computer_use"],
     deny: ["exec", "bash", "shell", "apply_patch"],
   },
