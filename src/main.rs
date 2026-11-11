@@ -429,48 +429,7 @@ fn run_peekaboo(
     let mut cmd = Command::new("peekaboo");
     cmd.args(&args);
     match process::run(&mut cmd, deadline()) {
-        Ok(output) => {
-            let permission =
-                looks_like_permission_failure(&String::from_utf8_lossy(&output.stdout))
-                    || looks_like_permission_failure(&String::from_utf8_lossy(&output.stderr));
-            let parsed = serde_json::from_slice::<serde_json::Value>(&output.stdout).ok();
-            let backend_ok = parsed
-                .as_ref()
-                .and_then(|v| v.get("success").or_else(|| v.get("ok")))
-                .and_then(|v| v.as_bool())
-                == Some(true);
-            let ok = output.status.success() && backend_ok;
-            let mut fields = vec![
-                ("ok", bool_json(ok)),
-                ("supported", "true".into()),
-                ("platform", json_string(env::consts::OS)),
-                ("backend", json_string("peekaboo")),
-                ("exitCode", output.status.code().unwrap_or(-1).to_string()),
-                ("stdoutRedacted", bool_json(redact_type_text || !ok)),
-            ];
-            if ok && !redact_type_text {
-                fields.push(("result", parsed.unwrap().to_string()));
-            } else if !ok {
-                let code = if permission {
-                    "PERMISSION_ERROR"
-                } else if parsed.is_none() {
-                    "MALFORMED_OUTPUT"
-                } else {
-                    "BACKEND_ERROR"
-                };
-                fields.push(("code", json_string(code)));
-                fields.push((
-                    "error",
-                    json_string(
-                        "Peekaboo did not complete the action. Raw diagnostics were withheld.",
-                    ),
-                ));
-            }
-            if always_include_permission_guide || permission {
-                fields.push(("permissionGuide", permission_guide_json()));
-            }
-            json_obj(fields)
-        }
+        Ok(output) => peekaboo_result(output, redact_type_text, always_include_permission_guide),
         Err(err) => process_failure_json("peekaboo", &err),
     }
 }
@@ -490,6 +449,57 @@ fn process_failure_json(backend: &str, error: &process::Failure) -> String {
             ),
         ),
     ])
+}
+
+fn peekaboo_result(
+    output: std::process::Output,
+    redact_type_text: bool,
+    always_include_permission_guide: bool,
+) -> String {
+    let permission = looks_like_permission_failure(&String::from_utf8_lossy(&output.stdout))
+        || looks_like_permission_failure(&String::from_utf8_lossy(&output.stderr));
+    let parsed = serde_json::from_slice::<serde_json::Value>(&output.stdout).ok();
+    let field = |name: &str| {
+        parsed
+            .as_ref()
+            .and_then(|v| v.get(name))
+            .and_then(|v| v.as_bool())
+    };
+    let supported = field("supported") != Some(false);
+    let confirmation = field("requiresConfirmation") == Some(true);
+    let backend_ok = field("ok").or_else(|| field("success")) == Some(true);
+    let ok = output.status.success() && backend_ok && supported && !confirmation;
+    let mut fields = vec![
+        ("ok", bool_json(ok)),
+        ("supported", bool_json(supported)),
+        ("platform", json_string(env::consts::OS)),
+        ("backend", json_string("peekaboo")),
+        ("exitCode", output.status.code().unwrap_or(-1).to_string()),
+        ("stdoutRedacted", bool_json(redact_type_text || !ok)),
+    ];
+    if confirmation {
+        fields.push(("requiresConfirmation", "true".into()));
+    }
+    if ok && !redact_type_text {
+        fields.push(("result", parsed.unwrap().to_string()));
+    } else if !ok {
+        let code = if permission {
+            "PERMISSION_ERROR"
+        } else if parsed.is_none() {
+            "MALFORMED_OUTPUT"
+        } else {
+            "BACKEND_ERROR"
+        };
+        fields.push(("code", json_string(code)));
+        fields.push((
+            "error",
+            json_string("Peekaboo did not complete the action; raw diagnostics were withheld."),
+        ));
+    }
+    if always_include_permission_guide || permission {
+        fields.push(("permissionGuide", permission_guide_json()));
+    }
+    json_obj(fields)
 }
 
 fn looks_like_permission_failure(text: &str) -> bool {
@@ -1879,5 +1889,34 @@ mod helper_regressions {
             &[],
         );
         assert!(!result.contains("arbitrary-private-text"), "{result}");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod peekaboo_outcome_tests {
+    use super::*;
+    use std::os::unix::process::ExitStatusExt;
+
+    #[test]
+    fn exit_zero_backend_failure_is_error_without_private_diagnostics() {
+        let output = std::process::Output { status: std::process::ExitStatus::from_raw(0),
+            stdout: br#"{"success":false,"error":{"code":"PERMISSION_ERROR","message":"private-typed-diagnostic"}}"#.to_vec(), stderr: b"private-typed-diagnostic".to_vec() };
+        let result = peekaboo_result(output, true, false);
+        assert!(result.contains("\"ok\":false"));
+        assert!(result.contains("PERMISSION_ERROR"));
+        assert!(!result.contains("private-typed-diagnostic"));
+    }
+
+    #[test]
+    fn malformed_backend_json_is_not_success() {
+        let output = std::process::Output {
+            status: std::process::ExitStatus::from_raw(0),
+            stdout: b"private-invalid-json".to_vec(),
+            stderr: vec![],
+        };
+        let result = peekaboo_result(output, false, false);
+        assert!(result.contains("\"ok\":false"));
+        assert!(result.contains("MALFORMED_OUTPUT"));
+        assert!(!result.contains("private-invalid-json"));
     }
 }

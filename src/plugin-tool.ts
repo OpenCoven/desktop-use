@@ -1,7 +1,8 @@
+import { FileActionError, listDirectory, readRegularFile, writeRegularFile } from "./file-actions.js";
 import { runProcess, ProcessFailure } from "./process-runner.js";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
+import { realpath } from "node:fs/promises";
 import { homedir, platform } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
@@ -16,6 +17,7 @@ import {
 } from "./computer-use-audit.js";
 import {
   classifyComputerUseRequest,
+  decodeAdapterAction,
   normalizeAdapterResult,
   normalizeComputerUseAction,
   redactComputerUseValue,
@@ -173,7 +175,7 @@ export function createComputerUseTool(options: CreateComputerUseToolOptions = {}
       let details: ToolResult["details"];
       try {
         // Resolve symlink aliases before deciding whether a file target needs approval.
-        if (["file-list", "file-read", "file-write"].includes(params.action)) {
+        if (["file-list", "file-read", "file-write"].includes(params.action) || (["inspect", "screenshot"].includes(normalizeComputerUseAction(params.action)) && params.path)) {
           params = { ...params, path: await canonicalTarget(params.path ?? ctx.workspaceDir ?? ".", ctx.workspaceDir) };
           decision = classifyComputerUseRequest(params, { ...ctx, workspaceDir: ctx.workspaceDir ? await realpath(ctx.workspaceDir) : undefined });
         }
@@ -190,7 +192,7 @@ export function createComputerUseTool(options: CreateComputerUseToolOptions = {}
           details = await executeAllowedAction(params, ctx, boundedAdapter, controller.signal);
         }
       } catch (error) {
-        const code = error instanceof ProcessFailure ? error.code : error instanceof ToolInputError ? "INVALID_INPUT" : ["ENOENT", "EACCES", "EPERM", "EISDIR", "ENOTDIR", "EEXIST", "EIO", "ENOSPC"].includes((error as NodeJS.ErrnoException)?.code ?? "") ? (error as NodeJS.ErrnoException).code! : "ACTION_FAILED";
+        const code = error instanceof ProcessFailure || error instanceof FileActionError ? error.code : error instanceof ToolInputError ? "INVALID_INPUT" : ["ENOENT", "EACCES", "EPERM", "EISDIR", "ENOTDIR", "EEXIST", "EIO", "ENOSPC"].includes((error as NodeJS.ErrnoException)?.code ?? "") ? (error as NodeJS.ErrnoException).code! : "ACTION_FAILED";
         details = { status: code === "CANCELLED" ? "cancelled" : code === "ETIMEDOUT" ? "timeout" : "error", success: false,
           action: params.action, code, error: error instanceof ToolInputError ? error.message : "Action failed; raw diagnostics withheld." };
       } finally {
@@ -240,11 +242,12 @@ async function executeAllowedAction(
       runAdapter,
       action,
     );
-    const normalized = normalizeAdapterResult(raw, { evidence });
+    const safe = action === "type-text" ? redactTypeDiagnostics(decodeAdapterAction(raw)) : raw;
+    const normalized = normalizeAdapterResult(safe, { evidence });
     return {
       ...normalized,
       action,
-      permissionFlow: permissionFlowForResult(raw, action),
+      permissionFlow: permissionFlowForResult(safe, action),
     };
   }
 
@@ -256,11 +259,11 @@ async function executeAllowedAction(
     case "shell":
       return runShell(params, ctx, signal);
     case "file-list":
-      return listFiles(params, ctx);
+      return listFiles(params, ctx, signal);
     case "file-read":
-      return readTextFile(params, ctx);
+      return readTextFile(params, ctx, signal);
     case "file-write":
-      return writeTextFile(params, ctx);
+      return writeTextFile(params, ctx, signal);
     case "clipboard-read":
       return readClipboard(params, ctx, signal);
     case "clipboard-write":
@@ -291,7 +294,7 @@ async function runHealth(ctx: ComputerUsePolicyContext, runAdapter: AdapterRunne
       "health",
     );
   } catch (error) {
-    adapterResult = { ok: false, code: error instanceof ProcessFailure ? error.code : "BACKEND_ERROR" };
+    adapterResult = { ok: false, ...safeExecutionError(error) };
   }
   const normalized = normalizeAdapterResult(adapterResult, {
     evidence: { action: "health", adapter: adapterBin },
@@ -309,6 +312,13 @@ async function runHealth(ctx: ComputerUsePolicyContext, runAdapter: AdapterRunne
     ],
     permissionFlow: permissionFlowForResult(adapterResult, "doctor"),
   };
+}
+
+function safeExecutionError(error: unknown): { code: string; error: string } {
+  const code = (error as { code?: unknown } | null)?.code;
+  return { code: error instanceof ToolInputError ? "INVALID_INPUT"
+    : typeof code === "string" && ["ENOENT", "EACCES", "EPERM", "EISDIR", "ENOTDIR", "EEXIST", "EIO", "ENOSPC", "ETIMEDOUT", "CANCELLED"].includes(code) ? code : "ACTION_FAILED",
+    error: error instanceof ToolInputError ? error.message : "Computer-use action failed; raw diagnostics withheld." };
 }
 
 function stopComputerUse(ctx: ComputerUsePolicyContext): ToolResult["details"] {
@@ -338,7 +348,7 @@ function shouldRetryAdapterResult(result: unknown, action: string): boolean {
   if (!retryableAction || !result || typeof result !== "object") {
     return false;
   }
-  const record = result as Record<string, unknown>;
+  const record = decodeAdapterAction(result);
   if (record.ok === true || record.supported === false || record.code === "CANCELLED" || record.code === "ETIMEDOUT") {
     return false;
   }
@@ -346,7 +356,7 @@ function shouldRetryAdapterResult(result: unknown, action: string): boolean {
     return false;
   }
   const haystack = [
-    record.error,
+    record.error && typeof record.error === "object" ? JSON.stringify(record.error) : record.error,
     record.code,
     record.stderr,
     record.message,
@@ -365,98 +375,47 @@ async function runShell(params: ComputerUseParams, ctx: ComputerUsePolicyContext
   const canonicalWorkspace = ctx.workspaceDir ? await realpath(ctx.workspaceDir) : undefined;
   const cwd = resolveCwd(await canonicalTarget(params.cwd ?? ctx.workspaceDir ?? process.cwd(), ctx.workspaceDir), canonicalWorkspace);
   const timeout = params.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  try {
-    const { stdout, stderr } = await runProcess(command, args, {
-      cwd,
-      timeoutMs: timeout,
-      signal,
-      maxBuffer: MAX_STDIO_BYTES,
-    });
-    return {
-      status: "success",
-      success: true,
-      action: "shell",
-      cwd,
-      command: redactComputerUseValue({ command, args }),
-      stdout: truncateText(String(stdout ?? "")),
-      stderr: truncateText(String(stderr ?? "")),
-      exitCode: 0,
-    };
-  } catch (error) {
-    const err = error as Error & {
-      stdout?: string | Buffer;
-      stderr?: string | Buffer;
-      code?: string | number;
-    };
-    return {
-      status: error instanceof ProcessFailure && error.code === "CANCELLED" ? "cancelled" : error instanceof ProcessFailure && error.code === "ETIMEDOUT" ? "timeout" : "error",
-      success: false,
-      action: "shell",
-      cwd,
-      command: redactComputerUseValue({ command, args }),
-      error: "Helper execution failed; raw diagnostics withheld.",
-      code: err.code,
-    };
-  }
+  const { stdout, stderr } = await runProcess(command, args, {
+    cwd,
+    timeoutMs: timeout,
+    signal,
+    maxBuffer: MAX_STDIO_BYTES,
+  });
+  return {
+    status: "success",
+    success: true,
+    action: "shell",
+    cwd,
+    command: redactComputerUseValue({ command, args }),
+    stdout: truncateText(String(stdout ?? "")),
+    stderr: truncateText(String(stderr ?? "")),
+    exitCode: 0,
+  };
 }
 
-async function listFiles(params: ComputerUseParams, ctx: ComputerUsePolicyContext): Promise<ToolResult["details"]> {
+async function listFiles(params: ComputerUseParams, ctx: ComputerUsePolicyContext, signal?: AbortSignal): Promise<ToolResult["details"]> {
   const target = resolveTargetPath(params.path ?? ctx.workspaceDir ?? ".", ctx.workspaceDir);
-  const entries = await readdir(target, { withFileTypes: true });
-  return {
-    status: "success",
-    success: true,
-    action: "file-list",
-    path: target,
-    entries: entries.slice(0, 500).map((entry) => ({
-      name: entry.name,
-      kind: entry.isDirectory() ? "directory" : entry.isFile() ? "file" : "other",
-    })),
-    truncated: entries.length > 500,
-  };
+  const result = await listDirectory(target, signal, Date.now() + (params.timeoutMs ?? DEFAULT_TIMEOUT_MS));
+  return { status: "success", success: true, action: "file-list", path: target, ...result };
 }
 
-async function readTextFile(params: ComputerUseParams, ctx: ComputerUsePolicyContext): Promise<ToolResult["details"]> {
+async function readTextFile(params: ComputerUseParams, ctx: ComputerUsePolicyContext, signal?: AbortSignal): Promise<ToolResult["details"]> {
   const target = resolveTargetPath(requireString(params.path, "file-read requires path."), ctx.workspaceDir);
-  const file = await readFile(target);
-  const text = file.toString("utf8");
-  return {
-    status: "success",
-    success: true,
-    action: "file-read",
-    path: target,
-    bytes: file.byteLength,
-    sha256: createHash("sha256").update(file).digest("hex"),
-    text: params.includeText === true ? truncateText(text) : undefined,
-
-  };
+  const file = await readRegularFile(target, signal, Date.now() + (params.timeoutMs ?? DEFAULT_TIMEOUT_MS));
+  return { status: "success", success: true, action: "file-read", path: target, bytes: file.byteLength,
+    sha256: createHash("sha256").update(file).digest("hex"), text: params.includeText === true ? truncateText(file.toString("utf8")) : undefined };
 }
 
-async function writeTextFile(params: ComputerUseParams, ctx: ComputerUsePolicyContext): Promise<ToolResult["details"]> {
+async function writeTextFile(params: ComputerUseParams, ctx: ComputerUsePolicyContext, signal?: AbortSignal): Promise<ToolResult["details"]> {
   const target = resolveTargetPath(requireString(params.path, "file-write requires path."), ctx.workspaceDir);
   const content = requireString(params.content, "file-write requires content.");
   assertMaxBytes(content, "content", MAX_TEXT_BYTES);
   const existed = existsSync(target);
-  if (existed && params.overwrite !== true) {
-    return {
-      status: "needsApproval",
-      success: false,
-      action: "file-write",
-      path: target,
-      reason: "file exists; repeat with overwrite:true after reviewing the existing file.",
-    };
-  }
-  await mkdir(dirname(target), { recursive: true });
-  await writeFile(target, content, { flag: existed ? "w" : "wx", mode: 0o600 });
-  return {
-    status: "success",
-    success: true,
-    action: "file-write",
-    path: target,
-    bytes: Buffer.byteLength(content, "utf8"),
-    sha256: createHash("sha256").update(content).digest("hex"),
-    overwrote: existed,
-  };
+  if (existed && params.overwrite !== true) return { status: "needsApproval", success: false, action: "file-write", path: target,
+    reason: "file exists; repeat with overwrite:true after reviewing the existing file." };
+  await writeRegularFile(target, content, params.overwrite === true, signal, Date.now() + (params.timeoutMs ?? DEFAULT_TIMEOUT_MS));
+  return { status: "success", success: true, action: "file-write", path: target, bytes: Buffer.byteLength(content, "utf8"),
+    sha256: createHash("sha256").update(content).digest("hex"), overwrote: existed };
 }
 
 async function readClipboard(params: ComputerUseParams, _ctx: ComputerUsePolicyContext, signal?: AbortSignal): Promise<ToolResult["details"]> {
@@ -546,7 +505,7 @@ export function normalizeParams(params: unknown): ComputerUseParams {
   if (!params || typeof params !== "object" || Array.isArray(params)) {
     throw new ToolInputError("Parameters must be an object.");
   }
-  const record = params as Record<string, unknown>;
+  const record = Object.assign(Object.create(null), Object.fromEntries(Object.entries(params))) as Record<string, unknown>;
   if (typeof record.action !== "string" || !record.action) {
     throw new ToolInputError("action is required and must be a string.");
   }
@@ -560,7 +519,7 @@ export function normalizeParams(params: unknown): ComputerUseParams {
     if (!Object.hasOwn(properties, label)) throw new ToolInputError("Unknown computer-use parameter.");
     const schema = properties[label];
     if (schema.type === "array") {
-      if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+      if (!Array.isArray(value) || Array.from(value).some((item) => typeof item !== "string")) {
         throw new ToolInputError(`${label} must be an array of strings.`);
       }
       if (value.length > 256) throw new ToolInputError(`${label} exceeds 256 items.`);
@@ -593,6 +552,16 @@ export function normalizeParams(params: unknown): ComputerUseParams {
   if (record.coords && !/^\d{1,5},\d{1,5}$/.test((record.coords as string).trim())) {
     throw new ToolInputError("coords must be in x,y form, for example 120,240.");
   }
+  const normalized = record as ComputerUseParams;
+  const action = normalizeComputerUseAction(normalized.action);
+  if (DESKTOP_ADAPTER_ACTIONS.has(action)) buildAdapterArgs(normalized);
+  if (action === "keypress" && normalized.keys?.some(key => !key.trim() || key.includes(","))) throw new ToolInputError("keys must contain nonempty individual key/chord names.");
+  if (action === "shell") requireString(normalized.command, "shell requires command.");
+  if (["file-read", "file-write"].includes(action)) requireString(normalized.path, "File action requires path.");
+  if (action === "file-write") requireString(normalized.content, "file-write requires content.");
+  if (action === "clipboard-write" && typeof (normalized.clipboardText ?? normalized.text) !== "string") throw new ToolInputError("clipboard-write requires clipboardText or text.");
+  if (action === "browser-open") requireString(normalized.url ?? normalized.path, "browser-open requires url.");
+  if (action === "app-launch") requireString(normalized.app, "app-launch requires app.");
   return record as ComputerUseParams;
 }
 
@@ -610,27 +579,28 @@ async function runAdapterBinary(args: string[], params: ComputerUseParams, signa
     }
     return normalizeComputerUseAction(params.action) === "type-text" ? redactTypeDiagnostics(result) : result;
   } catch (error) {
-    const code = error instanceof ProcessFailure ? error.code : "BACKEND_ERROR";
+    const code = error instanceof ProcessFailure || error instanceof FileActionError ? error.code : "BACKEND_ERROR";
     return { ok: false, code, error: "Adapter execution failed; raw diagnostics withheld.",
       ...(code === "ENOENT" ? { hint: missingAdapterHint(adapterBin), adapterSetup: adapterSetupGuide(adapterBin) } : {}) };
   }
 }
 
-// Backend errors can echo private input even when the adapter itself exits zero.
+// Input actions need outcomes, not arbitrary backend diagnostics that may echo their text.
 function redactTypeDiagnostics(value: unknown): unknown {
-  if (typeof value === "string") return "<redacted for type action>";
-  if (Array.isArray(value)) return value.map(redactTypeDiagnostics);
-  if (!value || typeof value !== "object") return value;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, code: "MALFORMED_OUTPUT" };
   const record = value as Record<string, unknown>;
   const fields: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(record)) {
-    if (["stdout", "stderr", "error", "message", "text", "command"].includes(key.toLowerCase())) {
-      fields[key] = "<redacted for type action>";
-    } else {
-      fields[key] = redactTypeDiagnostics(item);
-    }
+  for (const key of ["ok", "supported", "requiresConfirmation", "timedOut", "cancelled", "partial"]) {
+    if (typeof record[key] === "boolean") fields[key] = record[key];
   }
-  // Preserve actionable permission state without retaining backend diagnostic text.
+  for (const key of ["exitCode", "completedSteps", "totalSteps", "failedStep"]) {
+    if (Number.isSafeInteger(record[key])) fields[key] = record[key];
+  }
+  if (["peekaboo", "xdotool", "ydotool", "wtype", "linux"].includes(String(record.backend))) fields.backend = record.backend;
+  const codes = ["ENOENT", "EACCES", "ETIMEDOUT", "CANCELLED", "OUTPUT_LIMIT", "PROCESS_ERROR", "MALFORMED_OUTPUT", "BACKEND_ERROR", "PERMISSION_ERROR"];
+  if (typeof record.code === "string") fields.code = codes.includes(record.code) ? record.code : "BACKEND_ERROR";
+  if (Array.isArray(record.steps)) fields.steps = record.steps.map(redactTypeDiagnostics);
+  if (typeof record.adapter === "string") { fields.adapter = "adapter"; fields.result = redactTypeDiagnostics(record.result); }
   if (looksLikePermissionFailure(value)) fields.permissionError = "PERMISSION_ERROR";
   return fields;
 }

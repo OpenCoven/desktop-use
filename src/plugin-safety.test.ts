@@ -93,3 +93,14 @@ test("malformed adapter output is an error without private diagnostic text", asy
   assert.equal(result.details.status, "error");
   assert.ok(!JSON.stringify(result).includes("arbitrary-private-text"));
 });
+
+test("explicit capture destinations require write approval before adapter execution", async t => {
+  const {root,inside}=await workspace(t); const outside=join(root,"existing.png"); await writeFile(outside,"original");
+  let calls=0;
+  const tool=createComputerUseTool({ctx:{workspaceDir:inside},runAdapter:async()=>{calls++;return{ok:true};},appendAuditEvent:async()=>{}});
+  for (const action of ["screenshot","inspect","capture","see"]) {
+    const result=await tool.execute("capture-path",{action,path:outside});
+    assert.equal(result.details.status,"needsApproval");
+  }
+  assert.equal(calls,0); assert.equal(await readFile(outside,"utf8"),"original");
+});

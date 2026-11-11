@@ -140,6 +140,11 @@ export function classifyComputerUseRequest(
     return blocked("observe", action, "unknown", "Missing computer-use action.");
   }
 
+  if ((action === "inspect" || action === "screenshot") && params.path) {
+    return approvalDecision({ action, risk: "local-destructive", target: params.path,
+      approved: params.confirm === true, reason: "An explicit capture destination can replace an existing file.",
+      title: "Write Capture File", exactInput: params.path, rollback: "Restore the destination from a backup if it is replaced." });
+  }
   if (OBSERVE_ACTIONS.has(action)) {
     return allow("observe", action, describeTarget(params, ctx));
   }
@@ -233,7 +238,7 @@ function classifyShell(params: ComputerUseParams, ctx: ComputerUsePolicyContext)
   if (!command) {
     return blocked("local-nondestructive", "shell", target, "shell requires command.");
   }
-  const lowerCommand = command.toLowerCase();
+  const lowerCommand = path.basename(command).toLowerCase();
   const lowerPreview = preview.toLowerCase();
   if (isSecurityBoundaryBypass(lowerCommand, lowerPreview)) {
     return blocked(
@@ -291,7 +296,9 @@ function classifyShell(params: ComputerUseParams, ctx: ComputerUsePolicyContext)
       exactInput: bounded(preview),
     });
   }
-  return allow("local-nondestructive", "shell", target);
+  return approvalDecision({ action: "shell", risk: "local-destructive", target, approved: params.confirm === true,
+    reason: "General command effects cannot be inferred safely from argv; OpenClaw approval is required.",
+    title: "Run Shell Command", exactInput: bounded(preview) });
 }
 
 function allow(risk: ComputerUseRisk, action: string, target: string): ComputerUseDecision {
@@ -513,16 +520,29 @@ export function redactComputerUseValue(value: unknown, key = ""): unknown {
   return TOKEN_VALUE_RE.test(value) ? "<redacted>" : value;
 }
 
+/** Decode only known transport/Peekaboo envelopes; never let process success hide action failure. */
+export function decodeAdapterAction(value: unknown, depth = 0): Record<string, unknown> {
+  const malformed = { ok: false, code: "MALFORMED_OUTPUT" };
+  if (depth > 8 || !value || typeof value !== "object" || Array.isArray(value)) return malformed;
+  const record = value as Record<string, unknown>;
+  if (record.ok === false) return record;
+  if (record.ok === true && typeof record.adapter === "string") return decodeAdapterAction(record.result, depth + 1);
+  if (record.ok === true && record.backend === "peekaboo") {
+    if (typeof record.stdout === "string") {
+      try { return decodeAdapterAction(JSON.parse(record.stdout), depth + 1); } catch { return malformed; }
+    }
+    if (Object.hasOwn(record, "result")) return decodeAdapterAction(record.result, depth + 1);
+  }
+  if (typeof record.ok === "boolean") return record;
+  if (typeof record.success === "boolean") return { ...record, ok: record.success };
+  return malformed;
+}
+
 export function normalizeAdapterResult(
   result: unknown,
   options: { evidence: Record<string, unknown> },
 ): NormalizedAdapterResult {
-  const record = result && typeof result === "object" ? (result as Record<string, unknown>) : {};
-  // Successful process execution is separate from the adapter's action outcome.
-  const payload = record.ok === true && typeof record.adapter === "string"
-    ? record.result : record;
-  const action = payload && typeof payload === "object" && !Array.isArray(payload)
-    ? payload as Record<string, unknown> : {};
+  const action = decodeAdapterAction(result);
   let status: NormalizedAdapterResult["status"] = "error";
   if (action.code === "CANCELLED" || action.cancelled === true) status = "cancelled";
   else if (action.code === "ETIMEDOUT" || action.timedOut === true) status = "timeout";
