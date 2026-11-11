@@ -10,6 +10,8 @@ import {
   COMPUTER_USE_AGENT,
   COMPUTER_USE_HEALTH_CHECK,
 } from "./computer-use-agent.js";
+import { computerUseScopeKey } from "./computer-use-scope.js";
+import { COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME } from "./tool-names.js";
 import {
   buildComputerUseAuditEvent,
   appendComputerUseAuditEvent,
@@ -27,9 +29,7 @@ import {
 } from "./computer-use-policy.js";
 
 const activeCalls = new Map<string, Set<AbortController>>();
-function scopeKey(ctx: ComputerUsePolicyContext): string {
-  return JSON.stringify([ctx.agentId ?? COMPUTER_USE_AGENT.id, ctx.sessionKey ?? "default", ctx.workspaceDir ?? ""]);
-}
+const scopeKey = (ctx: ComputerUsePolicyContext) => computerUseScopeKey(ctx, "call");
 
 const MAX_TEXT_BYTES = 100_000;
 const MAX_ARG_BYTES = 2_048;
@@ -157,7 +157,7 @@ export function createComputerUseTool(options: CreateComputerUseToolOptions = {}
     ((event: ComputerUseAuditEvent) => appendComputerUseAuditEvent(event, ctx));
 
   return {
-    name: "computer_use",
+    name: COMPUTER_USE_TOOL_NAME,
     label: "Computer Use",
     description:
       "OpenCoven computer-use agent tool for health checks, observation, approved desktop input, scoped shell/file actions, browser/app launches, and clipboard workflows.",
@@ -214,10 +214,10 @@ export function createDesktopUseTool(options: CreateComputerUseToolOptions = {})
   const tool = createComputerUseTool(options);
   return {
     ...tool,
-    name: "desktop_use",
+    name: DESKTOP_USE_TOOL_NAME,
     label: "Desktop Use",
     description:
-      "Legacy alias for the OpenCoven computer_use tool. Prefer computer_use for new OpenClaw agent policy.",
+      `Legacy alias for the OpenCoven ${COMPUTER_USE_TOOL_NAME} tool. Prefer ${COMPUTER_USE_TOOL_NAME} for new OpenClaw agent policy.`,
   };
 }
 
@@ -306,7 +306,7 @@ async function runHealth(ctx: ComputerUsePolicyContext, runAdapter: AdapterRunne
     auditLog: resolveComputerUseAuditLogPath(ctx),
     repairHints: [
       missingAdapterHint(adapterBin),
-      "Run computer_use action=doctor after granting Screen Recording and Accessibility.",
+      `Run ${COMPUTER_USE_TOOL_NAME} action=doctor after granting Screen Recording and Accessibility.`,
       "Restart the OpenClaw Gateway after changing COVEN_DESKTOP_USE_BIN or macOS privacy grants.",
     ],
     permissionFlow: permissionFlowForResult(adapterResult, "doctor"),
@@ -705,8 +705,8 @@ function permissionFlowForResult(result: unknown, action: string): unknown | und
       "openclaw",
     ],
     afterGrant:
-      "Quit/restart the granted app or restart the OpenClaw Gateway, then rerun computer_use action=doctor.",
-    verification: { tool: "computer_use", args: { action: "doctor" } },
+      `Quit/restart the granted app or restart the OpenClaw Gateway, then rerun ${COMPUTER_USE_TOOL_NAME} action=doctor.`,
+    verification: { tool: COMPUTER_USE_TOOL_NAME, args: { action: "doctor" } },
   };
 }
 
@@ -745,8 +745,8 @@ function linuxPermissionFlow(result: unknown, action: string): unknown | undefin
     tools: tools ?? null,
     sessionNotes: collectSessionNotes(setupGuide),
     afterInstall:
-      "After installing the listed packages, rerun desktop_use action=doctor. Wayland users may also need to start the ydotoold service and add their user to the 'input' group.",
-    verification: { tool: "desktop_use", args: { action: "doctor" } },
+      `After installing the listed packages, rerun ${DESKTOP_USE_TOOL_NAME} action=doctor. Wayland users may also need to start the ydotoold service and add their user to the 'input' group.`,
+    verification: { tool: DESKTOP_USE_TOOL_NAME, args: { action: "doctor" } },
   };
 }
 

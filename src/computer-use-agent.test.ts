@@ -6,6 +6,7 @@ import {
   COMPUTER_USE_CONTROL_UI_DESCRIPTOR,
   COMPUTER_USE_HEALTH_CHECK,
 } from "./computer-use-agent.js";
+import { COMPUTER_USE_TOOL_NAME } from "./tool-names.js";
 
 test("defines a dedicated computer-use agent identity and state roots", () => {
   assert.equal(COMPUTER_USE_AGENT.id, "computer-use");
@@ -18,7 +19,7 @@ test("defines a dedicated computer-use agent identity and state roots", () => {
 });
 
 test("keeps the dedicated agent tool policy narrow", () => {
-  assert.deepEqual(COMPUTER_USE_AGENT.toolPolicy.allow, ["computer_use"]);
+  assert.deepEqual(COMPUTER_USE_AGENT.toolPolicy.allow, [COMPUTER_USE_TOOL_NAME]);
   assert.equal(COMPUTER_USE_AGENT.toolPolicy.profile, "minimal");
   assert.equal(COMPUTER_USE_AGENT.auth.inheritsMainOAuth, true);
   assert.equal(COMPUTER_USE_AGENT.auth.copyOAuthSecrets, false);
@@ -48,7 +49,7 @@ test("describes the Control UI state expected by the Computer Use panel", () => 
 });
 
 test("declares a real health check command for local verification", () => {
-  assert.equal(COMPUTER_USE_HEALTH_CHECK.tool, "computer_use");
+  assert.equal(COMPUTER_USE_HEALTH_CHECK.tool, COMPUTER_USE_TOOL_NAME);
   assert.deepEqual(COMPUTER_USE_HEALTH_CHECK.args, { action: "health" });
 });
 
@@ -67,8 +68,8 @@ test("ships a packaged identity and config template for the dedicated agent", ()
 
   assert.match(identity, /No hidden automation/);
   assert.equal(config.id, "computer-use");
-  assert.deepEqual(config.tools.allow, ["computer_use"]);
+  assert.deepEqual(config.tools.allow, [COMPUTER_USE_TOOL_NAME]);
   assert.ok(config.tools.deny.includes("shell"));
-  assert.equal(config.health.tool, "computer_use");
+  assert.equal(config.health.tool, COMPUTER_USE_TOOL_NAME);
   assert.deepEqual(config.health.args, { action: "health" });
 });
