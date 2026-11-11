@@ -31,13 +31,14 @@ assert.equal(pkg.version, "2026.4.26");
 const WebSocket = createRequire(join(host, "package.json"))("ws");
 const cases = new Map();
 const requests = [];
+const modelErrors = [];
 const model = createServer(async (req, res) => {
   try {
     let input = ""; for await (const chunk of req) input += chunk;
     const body = JSON.parse(input);
     const messages = body.messages ?? [];
     const userIndex = messages.findLastIndex(m => m.role === "user" && JSON.stringify(m.content).includes("QUALIFICATION_CASE:"));
-    const marker = JSON.stringify(messages[userIndex]?.content).match(/QUALIFICATION_CASE:([a-z0-9-]+)/)?.[1];
+    const marker = JSON.stringify(messages[userIndex]?.content ?? "").match(/QUALIFICATION_CASE:([a-z0-9-]+)/)?.[1];
     assert.ok(marker && cases.has(marker), `Unexpected model request ${req.url}`);
     const plan = cases.get(marker);
     assert.deepEqual((body.tools ?? []).map(t => t.function?.name), [plan.tool ?? COMPUTER_USE_TOOL_NAME], "Actual model tool inventory");
@@ -51,9 +52,25 @@ const model = createServer(async (req, res) => {
     chunk(finished ? { content: `Qualification ${marker} complete.` } : { tool_calls: [toolCall] });
     chunk({}, finished ? "stop" : "tool_calls");
     res.end("data: [DONE]\n\n");
-  } catch (e) { res.writeHead(500); res.end(String(e)); }
+  } catch (e) {
+    modelErrors.push({ message: String(e) });
+    await save("model-errors.json", modelErrors);
+    res.writeHead(500, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: { code: "FIXTURE_REQUEST_REJECTED", message: "Fixture model request rejected." } }));
+  }
 });
 await listen(model);
+const invalidModelResponse = await new Promise((resolve, reject) => {
+  const request = httpRequest(`http://127.0.0.1:${model.address().port}/qualification-invalid-request`, { method: "POST" }, response => {
+    let body = ""; response.setEncoding("utf8"); response.on("data", chunk => body += chunk);
+    response.on("end", () => resolve({ status: response.statusCode, body }));
+  });
+  request.setTimeout(5000, () => request.destroy(new Error("Invalid-model probe timed out")));
+  request.on("error", reject); request.end(JSON.stringify({ messages: [{ role: "user", content: "QUALIFICATION_CASE:unregistered-case" }] }));
+});
+assert.equal(invalidModelResponse.status, 500);
+assert.deepEqual(JSON.parse(invalidModelResponse.body), { error: { code: "FIXTURE_REQUEST_REJECTED", message: "Fixture model request rejected." } });
+await save("model-error-sanitization.json", { status: 500, internalDiagnosticsAbsent: true });
 const reservation = createServer(); await listen(reservation);
 const port = reservation.address().port; await new Promise(r => reservation.close(r));
 const token = randomBytes(24).toString("hex");

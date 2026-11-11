@@ -58,6 +58,7 @@ jobs:
             ${{ runner.temp }}/gateway-receipts/minimal-effective-tools.json
             ${{ runner.temp }}/gateway-receipts/legacy-effective-tools.json
             ${{ runner.temp }}/gateway-receipts/model-requests.json
+            ${{ runner.temp }}/gateway-receipts/model-error-sanitization.json
             ${{ runner.temp }}/gateway-receipts/events.json
             ${{ runner.temp }}/gateway-receipts/*-approval.json
             ${{ runner.temp }}/gateway-receipts/*-outcome.json
