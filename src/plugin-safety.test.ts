@@ -45,7 +45,13 @@ test("stop cancels active helper across instances in the same session", async (t
   const { root, inside } = await workspace(t);
   const ready = join(root, "ready");
   const fixture = join(root, "adapter");
-  await writeFile(fixture, `#!${process.execPath}\nconst fs=require('fs');fs.writeFileSync(${JSON.stringify(ready)}, '');setTimeout(()=>fs.writeFileSync(${JSON.stringify(ready)}, String(process.pid)),100);setInterval(()=>{},1000);`, { mode: 0o700 });
+  await writeFile(fixture, `#!/usr/bin/env node
+const fs = require('fs');
+const ready = require('path').join(__dirname, 'ready');
+fs.writeFileSync(ready, '');
+setTimeout(() => fs.writeFileSync(ready, String(process.pid)), 100);
+setInterval(() => {}, 1000);
+`, { mode: 0o700 });
   const previous = process.env.COVEN_DESKTOP_USE_BIN;
   process.env.COVEN_DESKTOP_USE_BIN = fixture;
   t.after(() => { if (previous === undefined) delete process.env.COVEN_DESKTOP_USE_BIN; else process.env.COVEN_DESKTOP_USE_BIN = previous; });
