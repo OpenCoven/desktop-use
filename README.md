@@ -197,8 +197,16 @@ Local development install:
 openclaw plugins install . --force
 ```
 
+GitHub Actions runs `pnpm run check` on macOS and Linux for pull requests and pushes to `main`. These checks cover the adapter contract and policy. Interactive desktop acceptance still requires a graphical session and its permissions.
+
+The plugin validates request types, supported actions, enum values, integer bounds, byte limits, and NUL bytes before approval hooks and execution. A successful adapter process exit does not imply a successful desktop action: the plugin preserves errors, unsupported results, and confirmation requirements from the JSON envelope. Observation failures may be retried once; interactive actions are never automatically retried.
+
+Execution failures return structured errors and reach the redacted audit path. If an audit write fails, the response includes `audit: { written: false, code: "AUDIT_WRITE_FAILED" }` while preserving the action outcome. An action may already have completed; inspect its outcome before deciding whether to repeat it. Malformed requests are rejected before policy evaluation and are not persisted in the action audit.
+
 Real adapter health check:
 
 ```bash
 cargo run -- doctor
 ```
+
+Review hardening validates each action's required arguments before policy/approval, copies only own request properties, rejects sparse key arrays, and consistently withholds shell/health exception diagnostics. Peekaboo process success is decoded separately from its JSON action outcome, including legacy stdout envelopes; malformed or rejected backend output cannot become a successful action.

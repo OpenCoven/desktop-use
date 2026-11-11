@@ -513,31 +513,32 @@ export function redactComputerUseValue(value: unknown, key = ""): unknown {
   return TOKEN_VALUE_RE.test(value) ? "<redacted>" : value;
 }
 
+/** Decode only known transport/Peekaboo envelopes; never let process success hide action failure. */
+export function decodeAdapterAction(value: unknown, depth = 0): Record<string, unknown> {
+  const malformed = { ok: false, code: "MALFORMED_OUTPUT" };
+  if (depth > 8 || !value || typeof value !== "object" || Array.isArray(value)) return malformed;
+  const record = value as Record<string, unknown>;
+  if (record.ok === false) return record;
+  if (record.ok === true && typeof record.adapter === "string") return decodeAdapterAction(record.result, depth + 1);
+  if (record.ok === true && record.backend === "peekaboo") {
+    if (typeof record.stdout === "string") {
+      try { return decodeAdapterAction(JSON.parse(record.stdout), depth + 1); } catch { return malformed; }
+    }
+    if (Object.hasOwn(record, "result")) return decodeAdapterAction(record.result, depth + 1);
+  }
+  if (typeof record.ok === "boolean") return record;
+  if (typeof record.success === "boolean") return { ...record, ok: record.success };
+  return malformed;
+}
+
 export function normalizeAdapterResult(
   result: unknown,
   options: { evidence: Record<string, unknown> },
 ): NormalizedAdapterResult {
-  const record = result && typeof result === "object" ? (result as Record<string, unknown>) : {};
-  if (record.supported === false) {
-    return {
-      status: "unsupported",
-      success: false,
-      evidence: options.evidence,
-      result,
-    };
-  }
-  if (record.ok === true) {
-    return {
-      status: "success",
-      success: true,
-      evidence: options.evidence,
-      result,
-    };
-  }
-  return {
-    status: "error",
-    success: false,
-    evidence: options.evidence,
-    result,
-  };
+  const action = decodeAdapterAction(result);
+  let status: NormalizedAdapterResult["status"] = "error";
+  if (action.supported === false) status = "unsupported";
+  else if (action.requiresConfirmation === true) status = "needsApproval";
+  else if (action.ok === true) status = "success";
+  return { status, success: status === "success", evidence: options.evidence, result };
 }
