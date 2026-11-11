@@ -72,6 +72,9 @@ export default definePluginEntry({
         let params: ComputerUseParams;
         try {
           params = normalizeParams(event.params);
+          // Hook input is model-controlled. Only the gateway may apply confirm:true
+          // from our returned params after it resolves requireApproval.
+          params = { ...params, confirm: false };
         } catch {
           return { block: true, blockReason: "Invalid computer-use parameters." };
         }

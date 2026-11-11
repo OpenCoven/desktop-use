@@ -115,3 +115,22 @@ test("Stop leaves different agents, sessions, and workspaces active", async () =
   assert.equal(stopped.details.cancellationRequested, 1);
   assert.equal((await active).details.status, "cancelled");
 });
+
+for (const toolName of [COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME]) {
+  test(`${toolName} model-supplied confirmation still requires a gateway approval`, async t => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "desktopuse-model-confirm-")));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const ctx = { agentId: "computer-use", sessionKey: "confirmed-input", workspaceDir: root };
+    const hook = hookFor([ctx]);
+    for (const params of [
+      { action: "file-write", path: "note.txt", content: "fixture", confirm: true },
+      { action: "click", coords: "1,1", confirm: true },
+      { action: "shell", command: process.execPath, args: ["-e", "process.exit(0)"], confirm: true },
+    ]) {
+      const result = await hook({ toolName, params }, ctx) as any;
+      assert.ok(result.requireApproval, params.action);
+      assert.equal(result.requireApproval.timeoutBehavior, "deny");
+      assert.equal(result.params?.confirm, true);
+    }
+  });
+}
