@@ -50,3 +50,5 @@
 - Final audit: desktop names alone are no longer protocol evidence. The regression failed with a false unsupported state, then passed after returning unverified when registry probing is unavailable. Full local validation rerun after this correction.
 
 Final privacy regression: typed-input results retain only validated outcome flags, counters, fixed codes, and known backend names. Arbitrary nested diagnostic fields are discarded before returning results, including injected-runner errors; the previously leaking fixture failed before the correction.
+
+Dependency refresh: #7 advanced to e4c025ef4e46e145aad31278b624d6370c580c62 through an automated string-redaction fix during final closeout. Runtime #8 now includes that commit at cd6dc6f (exact head in the durable handoff). Platform #9 retains the stricter safe-outcome allowlist, which already suppresses primitive strings and arbitrary fields. The refreshed stack preserves upstream ancestry without removing its protection, and both local suites and exact-head hosted CI are rechecked before delivery.
