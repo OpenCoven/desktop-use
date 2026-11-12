@@ -32,6 +32,9 @@ const WebSocket = createRequire(join(host, "package.json"))("ws");
 const cases = new Map();
 const requests = [];
 const modelErrors = [];
+const modelSchemas = {};
+const canonicalActions = ["health", "stop", "doctor", "inspect", "screenshot", "click", "type-text", "keypress", "scroll", "focus", "shell", "file-list", "file-read", "file-write", "clipboard-read", "clipboard-write", "browser-open", "app-launch"];
+const legacyActions = { permissions: "doctor", see: "inspect", capture: "screenshot", type: "type-text", press: "keypress" };
 const model = createServer(async (req, res) => {
   try {
     let input = ""; for await (const chunk of req) input += chunk;
@@ -42,6 +45,14 @@ const model = createServer(async (req, res) => {
     assert.ok(marker && cases.has(marker), `Unexpected model request ${req.url}`);
     const plan = cases.get(marker);
     assert.deepEqual((body.tools ?? []).map(t => t.function?.name), [plan.tool ?? COMPUTER_USE_TOOL_NAME], "Actual model tool inventory");
+    const definition = body.tools[0].function;
+    const actionSchema = definition.parameters.properties.action;
+    const values = actionSchema.enum ?? actionSchema.anyOf?.map(branch => branch.const);
+    assert.deepEqual([...values].sort(), [...canonicalActions, ...Object.keys(legacyActions)].sort(), "Model-visible bounded compatibility vocabulary");
+    for (const [legacy, canonical] of Object.entries(legacyActions)) assert.ok(actionSchema.description.includes(`${legacy} -> ${canonical}`));
+    assert.ok(actionSchema.description.includes("0.2.0"));
+    modelSchemas[definition.name] = definition.parameters;
+    await save("model-tool-schemas.json", modelSchemas);
     const finished = messages.slice(userIndex + 1).some(m => m.role === "tool");
     requests.push({ case: marker, url: req.url, tools: (body.tools ?? []).map(t => t.function?.name), finished });
     await save("model-requests.json", requests);
@@ -103,7 +114,10 @@ const config = {
 const configPath = join(root, "openclaw.json"); await save("openclaw.json", config);
 const log = await open(join(root, "console.log"), "w", 0o600);
 const env = Object.fromEntries(["PATH", "TMPDIR", "LANG", "USER"].filter(k => process.env[k]).map(k => [k, process.env[k]]));
-Object.assign(env, { OPENCLAW_STATE_DIR: join(root, "state"), OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_HOME: join(root, "home"), OPENCLAW_PLUGIN_LOAD_PROFILE: "1", OPENCLAW_LIVE_GATEWAY: "1", OPENCLAW_LIVE_GATEWAY_PROVIDERS: "qualification" });
+const unavailableAdapter = join(root, "deliberately-unavailable-desktop-adapter");
+await assert.rejects(access(unavailableAdapter), { code: "ENOENT" });
+Object.assign(env, { OPENCLAW_STATE_DIR: join(root, "state"), OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_HOME: join(root, "home"), OPENCLAW_PLUGIN_LOAD_PROFILE: "1", OPENCLAW_LIVE_GATEWAY: "1", OPENCLAW_LIVE_GATEWAY_PROVIDERS: "qualification", COVEN_DESKTOP_USE_BIN: unavailableAdapter });
+await save("adapter-fixture.json", { mode: "deliberately-unavailable", graphicalEffects: false });
 // Refuse to start a gateway if this package would escape the explicit state root.
 // Verify byte-identical source, then use the checkout's installed SDK peer for a
 // dry resolver call with no audit write or gateway/profile initialization.
@@ -209,6 +223,17 @@ try {
   const initial = await runCase("initial-stop", { action: "stop" }, "none");
   assert.equal(toolResult(initial.history).status, "success");
   const secret = "qualification-private-content-4c925ce0";
+  const deprecations = [];
+  for (const [legacy, canonical] of Object.entries(legacyActions)) {
+    const args = { action: legacy, ...(legacy === "type" ? { text: secret } : legacy === "press" ? { keys: ["Tab"] } : {}) };
+    const result = await runCase(`legacy-action-${legacy}`, args, ["type", "press"].includes(legacy) ? "allow-once" : "none");
+    const details = toolResult(result.history);
+    assert.equal(details.status, "error", "Unavailable fixture adapter must not claim desktop success");
+    assert.equal(details.action, canonical);
+    assert.ok(details.deprecation.includes(`${legacy} is deprecated; use ${canonical} instead.`));
+    deprecations.push({ legacy, canonical, status: details.status, deprecation: details.deprecation });
+  }
+  await save("legacy-action-compatibility.json", deprecations);
   const external = join(root, "external"); await mkdir(external);
   await symlink(external, join(workspace, "alias"));
   const allowedPath = join(external, "allowed.txt");
@@ -235,6 +260,14 @@ try {
   assert.deepEqual(legacyInventory.groups.flatMap(g => g.tools.map(t => t.id)), [DESKTOP_USE_TOOL_NAME]);
   const legacy = await runCase("legacy-denied", { action: "file-write", path: "legacy.txt", content: secret, confirm: true }, "deny", legacySession, DESKTOP_USE_TOOL_NAME);
   await noFile(join(legacyWorkspace, "legacy.txt"));
+  const legacyHealth = await runCase("legacy-tool-health", { action: "health" }, "none", legacySession, DESKTOP_USE_TOOL_NAME);
+  const legacyHealthDetails = toolResult(legacyHealth.history, DESKTOP_USE_TOOL_NAME);
+  assert.ok(legacyHealthDetails.deprecation.includes(`${DESKTOP_USE_TOOL_NAME} is deprecated; use ${COMPUTER_USE_TOOL_NAME} instead.`));
+  await save("legacy-tool-compatibility.json", { deprecation: legacyHealthDetails.deprecation });
+  const clipboard = await runCase("legacy-clipboard-denied", { action: "clipboard-write", text: secret, confirm: true }, "deny");
+  assert.ok(clipboard.events.some(e => e.event === "plugin.approval.requested"));
+  assert.equal(toolResult(clipboard.history).status, "error");
+  assert.equal(toolResult(clipboard.history).error, "Denied by user");
   // Gateway construction can load bundled provider metadata before dispatching
   // the tool; warm each control route before timing cancellation of live work.
   await httpInvoke(COMPUTER_USE_TOOL_NAME, { action: "stop" }, session);
@@ -279,6 +312,7 @@ try {
   const audit = await readFile(join(dirname(agentDir), "audit/computer-use.jsonl"), "utf8");
   assert.ok(!audit.includes(secret));
   const records = audit.trim().split("\n").map(line => JSON.parse(line));
+  assert.ok(!records.some(record => record.toolCallId === "call_legacy-clipboard-denied"), "Gateway-denied clipboard input must not reach action execution/audit");
   assert.ok(records.some(r => r.action === "file-write" && r.result.status === "success"));
   assert.ok(records.some(r => r.action === "shell" && r.result.status === "cancelled"));
   await save("audit-summary.json", { records: records.length, privateContentAbsent: true, outcomes: records.map(r => ({ action: r.action, status: r.result.status })) });

@@ -59,6 +59,10 @@ jobs:
             ${{ runner.temp }}/gateway-receipts/legacy-effective-tools.json
             ${{ runner.temp }}/gateway-receipts/model-requests.json
             ${{ runner.temp }}/gateway-receipts/model-error-sanitization.json
+            ${{ runner.temp }}/gateway-receipts/model-tool-schemas.json
+            ${{ runner.temp }}/gateway-receipts/adapter-fixture.json
+            ${{ runner.temp }}/gateway-receipts/legacy-action-compatibility.json
+            ${{ runner.temp }}/gateway-receipts/legacy-tool-compatibility.json
             ${{ runner.temp }}/gateway-receipts/events.json
             ${{ runner.temp }}/gateway-receipts/*-approval.json
             ${{ runner.temp }}/gateway-receipts/*-outcome.json
