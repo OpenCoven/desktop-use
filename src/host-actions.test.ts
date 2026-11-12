@@ -29,9 +29,11 @@ test("clipboard writes transfer private input through stdin and omit diagnostics
   const helper = join(root, "wl-copy");
   const receipt = join(root, "receipt");
   await writeFile(helper, `#!${process.execPath}\nlet text='';process.stdin.on('data',s=>text+=s);process.stdin.on('end',()=>require('fs').writeFileSync(${JSON.stringify(receipt)},JSON.stringify({args:process.argv.slice(2),text})));`, { mode: 0o700 });
-  const plan = planHostAction("linux", { WAYLAND_DISPLAY: "wayland-0" }, name => name === "wl-copy" ? helper : undefined, { action: "clipboard-write", clipboardText: "private clipboard $(false)" });
-  assert.ok(plan.file);
-  const result = await runProcess(plan.file!, plan.args!, { ...plan, timeoutMs: 1000 });
-  assert.equal(result.stdout, "");
-  assert.deepEqual(JSON.parse(await readFile(receipt, "utf8")), { args: ["--type", "text/plain;charset=utf-8"], text: "private clipboard $(false)" });
+  for (const input of [{ clipboardText: "private clipboard $(false)" }, { text: "private clipboard $(false)" }]) {
+    const plan = planHostAction("linux", { WAYLAND_DISPLAY: "wayland-0" }, name => name === "wl-copy" ? helper : undefined, { action: "clipboard-write", ...input });
+    assert.ok(plan.file);
+    const result = await runProcess(plan.file!, plan.args!, { ...plan, timeoutMs: 1000 });
+    assert.equal(result.stdout, "");
+    assert.deepEqual(JSON.parse(await readFile(receipt, "utf8")), { args: ["--type", "text/plain;charset=utf-8"], text: "private clipboard $(false)" });
+  }
 });

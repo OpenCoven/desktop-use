@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { homedir } from "node:os";
+import { resolveStateDir } from "openclaw/plugin-sdk/state-paths";
+import { COMPUTER_USE_AGENT } from "./computer-use-agent.js";
 import {
   type ComputerUseDecision,
   type ComputerUseParams,
@@ -31,7 +32,12 @@ export function resolveComputerUseAuditLogPath(ctx: ComputerUsePolicyContext = {
     const agentRoot = ctx.agentDir.endsWith("/agent") ? dirname(ctx.agentDir) : ctx.agentDir;
     return resolve(agentRoot, "audit", "computer-use.jsonl");
   }
-  return resolve(homedir(), ".openclaw", "agents", "computer-use", "audit", "computer-use.jsonl");
+  // Direct gateway HTTP calls may omit agentDir. Respect the gateway's explicit
+  // state root rather than escaping an isolated gateway into the user's profile.
+  const stateRoot = resolveStateDir();
+  const agentId = ctx.agentId ?? COMPUTER_USE_AGENT.id;
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(agentId)) throw new Error("Audit agent id is invalid.");
+  return resolve(stateRoot, "agents", agentId, "audit", "computer-use.jsonl");
 }
 
 export async function appendComputerUseAuditEvent(

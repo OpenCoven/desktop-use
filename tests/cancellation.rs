@@ -6,11 +6,18 @@ fn cli_sigterm_cancels_and_reaps_its_active_helper() {
         os::unix::fs::PermissionsExt,
         process::{Command, Stdio},
         thread,
-        time::{Duration, Instant},
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
-    let root = env::temp_dir().join(format!("desktopuse-cli-cancel-{}", std::process::id()));
-    fs::create_dir_all(&root).unwrap();
-    let script = "#!/bin/sh\nprintf '%s' \"$$\" > \"$FIXTURE_PID\"\ntrap '' TERM\n/bin/sleep 10\n";
+    let root = env::temp_dir().join(format!(
+        "desktopuse-cli-cancel-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir(&root).unwrap();
+    let script = "#!/bin/sh\ntrap '' TERM\n: > \"$FIXTURE_PID\"\n/bin/sleep 0.1\nprintf '%s' \"$$\" > \"$FIXTURE_PID\"\n/bin/sleep 10\n";
     for name in ["peekaboo", "xdotool"] {
         let file = root.join(name);
         fs::write(&file, script).unwrap();
@@ -26,17 +33,23 @@ fn cli_sigterm_cancels_and_reaps_its_active_helper() {
         .spawn()
         .unwrap();
     let ready_by = Instant::now() + Duration::from_secs(2);
-    while !root.join("pid").exists() && Instant::now() < ready_by {
+    // Creation is observable before the PID has been written. Wait for a
+    // complete positive PID, never an empty file or a marker from an older run.
+    let helper = loop {
+        if let Some(pid) = fs::read_to_string(root.join("pid"))
+            .ok()
+            .and_then(|value| value.parse::<i32>().ok())
+            .filter(|pid| *pid > 0)
+        {
+            break pid;
+        }
+        if Instant::now() >= ready_by {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("fixture helper did not publish its PID");
+        }
         thread::sleep(Duration::from_millis(5));
-    }
-    if !root.join("pid").exists() {
-        let _ = child.kill();
-        panic!("fixture helper did not start");
-    }
-    let helper: i32 = fs::read_to_string(root.join("pid"))
-        .unwrap()
-        .parse()
-        .unwrap();
+    };
     unsafe {
         libc::kill(child.id() as i32, libc::SIGTERM);
     }

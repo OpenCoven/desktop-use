@@ -34,9 +34,7 @@ coven-desktop-use scroll --direction down --amount 3 --confirm
 coven-desktop-use focus --app TextEdit --confirm
 ```
 
-All commands print a JSON envelope. The 0.1.0 command names remain as aliases:
-`permissions -> doctor`, `see -> inspect`, `capture -> screenshot`,
-`type -> type-text`, and `press -> keypress`.
+All commands print a JSON envelope. The 0.1.0 command names remain as aliases: `permissions -> doctor`, `see -> inspect`, `capture -> screenshot`, `type -> type-text`, and `press -> keypress`. For plugin action inputs, these aliases are deprecated as described below.
 
 ## Linux / Ubuntu onboarding
 
@@ -144,10 +142,27 @@ This repo also ships an external OpenClaw tool plugin package under the OpenCove
 @opencoven/openclaw-desktop-use
 ```
 
-The plugin registers the `computer_use` agent tool and a legacy `desktop_use`
-alias. New configurations should allow only `computer_use` for the dedicated
-agent. See [docs/computer-use-agent.md](docs/computer-use-agent.md) for the
-agent identity, approval model, audit contract, and verification checklist.
+The plugin registers the `computer_use` agent tool and a deprecated `desktop_use` alias. New configurations should allow only `computer_use` for the dedicated agent. See [docs/computer-use-agent.md](docs/computer-use-agent.md) for the agent identity, approval model, audit contract, and verification checklist.
+
+### Deprecated plugin inputs
+
+The schema prefers 18 canonical actions and retains five deprecated 0.1.0 action aliases in deprecated compatibility branches and the overall 23-value enum. These aliases remain visible to hosts and normalize on input for this compatibility release. Migrate these names before their targeted removal in 0.2.0:
+
+| Deprecated input | Replacement |
+| --- | --- |
+| Tool `desktop_use` | `computer_use` |
+| Action `permissions` | `doctor` |
+| Action `see` | `inspect` |
+| Action `capture` | `screenshot` |
+| Action `type` | `type-text` |
+| Action `press` | `keypress` |
+| `clipboard-write` field `text` | `clipboardText` |
+
+Use `computer_use` with `{ "action": "clipboard-write", "clipboardText": "hello" }` for clipboard writes. The `text` field remains the canonical input for `type-text`. If both clipboard fields are supplied, `clipboardText` keeps precedence and supplying `text` still produces a notice.
+
+Legacy plugin inputs add a `deprecation` string to result details and the JSON text response, for example `"deprecation": "permissions is deprecated; use doctor instead."`. Multiple notices are combined in that string. Canonical calls omit the field. Notices preserve action status, approval decisions, and redacted audit behavior, including failures. Malformed requests still fail validation before execution. The `desktop_use` tool remains registered and listed in `openclaw.plugin.json` for this release.
+
+### Installation
 
 Install the adapter binary from this repo:
 
@@ -203,7 +218,7 @@ The CLI gives each action a cumulative 30-second helper deadline, including ever
 
 On supported Unix hosts, owned helpers run in a separate process group. The CLI kills and reaps that group on completion, deadline, or SIGTERM/SIGINT cancellation. The plugin requests TERM and escalates to KILL after a 250 ms cleanup grace, so an uncooperative helper cannot hold the call open indefinitely. Result codes distinguish `ETIMEDOUT`, `CANCELLED`, missing dependencies, malformed output, and backend rejection. Multi-step actions stop at the first failure and report completed steps and the failing step; completed input is not rolled back.
 
-Plugin `stop` requests cancellation of active calls in the same agent/session/workspace, including calls from another instance of the tool in this process. It returns `cancelling` while those calls settle. The host may also supply an AbortSignal as the third execute argument. Stop does not revoke future approvals, stop other gateway processes, undo completed effects, or interrupt a filesystem syscall already in progress. Injected adapter runners must honor the AbortSignal; the built-in runner owns and terminates its helper processes.
+Plugin `stop` requests cancellation of active calls in the same agent/session/workspace, including calls from another instance of the tool in this process. It returns `cancelling` while those calls settle. Calls made without a session key form their own scope and never match a named session. The host may also supply an AbortSignal as the third execute argument. Stop does not revoke future approvals, stop other gateway processes, undo completed effects, or interrupt a filesystem syscall already in progress. Injected adapter runners must honor the AbortSignal; the built-in runner owns and terminates its helper processes.
 
 File targets are resolved through symlinks before approval classification; relative traversal and symlink escapes require approval for the canonical external target. File and clipboard contents are returned only with `includeText:true`. These checks prevent static path escapes; they are not an OS filesystem sandbox against another process concurrently replacing directories or symlinks. Use a workspace without hostile concurrent writers.
 

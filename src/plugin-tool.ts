@@ -10,6 +10,8 @@ import {
   COMPUTER_USE_AGENT,
   COMPUTER_USE_HEALTH_CHECK,
 } from "./computer-use-agent.js";
+import { computerUseScopeKey } from "./computer-use-scope.js";
+import { COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME } from "./tool-names.js";
 import {
   buildComputerUseAuditEvent,
   appendComputerUseAuditEvent,
@@ -27,9 +29,7 @@ import {
 } from "./computer-use-policy.js";
 
 const activeCalls = new Map<string, Set<AbortController>>();
-function scopeKey(ctx: ComputerUsePolicyContext): string {
-  return JSON.stringify([ctx.agentId ?? COMPUTER_USE_AGENT.id, ctx.sessionKey ?? "default", ctx.workspaceDir ?? ""]);
-}
+const scopeKey = (ctx: ComputerUsePolicyContext) => computerUseScopeKey(ctx, "call");
 
 const MAX_TEXT_BYTES = 100_000;
 const MAX_ARG_BYTES = 2_048;
@@ -57,6 +57,28 @@ export type CreateComputerUseToolOptions = {
   appendAuditEvent?: AuditWriter;
 };
 
+const CANONICAL_ACTIONS = [
+  "health",
+  "stop",
+  "doctor",
+  "inspect",
+  "screenshot",
+  "click",
+  "type-text",
+  "keypress",
+  "scroll",
+  "focus",
+  "shell",
+  "file-list",
+  "file-read",
+  "file-write",
+  "clipboard-read",
+  "clipboard-write",
+  "browser-open",
+  "app-launch",
+] as const;
+const LEGACY_ACTIONS = ["permissions", "see", "capture", "type", "press"] as const;
+
 const ComputerUseToolSchema = {
   type: "object",
   additionalProperties: false,
@@ -64,32 +86,17 @@ const ComputerUseToolSchema = {
   properties: {
     action: {
       type: "string",
-      enum: [
-        "health",
-        "stop",
-        "doctor",
-        "inspect",
-        "screenshot",
-        "click",
-        "type-text",
-        "keypress",
-        "scroll",
-        "focus",
-        "shell",
-        "file-list",
-        "file-read",
-        "file-write",
-        "clipboard-read",
-        "clipboard-write",
-        "browser-open",
-        "app-launch",
-        "permissions",
-        "see",
-        "capture",
-        "type",
-        "press",
+      enum: [...CANONICAL_ACTIONS, ...LEGACY_ACTIONS],
+      // Singleton branches survive the pinned host's provider schema conversion;
+      // grouped enum branches can become an unbounded string schema on Gemini.
+      anyOf: [
+        ...CANONICAL_ACTIONS.map(action => ({ type: "string", const: action })),
+        ...LEGACY_ACTIONS.map(action => ({
+          type: "string", const: action, deprecated: true,
+          description: `Deprecated; use ${normalizeComputerUseAction(action)} instead. Removal targeted at 0.2.0.`,
+        })),
       ],
-      description: "Computer-use action to perform.",
+      description: "Computer-use action to perform. Prefer the 18 canonical actions. Five deprecated aliases remain accepted and visible to hosts during this compatibility release: permissions -> doctor, see -> inspect, capture -> screenshot, type -> type-text, press -> keypress. Removal targeted at 0.2.0.",
     },
     app: { type: "string", description: "Target app name, bundle id, or PID:123." },
     windowTitle: { type: "string", description: "Partial target window title." },
@@ -112,7 +119,7 @@ const ComputerUseToolSchema = {
     coords: { type: "string", description: "Coordinate fallback in x,y form." },
     double: { type: "boolean" },
     right: { type: "boolean" },
-    text: { type: "string", description: "Text for type-text or clipboard-write." },
+    text: { type: "string", description: "Text for type-text. For clipboard-write, text is deprecated; use clipboardText. Removal targeted at 0.2.0." },
     clear: { type: "boolean" },
     pressReturn: { type: "boolean" },
     keys: { type: "array", items: { type: "string" }, description: "Keys for keypress." },
@@ -150,6 +157,10 @@ const DESKTOP_ADAPTER_ACTIONS = new Set([
 const TRANSIENT_RETRY_ACTIONS = new Set(["doctor", "inspect", "screenshot"]);
 
 export function createComputerUseTool(options: CreateComputerUseToolOptions = {}) {
+  return createTool(options);
+}
+
+function createTool(options: CreateComputerUseToolOptions, legacyTool = false) {
   const ctx = options.ctx ?? {};
   const runAdapter = options.runAdapter ?? runAdapterBinary;
   const appendAuditEvent =
@@ -157,10 +168,11 @@ export function createComputerUseTool(options: CreateComputerUseToolOptions = {}
     ((event: ComputerUseAuditEvent) => appendComputerUseAuditEvent(event, ctx));
 
   return {
-    name: "computer_use",
-    label: "Computer Use",
-    description:
-      "OpenCoven computer-use agent tool for health checks, observation, approved desktop input, scoped shell/file actions, browser/app launches, and clipboard workflows.",
+    name: legacyTool ? DESKTOP_USE_TOOL_NAME : COMPUTER_USE_TOOL_NAME,
+    label: legacyTool ? "Desktop Use" : "Computer Use",
+    description: legacyTool
+      ? `Deprecated alias for ${COMPUTER_USE_TOOL_NAME}. Use ${COMPUTER_USE_TOOL_NAME} instead. Removal targeted at 0.2.0.`
+      : "OpenCoven computer-use agent tool for health checks, observation, approved desktop input, scoped shell/file actions, browser/app launches, and clipboard workflows.",
     parameters: ComputerUseToolSchema,
     async execute(toolCallId: string, rawParams: unknown, gatewaySignal?: AbortSignal): Promise<ToolResult> {
       let params = normalizeParams(rawParams);
@@ -205,20 +217,22 @@ export function createComputerUseTool(options: CreateComputerUseToolOptions = {}
         details.audit = { written: false, code: "AUDIT_WRITE_FAILED" };
       }
 
+      // Notices are response metadata only; policy, execution, and audit see the original request/outcome.
+      const notices: string[] = [];
+      if (legacyTool) notices.push(`${DESKTOP_USE_TOOL_NAME} is deprecated; use ${COMPUTER_USE_TOOL_NAME} instead.`);
+      const action = normalizeComputerUseAction(params.action);
+      if (action !== params.action) notices.push(`${params.action} is deprecated; use ${action} instead.`);
+      if (action === "clipboard-write" && params.text !== undefined) {
+        notices.push("clipboard-write text is deprecated; use clipboardText instead.");
+      }
+      if (notices.length) details.deprecation = notices.join(" ");
       return jsonResult(details);
     },
   };
 }
 
 export function createDesktopUseTool(options: CreateComputerUseToolOptions = {}) {
-  const tool = createComputerUseTool(options);
-  return {
-    ...tool,
-    name: "desktop_use",
-    label: "Desktop Use",
-    description:
-      "Legacy alias for the OpenCoven computer_use tool. Prefer computer_use for new OpenClaw agent policy.",
-  };
+  return createTool(options, true);
 }
 
 async function executeAllowedAction(
@@ -306,7 +320,7 @@ async function runHealth(ctx: ComputerUsePolicyContext, runAdapter: AdapterRunne
     auditLog: resolveComputerUseAuditLogPath(ctx),
     repairHints: [
       missingAdapterHint(adapterBin),
-      "Run computer_use action=doctor after granting Screen Recording and Accessibility.",
+      `Run ${COMPUTER_USE_TOOL_NAME} action=doctor after granting Screen Recording and Accessibility.`,
       "Restart the OpenClaw Gateway after changing COVEN_DESKTOP_USE_BIN or macOS privacy grants.",
     ],
     permissionFlow: permissionFlowForResult(adapterResult, "doctor"),
@@ -486,7 +500,8 @@ export function normalizeParams(params: unknown): ComputerUseParams {
     } else if (typeof value !== schema.type) {
       throw new ToolInputError(`${label} has an invalid type.`);
     }
-    if (schema.enum && !schema.enum.includes(value as string)) {
+    const enumValue = label === "action" ? normalizeComputerUseAction(value as ComputerUseParams["action"]) : value;
+    if (schema.enum && !schema.enum.includes(enumValue as string)) {
       throw new ToolInputError(`${label} has an unsupported value.`);
     }
     if (typeof value === "number" && (
@@ -705,8 +720,8 @@ function permissionFlowForResult(result: unknown, action: string): unknown | und
       "openclaw",
     ],
     afterGrant:
-      "Quit/restart the granted app or restart the OpenClaw Gateway, then rerun computer_use action=doctor.",
-    verification: { tool: "computer_use", args: { action: "doctor" } },
+      `Quit/restart the granted app or restart the OpenClaw Gateway, then rerun ${COMPUTER_USE_TOOL_NAME} action=doctor.`,
+    verification: { tool: COMPUTER_USE_TOOL_NAME, args: { action: "doctor" } },
   };
 }
 
@@ -745,8 +760,8 @@ function linuxPermissionFlow(result: unknown, action: string): unknown | undefin
     tools: tools ?? null,
     sessionNotes: collectSessionNotes(setupGuide),
     afterInstall:
-      "After installing the listed packages, rerun desktop_use action=doctor. Wayland users may also need to start the ydotoold service and add their user to the 'input' group.",
-    verification: { tool: "desktop_use", args: { action: "doctor" } },
+      `After installing the listed packages, rerun ${COMPUTER_USE_TOOL_NAME} action=doctor. Wayland users may also need to start the ydotoold service and add their user to the 'input' group.`,
+    verification: { tool: COMPUTER_USE_TOOL_NAME, args: { action: "doctor" } },
   };
 }
 

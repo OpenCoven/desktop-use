@@ -17,8 +17,21 @@ plugin plus the `coven-desktop-use` adapter.
 - `agents/computer-use/IDENTITY.md`: packaged identity for the dedicated agent.
 - `agents/computer-use/openclaw-agent.json`: install/config template for the
   dedicated agent boundary.
+- `src/host-actions.ts`, `src/file-actions.ts`, `src/process-runner.ts`: plugin-side
+  clipboard/browser/app-launch planning, bounded file actions, and the owned
+  helper process runner.
 - `src/main.rs`: native adapter that delegates macOS observation and input to
-  Peekaboo with `--json --no-remote`.
+  Peekaboo with `--json --no-remote`, and Linux observation and input to the
+  per-session X11/Wayland helpers.
+- `src/linux_capabilities.rs`, `src/process.rs`: Linux capability reporting and
+  the adapter's bounded helper process groups.
+
+The names map to layers: `coven-desktop-use` is the GUI-only adapter binary
+(`doctor`, `inspect`, `screenshot`, `click`, `type-text`, `keypress`, `scroll`,
+`focus`); `computer_use` is the agent tool that wraps it with policy, approval,
+audit, and the host actions listed below. Repair hints and verification steps
+returned by the plugin always name `computer_use`; hints printed by the binary
+name `coven-desktop-use`.
 
 `OpenCoven/open-side` was not changed for this slice. It is the operator shell;
 the trust boundary already belongs in this adapter/plugin package. The plugin
@@ -66,17 +79,24 @@ the agent rather than widening the default agent.
 
 ## Tool Boundary
 
-The plugin registers `computer_use` and a legacy `desktop_use` alias. New config
-should allow only `computer_use` for this agent:
+The plugin registers `computer_use` and a deprecated `desktop_use` alias. The alias is the same tool under another name: same schema, policy, approval hook, and audit path. It is registered as optional and exists so older configs keep working during the compatibility interval. New config should allow only `computer_use` for this agent:
 
 ```json
 {
   "tools": {
+    "profile": "full",
     "allow": ["computer_use"],
     "deny": ["exec", "bash", "shell", "apply_patch"]
   }
 }
 ```
+
+Set the agent profile explicitly to `full` and restrict its tools with `allow: ["computer_use"]`. In OpenClaw 2026.4.26, profile filtering runs before the agent allowlist, so `minimal` removes the plugin tool even when it appears in `allow`. The explicit profile also overrides an inherited global profile; other policy scopes can still restrict access, and deny takes precedence over allow. See the versioned source evidence below.
+
+- `node_modules/openclaw/dist/tool-policy-CC72sL8W.js:357-364,398-406`: `minimal: { allow: listCoreToolIdsForProfile("minimal") }`, `full: {}`, and `if (!resolved.allow && !resolved.deny) return;`.
+- `node_modules/openclaw/dist/tool-policy-pipeline-ChGQVHbp.js:21-48,67-98`: the profile step precedes the agent step, and each step updates `filtered = expanded ? filterToolsByPolicy(filtered, expanded) : filtered;`.
+- `node_modules/openclaw/dist/pi-tools.policy-CndtGqzr.js:174-178`: `const profile = agentTools?.profile ?? globalTools?.profile;`.
+- `node_modules/openclaw/dist/tool-policy-match-DidHscN9.js:13-20`: `if (matchesAnyGlobPattern(normalized, deny)) return false;` runs before the allow match.
 
 Supported actions:
 
@@ -85,6 +105,21 @@ Supported actions:
 - Local app/browser: `app-launch`, `browser-open`
 - Scoped host actions: `shell`, `file-list`, `file-read`, `file-write`
 - Clipboard: `clipboard-read`, `clipboard-write`
+
+The schema prefers these 18 canonical actions. Its overall enum retains all 23 accepted values, with each of the five aliases marked deprecated in its own compatibility branch. The deprecated action inputs `permissions -> doctor`, `see -> inspect`, `capture -> screenshot`, `type -> type-text`, and `press -> keypress` still normalize on input for this compatibility release. Use `clipboardText` for `clipboard-write`; its `text` fallback is deprecated. When both fields are supplied, `clipboardText` retains precedence and `text` still triggers a notice. The `text` input for `type-text` is unchanged.
+
+OpenClaw 2026.4.26 validates model arguments against the advertised schema before the plugin hook or execution can normalize aliases. Hiding the aliases from that schema would reject existing callers without a deprecation notice. The schema uses singleton branches so the pinned host preserves the bounded 23-value vocabulary when converting it for providers such as Gemini. Provider conversion can discard deprecation annotations, so the outer description also names every replacement. Canonical-only visibility is deferred until the compatibility interval ends in 0.2.0.
+
+The deprecated tool, action, and clipboard field names target removal in 0.2.0. `desktop_use` remains registered and present in `openclaw.plugin.json` until that later release. Update allowlists and callers to the canonical names before upgrading.
+
+The 0.2.0 follow-up must run after a compatibility release carrying these notices has shipped:
+
+- Remove the deprecated plugin tool registration and manifest contract, and update the shared tool-name exports and consumers.
+- Remove the five legacy plugin action inputs and compatibility schema branches, leaving the 18 canonical actions. Reject removed inputs before approval or execution.
+- Require `clipboardText` for `clipboard-write` while preserving `text` for `type-text`.
+- Replace compatibility acceptance tests with explicit rejection tests and requalify the packaged plugin through the pinned gateway and provider schema conversion. Keep CLI alias policy separate from this plugin migration.
+
+Legacy plugin calls add a `deprecation` string naming each replacement to both result details and the JSON text response. For example, `desktop_use` with `{ "action": "permissions" }` returns `"deprecation": "desktop_use is deprecated; use computer_use instead. permissions is deprecated; use doctor instead."`. Canonical calls omit the field. Notices are added after existing execution and audit processing, so statuses, approvals, retries, redaction, and audit failures keep their existing behavior. Invalid requests still fail validation before execution.
 
 Shell execution uses argv without shell interpolation. Workspace reads can run without approval. General shell execution requires explicit approval because effects cannot be inferred safely from command names. Writes, external network-visible commands, package installs, clipboard access, app launch, remote URLs, and desktop input require explicit OpenClaw approval. Attempts to reset or bypass macOS security boundaries, use privilege helpers, or run obviously destructive commands are blocked.
 
@@ -117,6 +152,12 @@ Policy decisions have one of three statuses: `allow`, `needsApproval`, or
 `blocked`. Approval prompts include risk, target, exact redacted input when
 available, and rollback notes for writes.
 
+The gateway hook treats incoming tool arguments as model-controlled. A supplied `confirm:true` does not satisfy runtime approval: the hook classifies the request without confirmation and returns confirmation overrides only alongside `requireApproval`, which the gateway applies after an allowed resolution. Trusted operator calls through the gateway's direct HTTP tool endpoint are a separate gateway-authenticated surface and do not prove this agent approval flow.
+
+OpenClaw 2026.4.26 accepts approval titles up to 80 Unicode characters and descriptions up to 256. The hook uses a compact display with the complete canonical target and risk, plus complete redacted input fields; shell command and argument boundaries are shown as JSON strings/arrays. Inputs and targets are never silently shortened to obtain approval. If the complete display cannot fit the gateway API, the request is visibly blocked with a prompt to shorten it. Rollback advice is summarized as manual rollback where applicable; completed effects are not automatically undone.
+
+Approval-context lookup requires an exact agent/session key remembered from a trusted tool factory. Missing session keys are distinct from actual empty or `default` keys. The SDK hook does not carry a workspace, so the plugin refuses file or shell approval when that exact scope has no workspace or has been associated with conflicting workspaces. It never falls back to another session's workspace. Conflicts stay blocked until the bounded context entry is evicted or the plugin reloads; use a fresh session when changing an agent's workspace. Stop adds the workspace to the shared scope key and therefore cannot cancel another agent, session, or workspace. Both tool names follow the same hook and cancellation path; the dedicated template still exposes only the canonical tool.
+
 Audit logs are append-only JSONL:
 
 ```text
@@ -128,35 +169,40 @@ target, risk, approval id when present, redacted params, result status, and a
 result hash. Raw screenshot data, raw clipboard content, typed text, file-write
 content, tokens, cookies, and credentials are not written to durable logs.
 
+Audit writes use the trusted tool factory's agent directory when available. Gateway HTTP factories may omit it; the fallback uses the host SDK's state-directory resolver, including `OPENCLAW_STATE_DIR`, `OPENCLAW_HOME`, and home-prefix normalization, and keeps separate agent audit paths. Isolated verification must set an explicit disposable state root.
+
 ## Control UI State
 
-The plugin registers `computer-use-panel` when the host supports Control UI
-descriptors. The descriptor schema covers:
+The plugin offers `computer-use-panel` through the optional host `registerControlUiDescriptor` API. This is integration metadata, not a running panel, state store, subscription, or gateway RPC. Hosts without that API do not get a panel merely by loading the plugin. Rendering and connecting the panel are host responsibilities.
 
-- `health`
-- `permissions`
-- `activeTarget`
-- `latestObservation`
-- `pendingApprovals`
-- `recentActions`
-- `errors`
-- `repairHints`
-- `controls`
+Only two plugin controls are advertised. The descriptor's `actions.stop` maps to `computer_use action=stop`; `actions.runHealthCheck` maps to `computer_use action=health`. The host enables them only when it can invoke that tool under the current agent policy and gateway authentication. `requiredScopes: ["operator.read"]` describes reading panel state, not permission to invoke controls. Tool calls retain their normal authorization. Stop requests cancellation for active calls in the same agent/session/workspace; it does not pause future work, revoke approvals, or clear a retained target. Those operations belong to a host that implements them and are not advertised as plugin controls.
 
-This is a state contract for the dedicated agent panel; it is intentionally not
-a broad grant to the default agent.
+The schema describes host-rendered state. `stateSources` identifies the producer and availability of every field; it does not imply that the plugin emits a combined state object. Hosts translate available results into the schema and leave unavailable fields absent instead of inventing successful or empty state.
+
+| Field | Producer and source | Availability |
+| --- | --- | --- |
+| `health` | Plugin health action result; host renders state, check time, adapter, and gateway context | After an explicit health call; a missing backend remains a failed health result |
+| `permissions` | Plugin doctor result and `permissionFlow`; host projects individual permission states | After doctor/health; missing backend or protocol evidence remains unavailable/unverified |
+| `activeTarget` | Host-selected app/window/URL | Only if the host tracks a target; the plugin has no active-target store |
+| `latestObservation` | Host projection of inspect/screenshot results | After an observation; the plugin does not retain observations |
+| `pendingApprovals` | Host subscription to gateway plugin-approval events or authenticated pending-request lookup | Only with gateway approval integration; the plugin does not own the approval queue |
+| `recentActions` | Host projection of tool results or redacted JSONL action audits | Only if the host reads those results or records; audit records are not a full input history |
+| `errors` | Host projection of structured failed action results | After a failed call; the plugin does not retain an error store |
+| `repairHints` | Plugin health `repairHints` and `permissionFlow` | After an explicit health call |
+| `controls` | Host combines descriptor action mappings with current tool availability and policy | Only when the host can invoke the mapped tool; unsupported operations remain absent |
 
 ## Reliability
 
 Actions have bounded timeouts. `stop` is an auditable local control action that
-acknowledges cancellation and returns the agent to idle when no background
-runner is retained. Observation and health adapter calls retry once
+requests cancellation of active calls in the same agent/session/workspace. It
+reports `cancelling` while those calls settle and `idle` when none were active;
+it does not undo completed effects or revoke approvals. Observation and health adapter calls retry once
 only for transient runtime failures such as timeouts, stale observations, busy
 backends, or reset connections. Interactive, destructive, clipboard, shell, and
 filesystem actions do not retry internally.
 
 Every action returns a structured status (`success`, `needsApproval`, `blocked`,
-`unsupported`, or `error`) with enough repair context for the gateway or Control
+`unsupported`, `error`, `cancelled`, or `timeout`) with enough repair context for the gateway or Control
 UI to show the next step.
 
 ## Verification
