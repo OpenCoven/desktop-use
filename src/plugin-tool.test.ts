@@ -1,3 +1,4 @@
+import { COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME } from "./tool-names.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createComputerUseTool } from "./plugin-tool.js";
@@ -156,4 +157,23 @@ test("blocks dangerous shell attempts before adapter or host execution", async (
 
   assert.equal(result.details.status, "blocked");
   assert.match(result.details.reason ?? "", /privileged/i);
+});
+
+test("names the canonical tool in every setup and repair guide", async () => {
+  for (const doctor of [
+    { ok: true, platform: "linux", session: "wayland", setupGuide: { summary: "fixture" } },
+    { ok: true, platform: "macos" },
+  ]) {
+    const tool = createComputerUseTool({
+      ctx: { agentId: "computer-use", sessionKey: "agent:computer-use:main" },
+      runAdapter: async () => doctor,
+      appendAuditEvent: async () => undefined,
+    });
+    for (const action of ["doctor", "health"]) {
+      const result = await tool.execute(`guide-${doctor.platform}-${action}`, { action });
+      const flow = result.details.permissionFlow as { verification?: { tool?: string } };
+      assert.equal(flow.verification?.tool, COMPUTER_USE_TOOL_NAME);
+      assert.doesNotMatch(JSON.stringify(result.details), new RegExp(DESKTOP_USE_TOOL_NAME));
+    }
+  }
 });

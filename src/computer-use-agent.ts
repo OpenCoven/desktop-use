@@ -1,3 +1,5 @@
+import { COMPUTER_USE_TOOL_NAME } from "./tool-names.js";
+
 export const COMPUTER_USE_AGENT = {
   id: "computer-use",
   name: "Computer Use",
@@ -13,8 +15,8 @@ export const COMPUTER_USE_AGENT = {
     binding: "per-agent auth order; OAuth refresh tokens stay in the owning profile store",
   },
   toolPolicy: {
-    profile: "minimal",
-    allow: ["computer_use"],
+    profile: "full",
+    allow: [COMPUTER_USE_TOOL_NAME],
     deny: ["exec", "bash", "shell", "apply_patch"],
   },
   logs: {
@@ -34,7 +36,7 @@ Do not make the default OpenClaw agent inherit your machine-control powers.
 } as const;
 
 export const COMPUTER_USE_HEALTH_CHECK = {
-  tool: "computer_use",
+  tool: COMPUTER_USE_TOOL_NAME,
   args: { action: "health" },
 } as const;
 
@@ -46,6 +48,22 @@ export const COMPUTER_USE_CONTROL_UI_DESCRIPTOR = {
     "Dedicated OpenCoven computer-use agent health, permission, approval, action, and repair state.",
   placement: "agents.computer-use",
   requiredScopes: ["operator.read"],
+  // Optional host integration metadata, not a state store or a gateway RPC.
+  actions: {
+    stop: { tool: COMPUTER_USE_TOOL_NAME, args: { action: "stop" } },
+    runHealthCheck: { tool: COMPUTER_USE_TOOL_NAME, args: { action: "health" } },
+  },
+  stateSources: {
+    health: { owner: "plugin", source: "health action result", availability: "after an explicit health call" },
+    permissions: { owner: "plugin", source: "doctor result and permissionFlow", availability: "after a doctor or health call; backend evidence may be unavailable" },
+    activeTarget: { owner: "host", source: "host-selected target", availability: "only when the host tracks a target; absent otherwise" },
+    latestObservation: { owner: "host", source: "projection of inspect or screenshot results", availability: "after an observation; the plugin does not retain it" },
+    pendingApprovals: { owner: "host", source: "gateway plugin approval events and pending requests", availability: "only with an authenticated gateway approval integration" },
+    recentActions: { owner: "host", source: "projection of tool results or redacted action audit records", availability: "only when the host reads those records" },
+    errors: { owner: "host", source: "projection of structured failed action results", availability: "after a failed call; the plugin has no error store" },
+    repairHints: { owner: "plugin", source: "health result repairHints and permissionFlow", availability: "after an explicit health call" },
+    controls: { owner: "host", source: "supported action mappings plus current tool access", availability: "only when the host can invoke the mapped tool under its normal policy" },
+  },
   schema: {
     type: "object",
     additionalProperties: false,
@@ -136,10 +154,7 @@ export const COMPUTER_USE_CONTROL_UI_DESCRIPTOR = {
       controls: {
         type: "object",
         properties: {
-          pause: { type: "boolean" },
           stop: { type: "boolean" },
-          revokeApproval: { type: "boolean" },
-          clearTarget: { type: "boolean" },
           runHealthCheck: { type: "boolean" },
         },
       },

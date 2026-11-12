@@ -12,9 +12,10 @@
   "auth": {
     "inheritsMainOAuth": true,
     "copyOAuthSecrets": false,
-    "binding": "per-agent auth order"
+    "binding": "per-agent auth order; OAuth refresh tokens stay in the owning profile store"
   },
   "tools": {
+    "profile": "full",
     "allow": ["computer_use"],
     "deny": ["exec", "bash", "shell", "apply_patch"]
   },
