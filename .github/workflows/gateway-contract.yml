@@ -68,6 +68,7 @@ jobs:
             ${{ runner.temp }}/gateway-receipts/*-outcome.json
             ${{ runner.temp }}/gateway-receipts/*-history.json
             ${{ runner.temp }}/gateway-receipts/*-cancellation.json
+            ${{ runner.temp }}/gateway-receipts/*-timing.json
             ${{ runner.temp }}/gateway-receipts/audit-summary.json
             ${{ runner.temp }}/gateway-receipts/state/agents/computer-use/audit/computer-use.jsonl
             ${{ runner.temp }}/gateway-receipts/state/agents/legacy-qualification/audit/computer-use.jsonl

@@ -56,6 +56,7 @@ const model = createServer(async (req, res) => {
     const finished = messages.slice(userIndex + 1).some(m => m.role === "tool");
     requests.push({ case: marker, url: req.url, tools: (body.tools ?? []).map(t => t.function?.name), finished });
     await save("model-requests.json", requests);
+    if (!finished) plan.onModelRequest?.();
     const toolCall = { index: 0, id: `call_${marker}`, type: "function", function: { name: plan.tool ?? COMPUTER_USE_TOOL_NAME, arguments: JSON.stringify(plan.args) } };
     res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
     const chunk = (delta, finish_reason = null) => res.write(`data: ${JSON.stringify({ id: `chatcmpl-${marker}`, object: "chat.completion.chunk", created: Math.floor(Date.now() / 1000), model: "fixture", choices: [{ index: 0, delta, finish_reason }] })}\n\n`);
@@ -195,19 +196,30 @@ try {
   assert.equal(health.status, 200); assert.deepEqual(health.body.result.details.agent.toolPolicy, template.tools);
   for (const name of ["exec", "bash", "shell", "apply_patch", DESKTOP_USE_TOOL_NAME]) assert.equal((await httpInvoke(name, {})).status, 404, name);
   async function runCase(name, args, decision = "allow-once", sessionKey = session, tool = COMPUTER_USE_TOOL_NAME, options = {}) {
-    cases.set(name, { args, tool });
+    const startedAt = Date.now();
+    const timing = {};
+    let modelRequested;
+    const modelReady = new Promise(resolve => modelRequested = resolve);
+    cases.set(name, { args, tool, onModelRequest: () => { timing.modelRequestedMs = Date.now() - startedAt; modelRequested(); } });
     const start = events.length;
     const accepted = await rpc("agent", { message: `QUALIFICATION_CASE:${name}`, agentId: sessionKey.split(":")[1], sessionKey, idempotencyKey: randomUUID(), deliver: false, timeout: 420 });
+    timing.acceptedMs = Date.now() - startedAt;
     const completed = rpc("agent.wait", { runId: accepted.runId, timeoutMs: 420000 }, 430000);
     completed.catch(() => {});
     options.onAccepted?.(accepted);
     if (decision !== "none") {
+      // Cold per-agent provider initialization precedes the first model request.
+      // Keep it under the existing agent deadline, not the approval-delivery window.
+      await Promise.race([modelReady, completed.then(outcome => { throw new Error(`Agent ${name} ended before a model request: ${outcome.status}`); })]);
       const approval = await until(() => events.slice(start).find(e => e.event === "plugin.approval.requested" && e.payload.request.toolCallId?.includes(name)), 45000);
+      timing.approvalRequestedMs = Date.now() - startedAt;
+      await save(`${name}-timing.json`, timing);
       await save(`${name}-approval.json`, approval.payload);
       await options.beforeDecision?.(approval.payload);
       if (decision !== "expire") await rpc("plugin.approval.resolve", { id: approval.payload.id, decision });
     }
     const outcome = await completed; await save(`${name}-outcome.json`, outcome);
+    await save(`${name}-timing.json`, timing);
     console.log(`Gateway agent finished ${name}: ${outcome.status}`);
     const history = await rpc("chat.history", { sessionKey, limit: 100 }); await save(`${name}-history.json`, history);
     if (!options.abort) assert.equal(outcome.status, "ok", JSON.stringify(outcome));
