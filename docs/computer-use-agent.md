@@ -79,10 +79,7 @@ the agent rather than widening the default agent.
 
 ## Tool Boundary
 
-The plugin registers `computer_use` and a legacy `desktop_use` alias. The alias
-is the same tool under another name: same schema, policy, approval hook, and
-audit path. It is registered as optional and exists only so older configs keep
-working. New config should allow only `computer_use` for this agent:
+The plugin registers `computer_use` and a deprecated `desktop_use` alias. The alias is the same tool under another name: same schema, policy, approval hook, and audit path. It is registered as optional and exists so older configs keep working during the compatibility interval. New config should allow only `computer_use` for this agent:
 
 ```json
 {
@@ -108,6 +105,21 @@ Supported actions:
 - Local app/browser: `app-launch`, `browser-open`
 - Scoped host actions: `shell`, `file-list`, `file-read`, `file-write`
 - Clipboard: `clipboard-read`, `clipboard-write`
+
+The schema prefers these 18 canonical actions. Its overall enum retains all 23 accepted values, with each of the five aliases marked deprecated in its own compatibility branch. The deprecated action inputs `permissions -> doctor`, `see -> inspect`, `capture -> screenshot`, `type -> type-text`, and `press -> keypress` still normalize on input for this compatibility release. Use `clipboardText` for `clipboard-write`; its `text` fallback is deprecated. When both fields are supplied, `clipboardText` retains precedence and `text` still triggers a notice. The `text` input for `type-text` is unchanged.
+
+OpenClaw 2026.4.26 validates model arguments against the advertised schema before the plugin hook or execution can normalize aliases. Hiding the aliases from that schema would reject existing callers without a deprecation notice. The schema uses singleton branches so the pinned host preserves the bounded 23-value vocabulary when converting it for providers such as Gemini. Provider conversion can discard deprecation annotations, so the outer description also names every replacement. Canonical-only visibility is deferred until the compatibility interval ends in 0.2.0.
+
+The deprecated tool, action, and clipboard field names target removal in 0.2.0. `desktop_use` remains registered and present in `openclaw.plugin.json` until that later release. Update allowlists and callers to the canonical names before upgrading.
+
+The 0.2.0 follow-up must run after a compatibility release carrying these notices has shipped:
+
+- Remove the deprecated plugin tool registration and manifest contract, and update the shared tool-name exports and consumers.
+- Remove the five legacy plugin action inputs and compatibility schema branches, leaving the 18 canonical actions. Reject removed inputs before approval or execution.
+- Require `clipboardText` for `clipboard-write` while preserving `text` for `type-text`.
+- Replace compatibility acceptance tests with explicit rejection tests and requalify the packaged plugin through the pinned gateway and provider schema conversion. Keep CLI alias policy separate from this plugin migration.
+
+Legacy plugin calls add a `deprecation` string naming each replacement to both result details and the JSON text response. For example, `desktop_use` with `{ "action": "permissions" }` returns `"deprecation": "desktop_use is deprecated; use computer_use instead. permissions is deprecated; use doctor instead."`. Canonical calls omit the field. Notices are added after existing execution and audit processing, so statuses, approvals, retries, redaction, and audit failures keep their existing behavior. Invalid requests still fail validation before execution.
 
 Shell execution uses argv without shell interpolation. Workspace reads can run without approval. General shell execution requires explicit approval because effects cannot be inferred safely from command names. Writes, external network-visible commands, package installs, clipboard access, app launch, remote URLs, and desktop input require explicit OpenClaw approval. Attempts to reset or bypass macOS security boundaries, use privilege helpers, or run obviously destructive commands are blocked.
 

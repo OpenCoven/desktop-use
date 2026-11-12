@@ -57,6 +57,28 @@ export type CreateComputerUseToolOptions = {
   appendAuditEvent?: AuditWriter;
 };
 
+const CANONICAL_ACTIONS = [
+  "health",
+  "stop",
+  "doctor",
+  "inspect",
+  "screenshot",
+  "click",
+  "type-text",
+  "keypress",
+  "scroll",
+  "focus",
+  "shell",
+  "file-list",
+  "file-read",
+  "file-write",
+  "clipboard-read",
+  "clipboard-write",
+  "browser-open",
+  "app-launch",
+] as const;
+const LEGACY_ACTIONS = ["permissions", "see", "capture", "type", "press"] as const;
+
 const ComputerUseToolSchema = {
   type: "object",
   additionalProperties: false,
@@ -64,32 +86,17 @@ const ComputerUseToolSchema = {
   properties: {
     action: {
       type: "string",
-      enum: [
-        "health",
-        "stop",
-        "doctor",
-        "inspect",
-        "screenshot",
-        "click",
-        "type-text",
-        "keypress",
-        "scroll",
-        "focus",
-        "shell",
-        "file-list",
-        "file-read",
-        "file-write",
-        "clipboard-read",
-        "clipboard-write",
-        "browser-open",
-        "app-launch",
-        "permissions",
-        "see",
-        "capture",
-        "type",
-        "press",
+      enum: [...CANONICAL_ACTIONS, ...LEGACY_ACTIONS],
+      // Singleton branches survive the pinned host's provider schema conversion;
+      // grouped enum branches can become an unbounded string schema on Gemini.
+      anyOf: [
+        ...CANONICAL_ACTIONS.map(action => ({ type: "string", const: action })),
+        ...LEGACY_ACTIONS.map(action => ({
+          type: "string", const: action, deprecated: true,
+          description: `Deprecated; use ${normalizeComputerUseAction(action)} instead. Removal targeted at 0.2.0.`,
+        })),
       ],
-      description: "Computer-use action to perform.",
+      description: "Computer-use action to perform. Prefer the 18 canonical actions. Five deprecated aliases remain accepted and visible to hosts during this compatibility release: permissions -> doctor, see -> inspect, capture -> screenshot, type -> type-text, press -> keypress. Removal targeted at 0.2.0.",
     },
     app: { type: "string", description: "Target app name, bundle id, or PID:123." },
     windowTitle: { type: "string", description: "Partial target window title." },
@@ -112,7 +119,7 @@ const ComputerUseToolSchema = {
     coords: { type: "string", description: "Coordinate fallback in x,y form." },
     double: { type: "boolean" },
     right: { type: "boolean" },
-    text: { type: "string", description: "Text for type-text or clipboard-write." },
+    text: { type: "string", description: "Text for type-text. For clipboard-write, text is deprecated; use clipboardText. Removal targeted at 0.2.0." },
     clear: { type: "boolean" },
     pressReturn: { type: "boolean" },
     keys: { type: "array", items: { type: "string" }, description: "Keys for keypress." },
@@ -150,6 +157,10 @@ const DESKTOP_ADAPTER_ACTIONS = new Set([
 const TRANSIENT_RETRY_ACTIONS = new Set(["doctor", "inspect", "screenshot"]);
 
 export function createComputerUseTool(options: CreateComputerUseToolOptions = {}) {
+  return createTool(options);
+}
+
+function createTool(options: CreateComputerUseToolOptions, legacyTool = false) {
   const ctx = options.ctx ?? {};
   const runAdapter = options.runAdapter ?? runAdapterBinary;
   const appendAuditEvent =
@@ -157,10 +168,11 @@ export function createComputerUseTool(options: CreateComputerUseToolOptions = {}
     ((event: ComputerUseAuditEvent) => appendComputerUseAuditEvent(event, ctx));
 
   return {
-    name: COMPUTER_USE_TOOL_NAME,
-    label: "Computer Use",
-    description:
-      "OpenCoven computer-use agent tool for health checks, observation, approved desktop input, scoped shell/file actions, browser/app launches, and clipboard workflows.",
+    name: legacyTool ? DESKTOP_USE_TOOL_NAME : COMPUTER_USE_TOOL_NAME,
+    label: legacyTool ? "Desktop Use" : "Computer Use",
+    description: legacyTool
+      ? `Deprecated alias for ${COMPUTER_USE_TOOL_NAME}. Use ${COMPUTER_USE_TOOL_NAME} instead. Removal targeted at 0.2.0.`
+      : "OpenCoven computer-use agent tool for health checks, observation, approved desktop input, scoped shell/file actions, browser/app launches, and clipboard workflows.",
     parameters: ComputerUseToolSchema,
     async execute(toolCallId: string, rawParams: unknown, gatewaySignal?: AbortSignal): Promise<ToolResult> {
       let params = normalizeParams(rawParams);
@@ -205,20 +217,22 @@ export function createComputerUseTool(options: CreateComputerUseToolOptions = {}
         details.audit = { written: false, code: "AUDIT_WRITE_FAILED" };
       }
 
+      // Notices are response metadata only; policy, execution, and audit see the original request/outcome.
+      const notices: string[] = [];
+      if (legacyTool) notices.push(`${DESKTOP_USE_TOOL_NAME} is deprecated; use ${COMPUTER_USE_TOOL_NAME} instead.`);
+      const action = normalizeComputerUseAction(params.action);
+      if (action !== params.action) notices.push(`${params.action} is deprecated; use ${action} instead.`);
+      if (action === "clipboard-write" && params.text !== undefined) {
+        notices.push("clipboard-write text is deprecated; use clipboardText instead.");
+      }
+      if (notices.length) details.deprecation = notices.join(" ");
       return jsonResult(details);
     },
   };
 }
 
 export function createDesktopUseTool(options: CreateComputerUseToolOptions = {}) {
-  const tool = createComputerUseTool(options);
-  return {
-    ...tool,
-    name: DESKTOP_USE_TOOL_NAME,
-    label: "Desktop Use",
-    description:
-      `Legacy alias for the OpenCoven ${COMPUTER_USE_TOOL_NAME} tool. Prefer ${COMPUTER_USE_TOOL_NAME} for new OpenClaw agent policy.`,
-  };
+  return createTool(options, true);
 }
 
 async function executeAllowedAction(
@@ -486,7 +500,8 @@ export function normalizeParams(params: unknown): ComputerUseParams {
     } else if (typeof value !== schema.type) {
       throw new ToolInputError(`${label} has an invalid type.`);
     }
-    if (schema.enum && !schema.enum.includes(value as string)) {
+    const enumValue = label === "action" ? normalizeComputerUseAction(value as ComputerUseParams["action"]) : value;
+    if (schema.enum && !schema.enum.includes(enumValue as string)) {
       throw new ToolInputError(`${label} has an unsupported value.`);
     }
     if (typeof value === "number" && (

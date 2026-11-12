@@ -62,7 +62,7 @@ export default definePluginEntry({
       displayName: "Desktop Use",
       risk: "high",
       tags: ["opencoven", "computer-use", "approval-gated", "legacy"],
-      description: `Legacy alias for ${COMPUTER_USE_TOOL_NAME}.`,
+      description: `Deprecated alias for ${COMPUTER_USE_TOOL_NAME}; removal targeted at 0.2.0.`,
     });
     optionalApi.registerControlUiDescriptor?.(COMPUTER_USE_CONTROL_UI_DESCRIPTOR);
     api.on(
