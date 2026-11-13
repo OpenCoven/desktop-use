@@ -26,22 +26,37 @@ export async function createImageFixture(repo, root) {
   return { adapter, marker, fixtures, binary };
 }
 
-export async function inspectProviderImage(body, expected) {
+export async function inspectProviderImage(body, expected, options = {}) {
   const urls = [];
   function walk(value) {
     if (typeof value === "string" && /^data:image\/(png|jpeg);base64,/.test(value)) urls.push(value);
     else if (Array.isArray(value)) value.forEach(walk);
     else if (value && typeof value === "object") Object.values(value).forEach(walk);
   }
-  const marker = body.messages.findLastIndex(m => m.role === "user" && JSON.stringify(m.content).includes("QUALIFICATION_CASE:"));
-  assert.ok(marker >= 0, "Current qualification turn is identifiable");
-  const messages = body.messages.slice(marker + 1);
+  const stage = options.stage ?? "initial-delivery";
+  assert.ok(["initial-delivery", "history-replay"].includes(stage), "Known image stage");
+  const markedTurns = body.messages.flatMap((message, index) => {
+    if (message.role !== "user") return [];
+    const text = typeof message.content === "string" ? message.content : (message.content ?? []).filter(block => block.type === "text").map(block => block.text).join("\n");
+    return [...text.matchAll(/QUALIFICATION_CASE:([a-z0-9-]+)(?![a-z0-9-])/g)].map(match => ({ name: match[1], index }));
+  });
+  const current = markedTurns.at(-1);
+  assert.ok(current && (!options.currentCase || current.name === options.currentCase), "Exact current qualification turn is identifiable");
+  const sourceCase = stage === "history-replay" ? options.sourceCase : current.name;
+  const sources = markedTurns.filter(turn => turn.name === sourceCase);
+  assert.equal(sources.length, 1, "Source qualification turn must be unique");
+  const source = sources[0];
+  if (stage === "history-replay") assert.ok(source.index < current.index, "Replay requires a prior source turn");
+  const nextTurn = markedTurns.find(turn => turn.index > source.index);
+  const messages = body.messages.slice(source.index + 1, nextTurn?.index);
   walk(messages);
   assert.equal(urls.length, 1, "Actual provider request contains one image");
   const [, mimeType, data] = urls[0].match(/^data:(image\/(?:png|jpeg));base64,(.*)$/s) ?? [];
   const providerBytes = Buffer.from(data, "base64");
   let resizeProof = {};
-  if (expected.allowHostResize) {
+  let providerDimensions = { width: expected.width ?? 32, height: expected.height ?? 24 };
+  if (stage === "history-replay") {
+    assert.equal(expected.allowHostResize, true, "Replay requires the oversized source fixture");
     assert.equal(mimeType, "image/jpeg", "Pinned host converts oversized PNG to JPEG");
     const decoded = jpeg.decode(providerBytes, { useTArray: true, maxResolutionInMP: 4, maxMemoryUsageInMB: 64 });
     assert.deepEqual({ width: decoded.width, height: decoded.height }, { width: 1200, height: 675 }, "Pinned default host resize dimensions");
@@ -54,20 +69,23 @@ export async function inspectProviderImage(body, expected) {
       const rgb = [16+224*(px+.5)/decoded.width,16+224*(py+.5)/decoded.height,32+64*(x>=.5)+128*(y>=.5)];
       assert.ok(rgb.every((v,index) => Math.abs(v-decoded.data[offset+index])<=4), "Position-coded landmark survives resize within four channel levels");
     }
+    providerDimensions = { width: decoded.width, height: decoded.height };
     resizeProof = { normalizedLandmarksPreserved: true, frameSamples: 100, channelTolerance: 4, providerDimensions: { width: decoded.width, height: decoded.height }, providerSha256: createHash("sha256").update(providerBytes).digest("hex"), hostResize: true };
   } else {
     assert.equal(mimeType, expected.mimeType);
     assert.deepEqual(providerBytes, expected.bytes, "Provider received exact synthetic bytes");
   }
   const summaries = messages.filter(m => m.role === "tool").map(m => typeof m.content === "string" ? m.content : m.content?.filter(c => c.type === "text").map(c => c.text).join("\n"));
-  const details = summaries.map(text => { try { return JSON.parse(text); } catch { return undefined; } }).findLast(value => value?.observationV1);
-  assert.ok(details?.observationV1, "Provider receives observation coordinates as structured text");
-  const receipt = details.observationV1;
+  const details = summaries.map(text => { try { return JSON.parse(text); } catch { return undefined; } }).filter(value => value?.observationV1);
+  assert.equal(details.length, 1, "Provider receives one source observation as structured text");
+  const receipt = details[0].observationV1;
   const dimensions = { width: expected.width ?? 32, height: expected.height ?? 24 };
   assert.deepEqual(receipt.primaryImage.sourceDimensions, dimensions);
   assert.deepEqual(receipt.primaryImage.deliveredDimensions, dimensions);
   assert.deepEqual(receipt.coordinateReference, { units: "normalized", extent: { x: 0, y: 0, width: 1, height: 1 }, sourceExtent: { x: 0, y: 0, ...dimensions } });
   assert.equal(receipt.primaryImage.sha256, expected.sha256);
+  assert.equal(receipt.primaryImage.mimeType, expected.mimeType);
+  assert.equal(receipt.primaryImage.byteLength, expected.bytes.length);
   assert.equal(receipt.geometry.state, "unavailable");
-  return { synthetic: true, actualProviderRequest: true, exactImageBytes: !expected.allowHostResize, ...resizeProof, mimeType, byteLength: expected.bytes.length, sha256: expected.sha256, sourceDimensions: receipt.primaryImage.sourceDimensions, deliveredDimensions: receipt.primaryImage.deliveredDimensions, coordinateReference: receipt.coordinateReference, geometry: receipt.geometry, actualScope: receipt.actualScope, annotationKind: receipt.primaryImage.annotationKind, nativeAcceptance: false, liveProvider: false };
+  return { synthetic: true, actualProviderRequest: true, stage, sourceCase, currentCase: current.name, exactImageBytes: stage === "initial-delivery", hostResize: stage === "history-replay", ...resizeProof, sourceImage: { mimeType: expected.mimeType, byteLength: expected.bytes.length, sha256: expected.sha256, dimensions }, providerImage: { mimeType, byteLength: providerBytes.length, sha256: createHash("sha256").update(providerBytes).digest("hex"), dimensions: providerDimensions }, sourceDimensions: receipt.primaryImage.sourceDimensions, deliveredDimensions: receipt.primaryImage.deliveredDimensions, coordinateReference: receipt.coordinateReference, geometry: receipt.geometry, actualScope: receipt.actualScope, annotationKind: receipt.primaryImage.annotationKind, nativeAcceptance: false, liveProvider: false };
 }

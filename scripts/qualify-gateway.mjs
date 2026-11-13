@@ -37,7 +37,11 @@ const listen = server => new Promise(r => server.listen(0, "127.0.0.1", r));
 const host = await realpath(resolve(process.argv[3] ?? join(repo, "node_modules/openclaw")));
 const pkg = JSON.parse(await readFile(join(host, "package.json"), "utf8"));
 assert.equal(pkg.version, "2026.4.26");
-const WebSocket = createRequire(join(host, "package.json"))("ws");
+const hostRequire = createRequire(join(host, "package.json"));
+const WebSocket = hostRequire("ws");
+assert.equal(process.env.OPENCLAW_IMAGE_BACKEND ?? "sharp", "sharp", "Frame qualification requires the pinned Sharp backend");
+assert.equal(hostRequire("sharp/package.json").version, "0.34.5");
+await save("host-image-identity.json", { host, openclawVersion: pkg.version, sharpVersion: "0.34.5", nodeVersion: process.version, imageBackend: "sharp" });
 // Host replay normalizes tool-call ids; keep batched fixture ids alphanumeric.
 const batchCallId = name => `call${name.replace(/[^a-zA-Z0-9]/g, "")}`;
 const cases = new Map();
@@ -73,8 +77,13 @@ const model = createServer(async (req, res) => {
     if (profile === "stop-only") assert.ok(actionSchema.description.includes("Stop-only"));
     modelSchemas[definition.name] = definition.parameters;
     await save("model-tool-schemas.json", modelSchemas);
-    const finished = messages.slice(userIndex + 1).some(m => m.role === "tool");
-    if (finished && plan.imageKind) await save(`provider-image-${plan.imageKind}.json`, await inspectProviderImage(body, imageFixture.fixtures[plan.imageKind]));
+    const currentToolResults = messages.slice(userIndex + 1).filter(m => m.role === "tool");
+    const finished = plan.replaySourceCase ? true : currentToolResults.length > 0;
+    if (plan.replaySourceCase) {
+      assert.equal(currentToolResults.length, 0, "Replay turn must not create a tool result");
+      assert.equal(plan.responses ?? 0, 0, "Replay is a single no-tool provider response");
+    }
+    if (finished && plan.imageKind) await save(`provider-image-${plan.replaySourceCase ? "large-replay" : plan.imageKind}.json`, await inspectProviderImage(body, imageFixture.fixtures[plan.imageKind], { currentCase: marker, ...(plan.replaySourceCase ? { stage: "history-replay", sourceCase: plan.replaySourceCase } : {}) }));
     // The host can run a batch in parallel: execute Stop on the next provider
     // response so it cannot cancel the observations being qualified alongside it.
     const stopAfterBatch = plan.stopAfterBatch && finished && !plan.stopSent;
@@ -234,7 +243,7 @@ try {
     const timing = {};
     let modelRequested;
     const modelReady = new Promise(resolve => modelRequested = resolve);
-    cases.set(name, { args, tool, calls: options.calls, stopAfterBatch: options.stopAfterBatch, imageKind: options.imageKind, onModelRequest: () => { timing.modelRequestedMs = Date.now() - startedAt; modelRequested(); } });
+    cases.set(name, { args, tool, calls: options.calls, stopAfterBatch: options.stopAfterBatch, imageKind: options.imageKind, replaySourceCase: options.replaySourceCase, onModelRequest: () => { timing.modelRequestedMs = Date.now() - startedAt; modelRequested(); } });
     const start = events.length;
     const accepted = await rpc("agent", { message: `QUALIFICATION_CASE:${name}`, agentId: sessionKey.split(":")[1], sessionKey, idempotencyKey: randomUUID(), deliver: false, timeout: 420 });
     timing.acceptedMs = Date.now() - startedAt;
@@ -279,6 +288,16 @@ try {
         assert.equal(image.events.some(e => e.event === "plugin.approval.requested"), false, "Default private staging adds no approval");
       }
     } finally { await rm(imageFixture.marker, { force: true }); }
+    // Removing the marker disables captures before a distinct real agent turn.
+    // This request must replay only the marked previous large-image turn.
+    const beforeReplay = await rpc("chat.history", { sessionKey: session, limit: 100 });
+    const toolCount = history => history.messages.filter(message => message.role === "toolResult").length;
+    const replay = await runCase("synthetic-image-large-replay", undefined, "none", session, COMPUTER_USE_TOOL_NAME, { imageKind: "large", replaySourceCase: "synthetic-image-large" });
+    assert.equal(toolCount(replay.history), toolCount(beforeReplay), "Replay must not manufacture another capture or tool effect");
+    assert.equal(replay.events.some(event => event.event === "plugin.approval.requested"), false, "Replay adds no approval");
+    assert.equal(requests.filter(request => request.case === "synthetic-image-large-replay").length, 1, "Replay uses exactly one actual provider request");
+    await access(join(root, "provider-image-large.json"));
+    await access(join(root, "provider-image-large-replay.json"));
   }
 
   if (profile === "full") {
