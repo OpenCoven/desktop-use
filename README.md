@@ -286,3 +286,7 @@ Successful inspect/screenshot captures add an `observationV1` metadata receipt a
 Desktop geometry is available only from the qualified X11, Sway and Peekaboo coordinate-context producers described in [image geometry and native qualification](docs/image-geometry.md). Unknown geometry remains explicitly unavailable; raster dimensions alone do not establish desktop origin or scale. The retained isolated Linux matrix qualifies specific capture and effect combinations. Installed macOS/Peekaboo and Wayland pointer effects remain native acceptance gates.
 
 Screenshot encoding follows --format independently of the destination suffix. A ydotool-only input request skips the optional Wayland registry probe because the wtype protocol cannot affect its provider choice.
+
+## Local MCP and embedding
+
+The host-neutral desktop client also has a local stdio MCP connector and a separately launched terminal approval reference host. See [trusted configuration, protocol compatibility and approval examples](docs/mcp.md). Standalone startup defaults to observation-only eligibility; model requests never carry approval authority.

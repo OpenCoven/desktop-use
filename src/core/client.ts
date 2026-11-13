@@ -16,6 +16,8 @@ export type DesktopClientOptions = {
   auditSink: AuditWriter;
   approvalProvider?: ApprovalProvider;
   approvalTimeoutMs?: number;
+  /** Trusted consumer identity for capability discovery. */
+  surface?: "sdk" | "mcp";
 };
 export type DesktopClient = { execute(request: DesktopRequest, call: { callId: string; signal?: AbortSignal }): Promise<DesktopResult> };
 
@@ -29,7 +31,7 @@ export function createDesktopClient(options: DesktopClientOptions): DesktopClien
   if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > DEFAULT_APPROVAL_TIMEOUT_MS) throw new Error('Invalid approval timeout.');
   const permissions = options.actionPermissions === undefined ? resolveActionPermissions({ actionProfile: 'observation-only' }) : validateActionPermissions(options.actionPermissions);
   const execution = createExecution({ ctx: { workspaceDir: options.workspaceDir, agentId: options.scope.principalId, sessionKey: options.scope.sessionId }, adapterPath: options.adapterPath,
-    actionPermissions: permissions, appendAuditEvent: options.auditSink, approvalProvider: options.approvalProvider, approvalTimeoutMs: timeout, surface: 'sdk' });
+    actionPermissions: permissions, appendAuditEvent: options.auditSink, approvalProvider: options.approvalProvider, approvalTimeoutMs: timeout, surface: options.surface ?? 'sdk' });
   return Object.freeze({ async execute(request: DesktopRequest, call: { callId: string; signal?: AbortSignal }) {
     if (!call || typeof call.callId !== 'string') throw new Error('callId is required for correlation.');
     if (!request || Object.hasOwn(request, 'confirm')) throw new Error('Request authority fields are forbidden.');
