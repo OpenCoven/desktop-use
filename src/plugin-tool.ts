@@ -2,7 +2,7 @@ import { withOwnedObservation, type ObservationImage } from "./observation.js";
 import { CANONICAL_ACTIONS, LEGACY_ACTION_ALIASES, type LegacyAction } from "./computer-use-actions.js";
 import { ACTION_PROFILE_DENIED_REASON, isActionAllowed, resolveActionPermissions, validateActionPermissions, type ActionPermissions } from "./action-permissions.js";
 import { installedBinary, planHostAction } from "./host-actions.js";
-import { FileActionError, listDirectory, readRegularFile, writeRegularFile } from "./file-actions.js";
+import { CleanupFailure, FileActionError, listDirectory, readRegularFile, writeRegularFile } from "./file-actions.js";
 import { runProcess, ProcessFailure } from "./process-runner.js";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -217,10 +217,12 @@ function createTool(options: CreateComputerUseToolOptions, legacyTool = false) {
             }
           }
         }
-      } catch (error) {
+      } catch (caught) {
+        const error = caught instanceof CleanupFailure ? caught.failure : caught;
         const code = error instanceof ProcessFailure || error instanceof FileActionError ? error.code : error instanceof ToolInputError ? "INVALID_INPUT" : ["ENOENT", "EACCES", "EPERM", "EISDIR", "ENOTDIR", "EEXIST", "EIO", "ENOSPC"].includes((error as NodeJS.ErrnoException)?.code ?? "") ? (error as NodeJS.ErrnoException).code! : "ACTION_FAILED";
         details = { status: code === "CANCELLED" ? "cancelled" : code === "ETIMEDOUT" ? "timeout" : "error", success: false,
-          action: params.action, code, error: error instanceof ToolInputError ? error.message : "Action failed; raw diagnostics withheld." };
+          action: params.action, code, error: error instanceof ToolInputError ? error.message : "Action failed; raw diagnostics withheld.",
+          ...(caught instanceof CleanupFailure ? { cleanup: caught.cleanup } : {}) };
       } finally {
         calls.delete(controller);
         if (!calls.size) activeCalls.delete(scope);
@@ -276,7 +278,7 @@ async function executeAllowedAction(
       ...normalized,
       action,
       permissionFlow: permissionFlowForResult(safe, action),
-      ...(observation ? { observationV1: observation.observationV1, observationUnavailable: observation.observationUnavailable, outputPublication: observation.outputPublication, modelImageSupport: observation.modelImageSupport } : {}),
+      ...(observation ? { observationV1: observation.observationV1, observationUnavailable: observation.observationUnavailable, outputPublication: observation.outputPublication, cleanup: observation.cleanup, modelImageSupport: observation.modelImageSupport } : {}),
     };
   }
 
@@ -442,9 +444,9 @@ async function writeTextFile(params: ComputerUseParams, ctx: ComputerUsePolicyCo
   const existed = existsSync(target);
   if (existed && params.overwrite !== true) return { status: "needsApproval", success: false, action: "file-write", path: target,
     reason: "file exists; repeat with overwrite:true after reviewing the existing file." };
-  await writeRegularFile(target, content, params.overwrite === true, signal, Date.now() + (params.timeoutMs ?? DEFAULT_TIMEOUT_MS));
+  const written = await writeRegularFile(target, content, params.overwrite === true, signal, Date.now() + (params.timeoutMs ?? DEFAULT_TIMEOUT_MS));
   return { status: "success", success: true, action: "file-write", path: target, bytes: Buffer.byteLength(content, "utf8"),
-    sha256: createHash("sha256").update(content).digest("hex"), overwrote: existed };
+    sha256: createHash("sha256").update(content).digest("hex"), overwrote: existed, ...written };
 }
 
 async function runHostAction(params: ComputerUseParams, signal?: AbortSignal): Promise<ToolResult["details"]> {

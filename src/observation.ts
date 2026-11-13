@@ -3,10 +3,19 @@ import { constants, readFileSync } from "node:fs";
 import { lstat, mkdtemp, open, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
-import { decodeAdapterAction, type ComputerUseParams, type ComputerUsePolicyContext } from "./computer-use-policy.js";
-import { FileActionError, writeRegularFile } from "./file-actions.js";
+import { normalizeAdapterResult, type ComputerUseParams, type ComputerUsePolicyContext } from "./computer-use-policy.js";
+import { CleanupFailure, cleanupLimitation, type CleanupLimitation, FileActionError, writeRegularFile } from "./file-actions.js";
 
 export type ObservationImage = { type: "image"; data: string; mimeType: "image/png" | "image/jpeg" };
+type OwnedObservation = {
+  raw: unknown;
+  image?: ObservationImage;
+  observationV1?: unknown;
+  outputPublication?: Record<string, unknown>;
+  observationUnavailable?: Record<string, unknown>;
+  modelImageSupport?: Record<string, unknown>;
+  cleanup?: CleanupLimitation;
+};
 const MAX_BYTES = 8 * 1024 * 1024;
 const schema = JSON.parse(readFileSync(new URL("../contracts/v1/observation.schema.json", import.meta.url), "utf8"));
 
@@ -102,18 +111,18 @@ function withoutReceipt(value: unknown, depth = 0): unknown {
 
 /** Called only after validation and approval. Backend-returned paths are never authority. */
 export async function withOwnedObservation(request: ComputerUseParams, _ctx: ComputerUsePolicyContext,
-  runAdapter: (request: ComputerUseParams) => Promise<unknown>, signal?: AbortSignal) {
+  runAdapter: (request: ComputerUseParams) => Promise<unknown>, signal?: AbortSignal): Promise<OwnedObservation> {
   const started = Date.now(); const deadline = started + (request.timeoutMs ?? 45000);
   check(signal, deadline);
   const directory = await mkdtemp(join(tmpdir(), "desktopuse-observation-"));
   const path = join(directory, "primary.image");
-  try {
+  const capture = async (): Promise<OwnedObservation> => {
     const captured = await runAdapter({ ...request, path, timeoutMs: Math.max(1, deadline - Date.now()) });
-    const decoded = decodeAdapterAction(captured);
     const raw = withoutReceipt(captured);
-    if (decoded.ok !== true || decoded.supported === false || decoded.cancelled === true || decoded.timedOut === true || decoded.requiresConfirmation === true) return { raw };
+    if (!normalizeAdapterResult(captured, { evidence: {} }).success) return { raw };
     check(signal, deadline);
     let outputPublication: Record<string, unknown> | undefined;
+    let cleanup: CleanupLimitation | undefined;
     try {
       const receipt = receiptFrom(captured) as any;
       if (!matches(receipt, schema) || receipt.capturedAtMs < started || receipt.capturedAtMs > Date.now() || (request.mode && receipt.requestedScope.mode !== request.mode)) invalid();
@@ -125,28 +134,43 @@ export async function withOwnedObservation(request: ComputerUseParams, _ctx: Com
       if (receipt.geometry.state === "available" && receipt.geometry.regions.some((r: any) => r.imageRect.x < 0 || r.imageRect.y < 0 || r.imageRect.x + r.imageRect.width > source.width || r.imageRect.y + r.imageRect.height > source.height)) invalid();
       if (request.path) {
         check(signal, deadline);
-        if (await canonical(request.path) !== request.path) {
-          outputPublication = { status: "needsApproval", success: false, code: "OUTPUT_TARGET_CHANGED" };
-        } else {
-          try {
-            await writeRegularFile(request.path, bytes, true, signal, deadline);
+        try {
+          if (await canonical(request.path) !== request.path) {
+            outputPublication = { status: "needsApproval", success: false, code: "OUTPUT_TARGET_CHANGED" };
+          } else {
+            const written = await writeRegularFile(request.path, bytes, true, signal, deadline);
             outputPublication = { status: "success", success: true, path: request.path, bytes: bytes.length };
-          } catch (error) {
-            if (error instanceof FileActionError && ["CANCELLED", "ETIMEDOUT"].includes(error.code)) throw error;
-            outputPublication = { status: "error", success: false, code: "OUTPUT_PUBLICATION_FAILED" };
-            throw error;
+            cleanup = written.cleanup;
           }
+        } catch (error) {
+          const failure = error instanceof CleanupFailure ? error.failure : error;
+          if (failure instanceof FileActionError && ["CANCELLED", "ETIMEDOUT"].includes(failure.code)) throw error;
+          if (error instanceof CleanupFailure) cleanup = error.cleanup;
+          outputPublication = { status: "error", success: false, code: "OUTPUT_PUBLICATION_FAILED" };
+          throw error;
         }
       }
       check(signal, deadline);
       const image: ObservationImage = { type: "image", mimeType: primary.mimeType, data: bytes.toString("base64") };
       check(signal, deadline);
-      return { raw, image, observationV1: receipt, outputPublication,
+      return { raw, image, observationV1: receipt, outputPublication, cleanup,
         modelImageSupport: { state: "unknown", limitation: "An image block is supplied. The public tool context does not report selected-model image support; text-only models cannot inspect these pixels." } };
     } catch (error) {
       // A completed explicit write stays successful even if later delivery stops.
-      if (!outputPublication && error instanceof FileActionError && ["CANCELLED", "ETIMEDOUT"].includes(error.code)) throw error;
-      return { raw, outputPublication, observationUnavailable: { code: "OBSERVATION_VALIDATION_FAILED", reason: "Capture outcome is preserved; no validated image was delivered. Raw diagnostics withheld." } };
+      const failure = error instanceof CleanupFailure ? error.failure : error;
+      if (!outputPublication && failure instanceof FileActionError && ["CANCELLED", "ETIMEDOUT"].includes(failure.code)) throw error;
+      return { raw, outputPublication, cleanup, observationUnavailable: { code: "OBSERVATION_VALIDATION_FAILED", reason: "Capture outcome is preserved; no validated image was delivered. Raw diagnostics withheld." } };
     }
-  } finally { await rm(directory, { recursive: true, force: true }); }
+  };
+  let completed: OwnedObservation | undefined;
+  let failure: unknown;
+  try { completed = await capture(); return completed; }
+  catch (error) { failure = error; throw error; }
+  finally {
+    try { await rm(directory, { recursive: true, force: true }); }
+    catch {
+      if (!completed) throw new CleanupFailure(failure, "observation-staging");
+      completed.cleanup = cleanupLimitation("observation-staging", completed.cleanup);
+    }
+  }
 }

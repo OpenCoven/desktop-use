@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { mock } from "node:test";
+import fs from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { mkdtemp, writeFile, readFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -32,4 +34,63 @@ test("file writes reject FIFOs and directory listings stop at 500 entries", asyn
   await Promise.all(Array.from({length:505},(_,i)=>writeFile(join(directory,String(i)),"")));
   const result=await listDirectory(directory,undefined,Date.now()+1000);
   assert.equal(result.entries.length,500); assert.equal(result.truncated,true);
+});
+
+for (const overwrite of [false, true]) test(`committed ${overwrite ? "rename" : "link"} remains successful with visible staging cleanup failure`, async t => {
+  const root = await fixture(t); const path = join(root, "published");
+  const originalRm = fs.rm;
+  const fault = mock.method(fs, "rm", async (target: any, options: any) => {
+    if (String(target).includes(".desktopuse-write-")) {
+      assert.equal(await readFile(path, "utf8"), "published bytes");
+      throw new Error("private staging cleanup diagnostics");
+    }
+    return originalRm(target, options);
+  });
+  syncBuiltinESMExports();
+  try {
+    const outcome = await writeRegularFile(path, "published bytes", overwrite, undefined, Date.now() + 1000);
+    assert.equal((outcome as any)?.cleanup.code, "TEMPORARY_CLEANUP_FAILED");
+    assert.deepEqual((outcome as any).cleanup.stages, ["file-write-staging"]);
+    assert.equal(JSON.stringify(outcome).includes("private staging cleanup diagnostics"), false);
+  } finally { fault.mock.restore(); syncBuiltinESMExports(); }
+});
+
+test("precommit failure keeps its code and exposes staging cleanup failure", async t => {
+  const root = await fixture(t); const path = join(root, "existing"); await writeFile(path, "previous");
+  const originalRm = fs.rm;
+  const fault = mock.method(fs, "rm", async (target: any, options: any) => {
+    if (String(target).includes(".desktopuse-write-")) throw new Error("private staging cleanup diagnostics");
+    return originalRm(target, options);
+  });
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(writeRegularFile(path, "replacement", false, undefined, Date.now() + 1000), (error: any) => {
+      assert.equal(error.code, "EEXIST");
+      assert.equal(error.cleanup.code, "TEMPORARY_CLEANUP_FAILED");
+      assert.equal(error.message.includes("private staging cleanup diagnostics"), false);
+      return true;
+    });
+    assert.equal(await readFile(path, "utf8"), "previous");
+  } finally { fault.mock.restore(); syncBuiltinESMExports(); }
+});
+
+test("file-write tool preserves committed outcome and reports cleanup limitation without audit content", async t => {
+  const root = await fs.realpath(await fixture(t)); const path = join(root, "published");
+  const { createComputerUseTool } = await import("./plugin-tool.js");
+  const audits: unknown[] = [];
+  const tool = createComputerUseTool({ appendAuditEvent: async event => { audits.push(event); } });
+  const originalRm = fs.rm;
+  const fault = mock.method(fs, "rm", async (target: any, options: any) => {
+    if (String(target).includes(".desktopuse-write-")) throw new Error("private staging cleanup diagnostics");
+    return originalRm(target, options);
+  });
+  syncBuiltinESMExports();
+  try {
+    const result = await tool.execute("file-write-cleanup", { action: "file-write", path, content: "private output bytes", confirm: true });
+    assert.equal(result.details.status, "success");
+    assert.equal(await readFile(path, "utf8"), "private output bytes");
+    assert.equal((result.details.cleanup as any).code, "TEMPORARY_CLEANUP_FAILED");
+    assert.equal(JSON.stringify(result).includes("private staging cleanup diagnostics"), false);
+    assert.equal(JSON.stringify(audits).includes("private output bytes"), false);
+  } finally { fault.mock.restore(); syncBuiltinESMExports(); }
 });

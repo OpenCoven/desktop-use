@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { mock } from "node:test";
+import fs from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { readFile, writeFile, mkdtemp, rm, symlink, access, stat, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -165,4 +167,137 @@ test("inspect delivers the owned primary with truthful unknown annotation, ignor
   assert.equal((result.details.observationV1 as any).primaryImage.annotationKind, "unverified");
   const image = result.content.find(block => block.type === "image")!;
   assert.deepEqual(Buffer.from(image.data, "base64"), c.bytes);
+});
+
+for (const [code, status] of [["CANCELLED", "cancelled"], ["ETIMEDOUT", "timeout"]] as const) {
+  for (const nested of [false, true]) test(`${code} precedence suppresses a valid ${nested ? "nested" : "flat"} capture and explicit publication`, async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "observation-code-outcome-")));
+    try {
+      const path = join(root, "output.png"); await writeFile(path, "previous destination");
+      const c = await capture("png", async (_path, receipt) => nested
+        ? { ok: true, backend: "peekaboo", result: { success: true, code }, observationV1: receipt }
+        : { ok: true, code, observationV1: receipt });
+      const result = await c.tool.execute("code-outcome", { action: "screenshot", mode: "screen", path, confirm: true });
+      assert.equal(result.details.status, status);
+      assert.equal(result.content.some(block => block.type === "image"), false);
+      assert.equal(result.details.outputPublication, undefined);
+      assert.equal(result.details.observationV1, undefined);
+      assert.equal(await readFile(path, "utf8"), "previous destination");
+      await assert.rejects(access(dirname(c.owned())), { code: "ENOENT" });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+}
+
+for (const failedStages of [["file-write-staging"], ["observation-staging"], ["file-write-staging", "observation-staging"]]) test(`preserves published pixels and image after ${failedStages.join(" and ")} cleanup failure`, async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "observation-cleanup-fault-")));
+  const originalRm = fs.rm;
+  const c = await capture(); const path = join(root, "output.png");
+  let failures = 0;
+  const fault = mock.method(fs, "rm", async (target: any, options: any) => {
+    const stage = String(target).includes(".desktopuse-write-") ? "file-write-staging"
+      : String(target) === dirname(c.owned()) ? "observation-staging" : undefined;
+    if (stage && failedStages.includes(stage)) {
+      assert.deepEqual(await readFile(path), c.bytes, "fault occurs after destination commit");
+      failures++;
+      throw Object.assign(new Error(`private cleanup diagnostics ${target} ${c.bytes.toString("base64")}`), { code: "EACCES" });
+    }
+    return originalRm(target, options);
+  });
+  syncBuiltinESMExports();
+  try {
+    const result = await c.tool.execute("cleanup-fault", { action: "screenshot", mode: "screen", path, confirm: true });
+    assert.equal(failures, failedStages.length);
+    assert.equal(result.details.status, "success");
+    assert.equal((result.details.outputPublication as any).status, "success");
+    assert.deepEqual(await readFile(path), c.bytes);
+    assert.equal((result.details.cleanup as any).code, "TEMPORARY_CLEANUP_FAILED");
+    assert.deepEqual((result.details.cleanup as any).stages, failedStages);
+    assert.ok(result.content.some(block => block.type === "image"));
+    const metadata = JSON.stringify({ details: result.details, audits: c.audits });
+    assert.equal(metadata.includes("private cleanup diagnostics"), false);
+    assert.equal(metadata.includes(c.bytes.toString("base64")), false);
+    assert.equal(JSON.stringify(c.audits).includes(c.owned()), false);
+  } finally {
+    fault.mock.restore(); syncBuiltinESMExports();
+    await originalRm(root, { recursive: true, force: true });
+    if (c.owned()) await originalRm(dirname(c.owned()), { recursive: true, force: true });
+  }
+});
+
+test("canonical target I/O failure reports a separate failed publication", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "observation-canonical-fault-")));
+  try {
+    const parent = join(root, "parent"); await fs.mkdir(parent);
+    const c = await capture("png", async () => { await fs.rename(parent, join(root, "previous")); await writeFile(parent, "not a directory"); });
+    const result = await c.tool.execute("canonical-io", { action: "screenshot", mode: "screen", path: join(parent, "output.png"), confirm: true });
+    assert.equal(result.details.status, "success");
+    assert.equal((result.details.outputPublication as any)?.code, "OUTPUT_PUBLICATION_FAILED");
+    assert.equal(result.content.some(block => block.type === "image"), false);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("cleanup failure preserves code-based cancellation with no private diagnostics", async () => {
+  const originalRm = fs.rm;
+  const c = await capture("png", async (_path, receipt) => ({ ok: true, code: "CANCELLED", observationV1: receipt }));
+  const fault = mock.method(fs, "rm", async (target: any, options: any) => {
+    if (String(target) === dirname(c.owned())) throw new Error("private cleanup diagnostics");
+    return originalRm(target, options);
+  });
+  syncBuiltinESMExports();
+  try {
+    const result = await c.tool.execute("cancel-cleanup", { action: "screenshot", mode: "screen" });
+    assert.equal(result.details.status, "cancelled");
+    assert.equal((result.details.cleanup as any).code, "TEMPORARY_CLEANUP_FAILED");
+    assert.equal(result.content.some(block => block.type === "image"), false);
+    assert.equal(JSON.stringify(result.details).includes("private cleanup diagnostics"), false);
+  } finally { fault.mock.restore(); syncBuiltinESMExports(); await originalRm(dirname(c.owned()), { recursive: true, force: true }); }
+});
+
+test("runner cancellation remains cancelled when final observation cleanup also fails", async () => {
+  const originalRm = fs.rm;
+  const { FileActionError } = await import("./file-actions.js");
+  const c = await capture("png", async () => { throw new FileActionError("CANCELLED"); });
+  const fault = mock.method(fs, "rm", async (target: any, options: any) => {
+    if (String(target) === dirname(c.owned())) throw new Error("private cleanup diagnostics");
+    return originalRm(target, options);
+  });
+  syncBuiltinESMExports();
+  try {
+    const result = await c.tool.execute("runner-cancel-cleanup", { action: "screenshot", mode: "screen" });
+    assert.equal(result.details.status, "cancelled");
+    assert.equal(result.details.code, "CANCELLED");
+    assert.equal((result.details.cleanup as any).code, "TEMPORARY_CLEANUP_FAILED");
+    assert.equal(result.content.some(block => block.type === "image"), false);
+    assert.equal(JSON.stringify(result).includes("private cleanup diagnostics"), false);
+  } finally { fault.mock.restore(); syncBuiltinESMExports(); await originalRm(dirname(c.owned()), { recursive: true, force: true }); }
+});
+
+test("precommit cancellation and both cleanup failures preserve cancellation without replacing the destination", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "observation-combined-cancel-")));
+  const path = join(root, "output.png"); await writeFile(path, "previous destination");
+  const controller = new AbortController(); const c = await capture();
+  const originalRm = fs.rm, originalOpen = fs.open;
+  const openFault = mock.method(fs, "open", async (target: any, flags: any, mode: any) => {
+    const file = await originalOpen(target, flags, mode);
+    if (String(target).includes(".desktopuse-write-")) controller.abort();
+    return file;
+  });
+  const cleanupFault = mock.method(fs, "rm", async (target: any, options: any) => {
+    if (String(target).includes(".desktopuse-write-") || String(target) === dirname(c.owned())) throw new Error("private cleanup diagnostics");
+    return originalRm(target, options);
+  });
+  syncBuiltinESMExports();
+  try {
+    const result = await c.tool.execute("precommit-cancel-cleanup", { action: "screenshot", mode: "screen", path, confirm: true }, controller.signal);
+    assert.equal(result.details.status, "cancelled");
+    assert.equal(result.details.code, "CANCELLED");
+    assert.deepEqual((result.details.cleanup as any).stages, ["file-write-staging", "observation-staging"]);
+    assert.equal(result.content.some(block => block.type === "image"), false);
+    assert.equal(await readFile(path, "utf8"), "previous destination");
+    assert.equal(JSON.stringify(result).includes("private cleanup diagnostics"), false);
+  } finally {
+    openFault.mock.restore(); cleanupFault.mock.restore(); syncBuiltinESMExports();
+    await originalRm(root, { recursive: true, force: true });
+    await originalRm(dirname(c.owned()), { recursive: true, force: true });
+  }
 });
