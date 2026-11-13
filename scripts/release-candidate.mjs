@@ -4,11 +4,11 @@ import assert from 'node:assert/strict';
 import { readFile, writeFile, readdir } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { assembleReleaseManifest, sha256 } from './release-manifest.mjs';
+import { releaseSource, workflowContext } from './release-delivery.mjs';
 import { NATIVE_MATRIX, HOSTS } from './release-qualification.mjs';
 const assets = resolve(process.argv[2]);
 assert.equal(process.env.GITHUB_REPOSITORY, 'OpenCoven/desktop-use');
 assert.match(process.env.GITHUB_SHA, /^[a-f0-9]{40}$/);
-assert.match(process.env.GITHUB_REF, /^refs\/heads\/[A-Za-z0-9_./-]+$/);
 const packages = (await readdir(assets)).filter(name => name.endsWith('.tgz'));
 assert.equal(packages.length, 1, 'All native lanes consume exactly one packed asset');
 const packed = await readFile(join(assets, packages[0]));
@@ -24,7 +24,7 @@ const identity = receipts[0].identity;
 const url = `https://github.com/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
 const evidence = Object.fromEntries(['build', 'nativeSmoke', 'cleanInstall', 'hostedGateway', 'publication', 'graphicalAcceptance'].map(key => [key, { status: key === 'build' || key === 'nativeSmoke' ? 'passed' : 'not-run', urls: key === 'build' || key === 'nativeSmoke' ? [url] : [] }]));
 const manifest = await assembleReleaseManifest({ assetDirectory: assets, schemaVersion: 1, releaseVersion: identity.releaseVersion,
-  source: { repository: 'OpenCoven/desktop-use', commit: process.env.GITHUB_SHA, tag: null, ref: process.env.GITHUB_REF, workflow: '.github/workflows/release.yml' },
+  source: releaseSource(identity.releaseVersion, workflowContext()),
   adapterProtocolVersion: 1, contracts: identity.contracts,
   package: { asset: packages[0], name: '@opencoven/openclaw-desktop-use', version: identity.releaseVersion, sourceCommit: process.env.GITHUB_SHA, adapterProtocolVersion: 1, surfaces: ['plugin', 'sdk', 'mcp'] },
   artifacts: receipts.map(receipt => receipt.artifact), qualifiedHosts: HOSTS.map(host => ({ ...host, status: 'not-run', evidenceUrl: null })), evidence });

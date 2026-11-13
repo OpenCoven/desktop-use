@@ -4,11 +4,13 @@ import assert from 'node:assert/strict';
 import { readFile, writeFile, mkdir, cp, realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { stageCandidateRelease, activateCandidateRelease } from './install-adapter.mjs';
+import { stageRelease, activateRelease, stageCandidateRelease, activateCandidateRelease } from './install-adapter.mjs';
 import { assertUpgradePair, assertInstalledPackage, qualifyCandidateSequence, createNoRustGuard } from './release-qualification.mjs';
+import { assertPreviousManifest } from './release-delivery.mjs';
 import { sha256 } from './release-manifest.mjs';
-const [assetsArg, rootArg, previousArg] = process.argv.slice(2);
+const [assetsArg, rootArg, previousArg, publicPreviousPolicyArg] = process.argv.slice(2);
 assert.ok(assetsArg && rootArg);
+assert.ok(!publicPreviousPolicyArg || previousArg, 'Public previous policy requires previous public assets');
 const assets = resolve(assetsArg);
 await mkdir(resolve(rootArg), { recursive: true, mode: 0o700 });
 const root = await realpath(resolve(rootArg));
@@ -24,13 +26,15 @@ try {
   const current = JSON.parse(await readFile(join(assets, 'release.json'), 'utf8'));
   assert.equal(current.source.commit, process.env.GITHUB_SHA);
   assert.equal(current.source.ref, process.env.GITHUB_REF);
+  Object.assign(receipt, { runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT, runner: process.env.RELEASE_RUNNER, sourceCommit: current.source.commit, sourceRef: current.source.ref, manifestSha256: sha256(await readFile(join(assets, 'release.json'))), packageSha256: current.package.sha256 });
   let previous;
+  receipt.previous = null;
+  if (publicPreviousPolicyArg) assert.equal(current.source.tag, `v${current.releaseVersion}`);
   if (previousArg) {
     previous = JSON.parse(await readFile(join(resolve(previousArg), 'release.json'), 'utf8'));
-    const trustedPrevious = JSON.parse(await readFile('qualification/release-previous.json', 'utf8'));
-    assert.equal(previous.source.commit, trustedPrevious.sourceCommit);
-    assert.equal(previous.source.ref, trustedPrevious.sourceRef);
-    assert.equal(previous.releaseVersion, trustedPrevious.version);
+    const trustedPrevious = JSON.parse(await readFile(publicPreviousPolicyArg ?? 'qualification/release-previous.json', 'utf8'));
+    assertPreviousManifest(previous, trustedPrevious, Boolean(publicPreviousPolicyArg));
+    receipt.previous = { version: previous.releaseVersion, sourceCommit: previous.source.commit, sourceRef: previous.source.ref, manifestSha256: sha256(await readFile(join(resolve(previousArg), 'release.json'))) };
     assertUpgradePair(previous, current);
   }
   const consumer = join(root, 'consumer'); await mkdir(consumer);
@@ -41,12 +45,14 @@ try {
   await qualifyCandidateSequence({ previous, current, stage: async manifest => {
     const directory = manifest === previous ? resolve(previousArg) : assets;
     const policy = { sourceCommit: manifest.source.commit, sourceRef: manifest.source.ref };
-    const staged = await stageCandidateRelease({ version: manifest.releaseVersion, manifest: join(directory, 'release.json'), assets: directory, root: installRoot }, policy);
+    const options = { version: manifest.releaseVersion, manifest: join(directory, 'release.json'), assets: directory, root: installRoot };
+    const staged = manifest.source.tag === null ? await stageCandidateRelease(options, policy) : await stageRelease(options);
     receipt.steps.push({ stage: staged, sourceCommit: manifest.source.commit });
     // Stage is execution verified, but only explicit selection changes the pair.
   }, activate: async (manifest, operation) => {
     const policy = { sourceCommit: manifest.source.commit, sourceRef: manifest.source.ref };
-    const selected = await activateCandidateRelease({ root: installRoot, version: manifest.releaseVersion, operation }, policy);
+    const options = { root: installRoot, version: manifest.releaseVersion, operation };
+    const selected = manifest.source.tag === null ? await activateCandidateRelease(options, policy) : await activateRelease(options);
     return selected;
   }, consume: async (manifest, selected, index) => {
     const step = { selection: selected, packageSynchronization: 'pending', consumer: 'pending' };

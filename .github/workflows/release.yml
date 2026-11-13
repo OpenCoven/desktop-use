@@ -1,20 +1,28 @@
-name: Paired release candidate
+name: Paired release qualification and delivery
 
 on:
   push:
     branches: [feat/paired-releases-25]
+    tags: ['v0.1.*']
   workflow_dispatch:
+    inputs:
+      delivery:
+        description: Prepare only, or explicitly authorize npm staging and a GitHub prerelease from this version tag
+        type: choice
+        options: [prepare, stage-bootstrap, stage]
+        default: prepare
 
 permissions:
   contents: read
 
-# Every workflow context is the actual branch commit, never a pull-request merge checkout.
+# Every producer uses its actual branch or version-tag context, never a relabeled branch artifact.
 concurrency:
   group: paired-release-${{ github.sha }}
   cancel-in-progress: false
 
 env:
   CARGO_BUILD_JOBS: '2'
+  RELEASE_DELIVERY: ${{ inputs.delivery || 'prepare' }}
 
 jobs:
   package:
@@ -166,6 +174,7 @@ jobs:
       actions: read
       attestations: read
     env:
+      RELEASE_RUNNER: ${{ matrix.runner }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Isolate local state
@@ -227,6 +236,7 @@ jobs:
       contents: read
       attestations: read
     env:
+      RELEASE_RUNNER: ${{ matrix.runner }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Isolate local state
@@ -277,4 +287,115 @@ jobs:
             ${{ runner.temp }}/host-evidence/*/explicit-deny-model-inventory.json
             ${{ runner.temp }}/host-evidence/*/*-approval-denials.json
             ${{ runner.temp }}/host-evidence/*/*-approval-wait-failure.json
+          if-no-files-found: error
+
+  reconcile:
+    needs: [install, gateway]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.0'
+      - run: npm install --ignore-scripts --omit=dev --no-audit --no-fund --package-lock=false
+      - uses: actions/download-artifact@v4
+        with:
+          name: paired-release-${{ github.sha }}
+          path: ${{ runner.temp }}/release
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-install-*
+          path: ${{ runner.temp }}/receipts
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-host-*
+          path: ${{ runner.temp }}/receipts
+      - name: Reconcile without modifying any attested producer artifact
+        run: node scripts/release-delivery.mjs "$RUNNER_TEMP/release" "$RUNNER_TEMP/receipts" "$RUNNER_TEMP/delivery"
+      - uses: actions/attest@v4
+        with:
+          create-storage-record: false
+          subject-path: |
+            ${{ runner.temp }}/delivery/release-evidence.json
+            ${{ runner.temp }}/delivery/qualification-receipts.json
+            ${{ runner.temp }}/delivery/SHA256SUMS
+            ${{ runner.temp }}/delivery/release-notes.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: paired-delivery-${{ github.sha }}
+          path: ${{ runner.temp }}/delivery
+          if-no-files-found: error
+
+  delivery:
+    needs: reconcile
+    if: github.event_name == 'workflow_dispatch' && (inputs.delivery == 'stage' || inputs.delivery == 'stage-bootstrap') && startsWith(github.ref, 'refs/tags/v0.1.')
+    runs-on: ubuntu-22.04
+    # Owner configuration and independent approval are required; the preflight verifies protection exists.
+    environment: paired-release
+    permissions:
+      contents: write
+      actions: read
+      attestations: read
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.0'
+      - name: Isolate npm configuration; no token fallback
+        shell: bash
+        run: |
+          mkdir -m 700 "$RUNNER_TEMP/delivery-npm"
+          touch "$RUNNER_TEMP/delivery-npm/user.npmrc" "$RUNNER_TEMP/delivery-npm/global.npmrc"
+          {
+            echo "NPM_CONFIG_USERCONFIG=$RUNNER_TEMP/delivery-npm/user.npmrc"
+            echo "NPM_CONFIG_GLOBALCONFIG=$RUNNER_TEMP/delivery-npm/global.npmrc"
+            echo "NPM_CONFIG_CACHE=$RUNNER_TEMP/delivery-npm/cache"
+          } >> "$GITHUB_ENV"
+      - run: npm install --ignore-scripts --omit=dev --no-audit --no-fund --package-lock=false
+      - name: Install pinned staging-capable npm CLI
+        run: npm install --global npm@12.2.2 --ignore-scripts --no-audit --no-fund
+      - uses: actions/download-artifact@v4
+        with:
+          name: paired-delivery-${{ github.sha }}
+          path: ${{ runner.temp }}/delivery
+      - name: Verify exact tag, complete qualification, protection and immutable artifacts
+        run: node scripts/release-prepublish.mjs "$RUNNER_TEMP/delivery"
+      - name: Stage the exact packed bytes with npm OIDC
+        id: npm-stage
+        shell: bash
+        working-directory: ${{ runner.temp }}/delivery
+        env:
+          NODE_AUTH_TOKEN: ''
+          NPM_TOKEN: ''
+        run: npm stage publish ./*.tgz --ignore-scripts --provenance --access public --tag paired-candidate --registry https://registry.npmjs.org/
+      - name: Publish GitHub prerelease from the same immutable bytes
+        id: github-release
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release create "$RELEASE_TAG" "$RUNNER_TEMP/delivery/"* --repo OpenCoven/desktop-use --verify-tag --prerelease --title "$RELEASE_TAG paired release candidate" --notes-file "$RUNNER_TEMP/delivery/release-notes.md"
+      - name: Retain truthful partial publication state
+        if: always()
+        env:
+          NPM_STAGE_OUTCOME: ${{ steps.npm-stage.outcome }}
+          GITHUB_RELEASE_OUTCOME: ${{ steps.github-release.outcome }}
+        run: node scripts/release-publication-receipt.mjs "$RUNNER_TEMP/publication.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-publication-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/publication.json
           if-no-files-found: error
