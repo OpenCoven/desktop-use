@@ -76,3 +76,16 @@ test("plugin doctor exposes trusted plugin eligibility and preserves legacy adap
   assert.equal(capabilities.actions.screenshot.policy.approval, "request-dependent");
   assert.deepEqual(details.repairHints, []);
 });
+
+test("host discovery treats fixed Mac plans as unknown inventory and explicit Linux checks as observations", async () => {
+  const { discoverHostIntegrations } = await import("./host-actions.js");
+  const { buildPluginCapabilities } = await import("./capabilities.js");
+  const { resolveActionPermissions } = await import("./action-permissions.js");
+  let probes=0;
+  const mac=discoverHostIntegrations("darwin",{},()=>{probes++;return undefined;},1700000000001);
+  assert.equal(probes,0);assert.equal(mac["clipboard-read"]?.provider?.name,"pbpaste");
+  const report=buildPluginCapabilities(undefined,{environment:{platform:"macos",session:null},adapter:{configuredPath:"adapter",resolvedPath:null},integrations:mac,observedAtMs:1700000000001},resolveActionPermissions());
+  for(const action of ["clipboard-read","clipboard-write","browser-open","app-launch"] as const){const binary=report.actions[action].evidence.find(e=>e.kind==="binary")!;assert.equal(binary.status,"unknown");assert.equal(binary.observedAtMs,undefined);assert.equal(report.actions[action].state,"unverified");}
+  const linux=discoverHostIntegrations("linux",{XDG_SESSION_TYPE:"wayland"},name=>name==="wl-copy"?"/fixture/wl-copy":undefined,1700000000001);
+  assert.deepEqual(linux["clipboard-write"]?.binary,{status:"passed",observedAtMs:1700000000001});assert.equal(linux["clipboard-read"]?.binary?.status,"unknown");assert.equal(linux["clipboard-read"]?.state,"unsupported");
+});

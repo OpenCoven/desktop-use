@@ -132,10 +132,12 @@ test("discovery provider receipts identify complete JSON and explicit host trunc
   assert.equal(typeof capabilitiesFixture.inspectDiscoveryTransport, "function");
   const full = capabilitiesFixture.inspectDiscoveryTransport(discoveryBody('{"status":"success","action":"health"}'), discoveryOptions);
   assert.equal(full[0].fullCapabilityJsonTransport, true);
-  const clipped = capabilitiesFixture.inspectDiscoveryTransport(discoveryBody('{"status":"success"\n\n⚠️ [... middle content omitted — showing head and tail ...]\n\n"private tail"}'), discoveryOptions);
+  const clipped = capabilitiesFixture.inspectDiscoveryTransport(discoveryBody('{"status":"success"\n\n[... 50000 more characters truncated]'), discoveryOptions);
   assert.equal(clipped[0].truncated, true);
   assert.equal(clipped[0].stage, "provider-current-turn");
   assert.equal(clipped[0].sha256.length, 64);
+  assert.equal(clipped[0].providerTextBudget, 32768);
+  assert.equal(clipped[0].truncationStyle, "context-tail");
   assert.equal(JSON.stringify(clipped).includes("private"), false);
 });
 
@@ -148,7 +150,7 @@ test("discovery provider receipts reject wrong turns, missing or duplicate call 
   assert.throws(() => inspect(discoveryBody('{}', "call_wrong"), discoveryOptions), /tool call/);
   const duplicate = discoveryBody('{"status":"success"}'); duplicate.messages.push(duplicate.messages.at(-1));
   assert.throws(() => inspect(duplicate, discoveryOptions), /tool call/);
-  assert.throws(() => inspect(discoveryBody("x".repeat(16001)), discoveryOptions), /limit/);
+  assert.throws(() => inspect(discoveryBody("x".repeat(32769)), discoveryOptions), /limit/);
 });
 
 test("discovery provider receipts reject malformed complete JSON and never reconstruct clipped JSON", () => {
@@ -162,10 +164,12 @@ test("discovery provider receipts reject malformed complete JSON and never recon
 test("discovery replay correlation rejects missing evidence and action, status or scope mismatches", () => {
   const correlate = capabilitiesFixture.correlateDiscoveryReplay;
   assert.equal(typeof correlate, "function");
-  const input = { transport: { truncated: true, toolCallId: "call", action: "permissions" }, call: { toolCallId: "call", action: "permissions" }, scope: { agentId: "agent", sessionKey: "session", auditPath: "/scratch/audit" }, auditRecords: [{ toolCallId: "call", action: "doctor", agentId: "agent", sessionKey: "session", result: { status: "error", success: false } }], replay: { status: 200, body: { result: { details: { action: "doctor", status: "error", success: false, evidence: { agentId: "agent", sessionKey: "session" } } } } } };
+  const input = { transport: { stage: "provider-current-turn", truncated: true, toolCallId: "call", action: "permissions" }, history: { stage: "persisted-history", truncated: true, toolCallId: "call" }, call: { toolCallId: "call", action: "permissions" }, scope: { agentId: "agent", sessionKey: "session", auditPath: "/scratch/audit" }, auditRecords: [{ toolCallId: "call", action: "doctor", agentId: "agent", sessionKey: "session", result: { status: "error", success: false } }], replay: { status: 200, body: { result: { details: { action: "doctor", status: "error", success: false, evidence: { agentId: "agent", sessionKey: "session" } } } } } };
   assert.equal(correlate(input).status, "error");
   for (const mutate of [
-    v => { v.transport.truncated = false; },
+    v => { v.history.truncated = false; },
+    v => { v.transport = undefined; },
+    v => { v.history.toolCallId = "wrong"; },
     v => { v.transport.toolCallId = "wrong"; },
     v => { v.transport.action = "health"; },
     v => { v.auditRecords = []; },
@@ -183,4 +187,29 @@ test("discovery provider proof rejects a missing legacy notice without trusting 
   const options = { ...discoveryOptions, calls: [{ ...discoveryOptions.calls[0], notices: ["fixed legacy notice"] }] };
   assert.throws(() => capabilitiesFixture.inspectDiscoveryTransport(discoveryBody('{"status":"success"}'), options), /notice/);
   assert.equal(capabilitiesFixture.inspectDiscoveryTransport(discoveryBody('{"status":"success","deprecation":"fixed legacy notice"}'), options).length, 1);
+});
+
+
+test("discovery history proof enforces its own16k limit and exact persisted marker", () => {
+  const inspect = capabilitiesFixture.inspectDiscoveryHistory;
+  assert.equal(typeof inspect,"function");
+  const message={role:"toolResult",toolCallId:"call",content:[{type:"text",text:'{"status":"success"\n\n⚠️ [... middle content omitted — showing head and tail ...]\n\n"tail":true}[... 100 more characters truncated]'}]};
+  const result=inspect(message,{toolCallId:"call"});assert.equal(result.truncated,true);assert.equal(result.historyTextBudget,16000);assert.equal(result.stage,"persisted-history");
+  assert.throws(()=>inspect(message,{toolCallId:"wrong"}),/identity/);
+  assert.throws(()=>inspect({...message,content:[{type:"text",text:"x".repeat(16001)}]},{toolCallId:"call"}),/limit/);
+  assert.throws(()=>inspect({...message,content:[{type:"text",text:"bad JSON"}]},{toolCallId:"call"}),/JSON/);
+});
+
+test("provider guard clipping can omit a legacy notice without claiming it was delivered", () => {
+  const options={...discoveryOptions,calls:[{...discoveryOptions.calls[0],notices:["legacy notice"]}]};
+  const proof=capabilitiesFixture.inspectDiscoveryTransport(discoveryBody('{"status":"success"[... 100 more characters truncated]'),options)[0];
+  assert.deepEqual(proof.legacyNotices,[{index:0,state:"unverified"}]);
+  assert.throws(()=>capabilitiesFixture.inspectDiscoveryTransport(discoveryBody('{"status":"success"\n⚠️ [... middle content omitted — showing head and tail ...]'),options),/provider|JSON/);
+});
+
+test("provider discovery budget is derived from the actual fixture context rather than the history cap", () => {
+  const text="x".repeat(20000)+"[... 100 more characters truncated]";
+  assert.equal(capabilitiesFixture.inspectDiscoveryTransport(discoveryBody(text),{...discoveryOptions,contextWindowTokens:65536})[0].providerTextBudget,32768);
+  assert.throws(()=>capabilitiesFixture.inspectDiscoveryTransport(discoveryBody(text),{...discoveryOptions,contextWindowTokens:32768}),/limit/);
+  assert.throws(()=>capabilitiesFixture.inspectDiscoveryTransport(discoveryBody(text),{...discoveryOptions,contextWindowTokens:NaN}),/budget/);
 });

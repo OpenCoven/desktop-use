@@ -20,10 +20,10 @@ export type CapabilityReportV1 = {
 export type HostEvidence = {
   environment: CapabilityReportV1["environment"];
   adapter: { configuredPath: string; resolvedPath: string | null };
-  integrations: Partial<Record<"clipboard-read" | "clipboard-write" | "browser-open" | "app-launch", { state: State; reasonCodes: string[]; provider?: Provider }>>;
+  integrations: Partial<Record<"clipboard-read" | "clipboard-write" | "browser-open" | "app-launch", { state: State; reasonCodes: string[]; provider?: Provider; binary?: { status: "passed" | "failed" | "unknown"; observedAtMs?: number } }>>;
   observedAtMs?: number;
 };
-export type CapabilityOutcome = { phase: "spawn" | "output" | "adapter"; code?: string; setupGuide?: boolean; permissionDenied?: boolean };
+export type CapabilityOutcome = { phase: "before-start" | "spawn" | "process" | "output" | "adapter"; processStarted?: boolean; code?: string; setupGuide?: boolean; permissionDenied?: boolean };
 
 const schema = JSON.parse(readFileSync(new URL("../contracts/v1/capabilities.schema.json", import.meta.url), "utf8"));
 const version: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
@@ -88,7 +88,7 @@ function localAction(action: CanonicalAction, host: HostEvidence): Action {
   if (action === "app-launch") { parameters.app = { maxBytes: 2048, encoding: "utf-8" }; constraints.push("INSTALLED_APPLICATION_REQUIRED", "HANDOFF_ONLY"); }
   return { surfaces: ["plugin"], state, reasonCodes: integration?.reasonCodes ?? (integrations.has(action) ? ["HOST_PREREQUISITES_UNKNOWN"] : []), variants: ["health", "stop"].includes(action) ? [] : [{ mode: null, selectors: [], provider, limits: { constraints, parameters }, state, reasonCodes: integration?.reasonCodes ?? (integrations.has(action) ? ["HOST_PREREQUISITES_UNKNOWN"] : []) }], evidence: [
     { kind: "implementation", status: "passed", scope: action === "stop" ? "same-trusted-agent-session-workspace-cancellation" : "plugin-host-dispatch", provider },
-    ...(integrations.has(action) ? [{ kind: "binary" as const, status: integration?.provider ? "passed" as const : "unknown" as const, scope: "host-helper-inventory-only", ...(integration?.provider ? { provider: integration.provider } : {}), ...(host.observedAtMs === undefined ? {} : { observedAtMs: host.observedAtMs }) }] : []),
+    ...(integrations.has(action) ? [{ kind: "binary" as const, status: integration?.binary?.status ?? "unknown" as const, scope: "host-helper-inventory-only", ...(integration?.provider ? { provider: integration.provider } : {}), ...(integration?.binary?.observedAtMs === undefined ? {} : { observedAtMs: integration.binary.observedAtMs }) }] : []),
     { kind: "actual-action", status: "not-run", scope: "no-action-during-discovery", provider },
   ], policy: { profile: "unknown", approval: approval(action), gatewayPolicy: "not-reported" } };
 }
@@ -119,6 +119,8 @@ export function buildPluginCapabilities(adapterEnvelope: unknown, hostEvidence: 
 
 /** Fixed guidance never interpolates backend diagnostics or private request content. */
 export function repairHintsForCapabilities(report: CapabilityReportV1, outcome: CapabilityOutcome): string[] {
+  if (outcome.phase === "before-start") return ["The adapter request ended before a process started. No adapter execution was observed."];
+  if (outcome.phase === "process") return ["The adapter process did not complete. Inspect its fixed outcome code and any partial progress before deciding whether to retry."];
   if (outcome.phase === "spawn") {
     if (outcome.code === "ENOENT") return [`The selected adapter could not be started. Install coven-desktop-use or correct COVEN_DESKTOP_USE_BIN, then restart the OpenClaw Gateway and rerun ${COMPUTER_USE_TOOL_NAME} action=health.`];
     if (["EACCES", "EPERM"].includes(outcome.code ?? "")) return [`The selected adapter could not be executed. Check its executable access and the gateway service account, then rerun ${COMPUTER_USE_TOOL_NAME} action=health.`];

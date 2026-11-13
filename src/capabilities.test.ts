@@ -96,7 +96,7 @@ test("repair guidance follows failure phase and matching permission/protocol evi
 });
 
 test("host variants disclose request limits and installed integrations remain unverified", () => {
-  const report = buildPluginCapabilities(undefined, { ...host, integrations: { "clipboard-write": { state: "unverified", reasonCodes: ["HOST_ACCESS_UNVERIFIED"], provider: { name: "wl-copy", version: null } } } }, permissions);
+  const report = buildPluginCapabilities(undefined, { ...host, integrations: { "clipboard-write": { state: "unverified", reasonCodes: ["HOST_ACCESS_UNVERIFIED"], provider: { name: "wl-copy", version: null }, binary: { status: "passed", observedAtMs: 1700000000001 } } } }, permissions);
   const controls = discoverCapabilityControls(report);
   assert.equal(controls.find(c => c.action === "file-write")!.variants[0].parameters.content.maxBytes, 100000);
   assert.equal(controls.find(c => c.action === "file-read")!.variants[0].parameters.file.maxBytes, 1048576);
@@ -150,4 +150,13 @@ test("an unsupported host session does not claim a failed plugin binary probe", 
   const evidence = report.actions["clipboard-read"].evidence.find(e => e.kind === "binary")!;
   assert.equal(evidence.status, "unknown");
   assert.equal(evidence.provider, undefined);
+});
+
+test("planned Mac provider identity cannot assert a successful executable observation", async () => {
+  const { planHostAction } = await import("./host-actions.js");
+  const plan = planHostAction("darwin", {}, () => undefined, { action: "clipboard-read" });
+  assert.equal(plan.file, "/usr/bin/pbpaste");
+  const report = buildPluginCapabilities(undefined, { ...host, integrations: { "clipboard-read": { state: "unverified", reasonCodes: ["HOST_ACCESS_UNVERIFIED"], provider: { name: "pbpaste", version: null } } } }, permissions);
+  const binary = report.actions["clipboard-read"].evidence.find(e=>e.kind==="binary")!;
+  assert.equal(binary.status,"unknown"); assert.equal(binary.observedAtMs,undefined); assert.equal(binary.provider?.name,"pbpaste");
 });

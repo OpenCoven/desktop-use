@@ -1,4 +1,4 @@
-import { createCapabilitiesFixture, inspectDiscoveryTransport, correlateDiscoveryReplay, DISCOVERY_TRUNCATION_MARKER } from "./gateway-capabilities-fixture.mjs";
+import { createCapabilitiesFixture, inspectDiscoveryTransport, correlateDiscoveryReplay, inspectDiscoveryHistory, QUALIFICATION_CONTEXT_TOKENS, DISCOVERY_TRUNCATION_MARKER } from "./gateway-capabilities-fixture.mjs";
 import { createImageFixture, inspectProviderImage } from "./gateway-image-fixture.mjs";
 import { COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME } from "../src/tool-names.ts";
 // Real pinned gateway + local deterministic model transport; no live provider or desktop input.
@@ -90,7 +90,7 @@ const model = createServer(async (req, res) => {
     if (finished && plan.imageKind) await save(`provider-image-${plan.replaySourceCase ? "large-replay" : plan.imageKind}.json`, await inspectProviderImage(body, imageFixture.fixtures[plan.imageKind], { currentCase: marker, ...(plan.replaySourceCase ? { stage: "history-replay", sourceCase: plan.replaySourceCase } : {}) }));
     if (finished) {
       const calls = (plan.calls ?? [{ name: marker, args: plan.args }]).filter(call => ["health", "doctor", "permissions"].includes(call.args?.action)).map(call => ({ action: call.args.action, toolCallId: plan.calls ? batchCallId(call.name) : `call_${marker}`, notices: [...(call.args.action === "permissions" ? ["permissions is deprecated; use doctor instead."] : []), ...(plan.tool === DESKTOP_USE_TOOL_NAME ? [`${DESKTOP_USE_TOOL_NAME} is deprecated; use ${COMPUTER_USE_TOOL_NAME} instead.`] : [])] }));
-      const receipts = calls.length ? inspectDiscoveryTransport(body, { currentCase: marker, calls }) : [];
+      const receipts = calls.length ? inspectDiscoveryTransport(body, { currentCase: marker, calls, contextWindowTokens: QUALIFICATION_CONTEXT_TOKENS }) : [];
       if (receipts.length) await save(`${marker}-discovery-provider-transport.json`, receipts);
       if (marker === "capability-model-profile") {
         if (profile === "stop-only") {
@@ -159,7 +159,7 @@ const config = {
   models: { mode: "merge", providers: { qualification: {
     baseUrl: `http://127.0.0.1:${model.address().port}/v1`, apiKey: "disposable-qualification-key", api: "openai-completions",
     models: [{ id: "fixture", name: "Local qualification transport", reasoning: false, input: ["text", "image"],
-      contextWindow: 65536, maxTokens: 1024, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
+      contextWindow: QUALIFICATION_CONTEXT_TOKENS, maxTokens: 1024, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
   } } },
   agents: {
     defaults: { workspace, skipBootstrap: true, model: { primary: "qualification/fixture" }, timeoutSeconds: 420, heartbeat: { every: "0m" } },
@@ -306,13 +306,15 @@ try {
     if (!text.includes(DISCOVERY_TRUNCATION_MARKER)) return JSON.parse(text);
     const transports = JSON.parse(await readFile(join(root, `${name}-discovery-provider-transport.json`), "utf8"));
     const transport = transports.find(receipt => receipt.toolCallId === toolCallId);
-    assert.ok(transport?.truncated, "Replay requires actual provider-wire truncation");
+    const history = inspectDiscoveryHistory(message, { toolCallId });
+    assert.ok(history.truncated, "Replay requires actual history truncation");
+    assert.ok(transport?.truncated || transport?.fullCapabilityJsonTransport, "Replay requires verified provider-wire evidence");
     const agentId = sessionKey.split(":")[1];
     const auditPath = join(root, `state/agents/${agentId}/audit/computer-use.jsonl`);
     const auditRecords = (await readFile(auditPath, "utf8")).trim().split("\n").map(line => JSON.parse(line));
     const replay = await httpInvoke(tool, args, sessionKey);
-    const details = correlateDiscoveryReplay({ transport, auditRecords, call: { toolCallId, action: args.action }, replay, scope: { agentId, sessionKey, auditPath } });
-    await save(`${name}-${args.action}-structured-replay.json`, { stage: "separate-structured-http-replay", originalModelCall: { toolCallId, transport }, scope: { agentId, sessionKey, workspace: agentId === "legacy-qualification" ? legacyWorkspace : workspace }, response: replay, auditCorrelation: { action: details.action, status: details.status, success: details.success } });
+    const details = correlateDiscoveryReplay({ transport, history, auditRecords, call: { toolCallId, action: args.action }, replay, scope: { agentId, sessionKey, auditPath } });
+    await save(`${name}-${args.action}-structured-replay.json`, { stage: "separate-structured-http-replay", originalModelCall: { toolCallId, transport, history }, scope: { agentId, sessionKey, workspace: agentId === "legacy-qualification" ? legacyWorkspace : workspace }, response: replay, auditCorrelation: { action: details.action, status: details.status, success: details.success } });
     return details;
   }
   const noFile = async path => assert.rejects(access(path), { code: "ENOENT" });
@@ -338,6 +340,12 @@ try {
         assert.equal(report.actions["file-read"].state, "available");
         assert.equal(report.actions["file-read"].policy.profile, profile === "desktop-only" ? "denied" : "allowed");
         assert.ok(Object.values(report.actions).every(action => action.policy.gatewayPolicy === "not-reported"));
+        if (process.platform === "darwin") for (const integration of ["clipboard-read", "clipboard-write", "browser-open", "app-launch"]) {
+          const binary = report.actions[integration].evidence.find(evidence => evidence.kind === "binary");
+          assert.equal(binary.status, "unknown", "Fixed Mac provider plans are not executable observations");
+          assert.equal(binary.observedAtMs, undefined);
+        }
+
         assert.equal(report.adapter.configuredPath, capabilitiesFixture.adapter);
         assert.equal(report.adapter.version, ["missing-adapter", "schema-unknown"].includes(name) ? null : "0.1.2");
         assert.equal(JSON.stringify(details.repairHints).includes("Screen Recording"), name === "macos-permission-denied");

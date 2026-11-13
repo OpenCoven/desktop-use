@@ -2,7 +2,7 @@ import { buildPluginCapabilities, repairHintsForCapabilities, type HostEvidence,
 import { withOwnedObservation, type ObservationImage } from "./observation.js";
 import { CANONICAL_ACTIONS, LEGACY_ACTION_ALIASES, type LegacyAction } from "./computer-use-actions.js";
 import { ACTION_PROFILE_DENIED_REASON, isActionAllowed, resolveActionPermissions, validateActionPermissions, type ActionPermissions } from "./action-permissions.js";
-import { installedBinary, planHostAction } from "./host-actions.js";
+import { installedBinary, planHostAction, discoverHostIntegrations } from "./host-actions.js";
 import { CleanupFailure, FileActionError, listDirectory, readRegularFile, writeRegularFile } from "./file-actions.js";
 import { runProcess, ProcessFailure } from "./process-runner.js";
 import { createHash } from "node:crypto";
@@ -203,7 +203,7 @@ function createTool(options: CreateComputerUseToolOptions, legacyTool = false) {
           const prepared = await prepareComputerUseRequest(params, ctx);
           params = prepared.params;
           decision = prepared.decision;
-          if (controller.signal.aborted) throw new ProcessFailure("CANCELLED");
+          if (controller.signal.aborted) throw new ProcessFailure("CANCELLED", undefined, undefined, "not-started");
           if (decision.status === "blocked" || decision.status === "needsApproval") {
             details = {
               status: decision.status, success: false, action: decision.normalizedAction,
@@ -224,7 +224,8 @@ function createTool(options: CreateComputerUseToolOptions, legacyTool = false) {
         const code = error instanceof ProcessFailure || error instanceof FileActionError ? error.code : error instanceof ToolInputError ? "INVALID_INPUT" : ["ENOENT", "EACCES", "EPERM", "EISDIR", "ENOTDIR", "EEXIST", "EIO", "ENOSPC"].includes((error as NodeJS.ErrnoException)?.code ?? "") ? (error as NodeJS.ErrnoException).code! : "ACTION_FAILED";
         details = { status: code === "CANCELLED" ? "cancelled" : code === "ETIMEDOUT" ? "timeout" : "error", success: false,
           action: params.action, code, error: error instanceof ToolInputError ? error.message : "Action failed; raw diagnostics withheld.",
-          ...(caught instanceof CleanupFailure ? { cleanup: caught.cleanup } : {}) };
+          ...(caught instanceof CleanupFailure ? { cleanup: caught.cleanup } : {}),
+          ...(error instanceof ProcessFailure && ["health", "doctor"].includes(normalizeComputerUseAction(params.action)) ? { adapterInvocation: { ...processOutcome(error), code } } : {}) };
       } finally {
         calls.delete(controller);
         if (!calls.size) activeCalls.delete(scope);
@@ -325,7 +326,7 @@ async function runHealth(ctx: ComputerUsePolicyContext, runAdapter: AdapterRunne
   } catch (error) {
     const failure = safeExecutionError(error);
     adapterResult = { ok: false, ...failure };
-    adapterOutcomes.set(adapterResult as object, { phase: "spawn", code: failure.code });
+    adapterOutcomes.set(adapterResult as object, error instanceof ProcessFailure ? processOutcome(error) : { phase: "process", code: failure.code });
   }
   return discoveryResult(adapterResult, ctx, permissions, "health");
 }
@@ -341,24 +342,21 @@ async function discoveryResult(adapterResult: unknown, ctx: ComputerUsePolicyCon
     environment: { platform: hostName === "darwin" ? "macos" : hostName === "linux" ? "linux" : hostName === "win32" ? "windows" : "other", session: hostName !== "linux" ? null : session === "wayland" || (session !== "x11" && process.env.WAYLAND_DISPLAY) ? "wayland" : session === "x11" || process.env.DISPLAY ? "x11" : null },
     adapter: { configuredPath: adapterBin, resolvedPath: selected ? await realpath(selected).catch(() => null) : null }, integrations: {}, observedAtMs: Date.now(),
   };
-  for (const action of ["clipboard-read", "clipboard-write", "browser-open", "app-launch"] as const) {
-    const plan = planHostAction(hostName, process.env, installedBinary, { action, url: "https://example.invalid", app: "org.example.App.desktop" });
-    hostEvidence.integrations[action] = { state: plan.supported === false ? "unsupported" : "unverified", reasonCodes: [plan.supported === false ? "HOST_PREREQUISITE_UNAVAILABLE" : "HOST_ACCESS_UNVERIFIED"], ...(plan.file ? { provider: { name: plan.file.split(/[\\/]/).at(-1)!, version: null } } : {}) };
-  }
+  hostEvidence.integrations = discoverHostIntegrations(hostName, process.env, installedBinary, hostEvidence.observedAtMs!);
   let capabilitiesV1;
   let compatibilityError: string | undefined;
   try { capabilitiesV1 = buildPluginCapabilities(adapterResult, hostEvidence, permissions); }
   catch (error) {
     compatibilityError = error instanceof Error && error.message.startsWith("CAPABILITY_SCHEMA_UNSUPPORTED") ? "CAPABILITY_SCHEMA_UNSUPPORTED" : "CAPABILITY_SCHEMA_INVALID";
     capabilitiesV1 = buildPluginCapabilities(undefined, hostEvidence, permissions);
-    outcome = { phase: "output", code: compatibilityError };
+    outcome = { ...outcome, phase: "output", code: compatibilityError };
   }
   const decoded = decodeAdapterAction(adapterResult);
   outcome = { ...outcome, code: outcome.code ?? (typeof decoded.code === "string" ? decoded.code : undefined), setupGuide: Boolean(readObjectField(adapterResult, "setupGuide")), permissionDenied: explicitMacPermissionFailure(adapterResult) };
   const repairHints = repairHintsForCapabilities(capabilitiesV1, outcome);
   return { ...normalized, ...(compatibilityError ? { status: "error", success: false, code: compatibilityError, error: "Adapter capability response is incompatible; raw diagnostics withheld." } : {}),
     action, ...(action === "health" ? { agent: COMPUTER_USE_AGENT, healthCheck: COMPUTER_USE_HEALTH_CHECK, auditLog: resolveComputerUseAuditLogPath(ctx) } : {}), capabilitiesV1,
-    adapterInvocation: { ...hostEvidence.adapter, version: capabilitiesV1.adapter?.version ?? null, phase: outcome.phase, ...(outcome.code ? { code: outcome.code } : {}) },
+    adapterInvocation: { ...hostEvidence.adapter, version: capabilitiesV1.adapter?.version ?? null, phase: outcome.phase, ...(outcome.processStarted === undefined ? {} : { processStarted: outcome.processStarted }), ...(outcome.code ? { code: outcome.code } : {}) },
     repairHints, permissionFlow: outcome.phase === "adapter" ? permissionFlowForResult(adapterResult, "doctor", repairHints.some(hint => hint.includes("macOS permissions"))) : undefined,
   };
 }
@@ -572,6 +570,10 @@ export function normalizeParams(params: unknown): ComputerUseParams {
   return record as ComputerUseParams;
 }
 
+function processOutcome(error: ProcessFailure): CapabilityOutcome {
+  return { phase: error.lifecycle === "not-started" ? "before-start" : error.lifecycle === "spawn-failed" ? "spawn" : "process", ...(error.lifecycle === "unknown" ? {} : { processStarted: error.lifecycle === "started" }), code: error.code };
+}
+
 async function runAdapterBinary(args: string[], params: ComputerUseParams, signal?: AbortSignal): Promise<unknown> {
   const timeout = params.timeoutMs ?? (params.action === "inspect" || params.action === "screenshot" ? CAPTURE_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
   const adapterBin = resolveAdapterBin();
@@ -580,19 +582,19 @@ async function runAdapterBinary(args: string[], params: ComputerUseParams, signa
       timeoutMs: timeout, signal, maxBuffer: 10 * 1024 * 1024, reportProgress: true,
     });
     let result: unknown;
-    try { result = JSON.parse(stdout); } catch { const invalid = { ok: false, code: "MALFORMED_OUTPUT", error: "Adapter returned malformed JSON; output withheld." }; adapterOutcomes.set(invalid, { phase: "output", code: "MALFORMED_OUTPUT" }); return invalid; }
+    try { result = JSON.parse(stdout); } catch { const invalid = { ok: false, code: "MALFORMED_OUTPUT", error: "Adapter returned malformed JSON; output withheld." }; adapterOutcomes.set(invalid, { phase: "output", processStarted: true, code: "MALFORMED_OUTPUT" }); return invalid; }
     if (!result || typeof result !== "object" || Array.isArray(result) || typeof (result as any).ok !== "boolean") {
       const invalid = { ok: false, code: "MALFORMED_OUTPUT", error: "Adapter returned an invalid envelope; output withheld." };
-      adapterOutcomes.set(invalid, { phase: "output", code: "MALFORMED_OUTPUT" }); return invalid;
+      adapterOutcomes.set(invalid, { phase: "output", processStarted: true, code: "MALFORMED_OUTPUT" }); return invalid;
     }
-    adapterOutcomes.set(result as object, { phase: "adapter" });
+    adapterOutcomes.set(result as object, { phase: "adapter", processStarted: true });
     return normalizeComputerUseAction(params.action) === "type-text" ? redactTypeDiagnostics(result) : result;
   } catch (error) {
     const code = error instanceof ProcessFailure || error instanceof FileActionError ? error.code : "BACKEND_ERROR";
     const failure = { ok: false, code, error: "Adapter execution failed; raw diagnostics withheld.",
       ...(["ETIMEDOUT", "CANCELLED"].includes(code) ? error instanceof ProcessFailure && error.progress ? error.progress : { progressUnknown: true } : {}),
       ...(code === "ENOENT" ? { hint: missingAdapterHint(adapterBin), adapterSetup: adapterSetupGuide(adapterBin) } : {}) };
-    adapterOutcomes.set(failure, { phase: error instanceof ProcessFailure && error.exitCode === undefined ? "spawn" : "output", code });
+    adapterOutcomes.set(failure, error instanceof ProcessFailure ? processOutcome(error) : { phase: "process", code });
     return failure;
   }
 }

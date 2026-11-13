@@ -1,5 +1,6 @@
 import { accessSync, constants } from "node:fs";
 import { delimiter, join } from "node:path";
+import type { HostEvidence } from "./capabilities.js";
 import type { ComputerUseParams } from "./computer-use-policy.js";
 
 export type HostPlan = {
@@ -61,4 +62,14 @@ export function planHostAction(host: string, env: NodeJS.ProcessEnv, find: (name
     return file ? launch(file, [app]) : no("Linux app-launch requires installed gtk-launch and an installed desktop entry id.");
   }
   return no("Unknown host integration action.");
+}
+
+/** Fixed macOS plans identify providers but do not observe executable availability. */
+export function discoverHostIntegrations(host: string, env: NodeJS.ProcessEnv, find: (name: string) => string | undefined, observedAtMs: number): HostEvidence["integrations"] {
+  const evidence: HostEvidence["integrations"] = {};
+  for (const action of ["clipboard-read", "clipboard-write", "browser-open", "app-launch"] as const) {
+    const plan = planHostAction(host, env, find, { action, url: "https://example.invalid", app: "org.example.App.desktop" });
+    evidence[action] = { state: plan.supported === false ? "unsupported" : "unverified", reasonCodes: [plan.supported === false ? "HOST_PREREQUISITE_UNAVAILABLE" : "HOST_ACCESS_UNVERIFIED"], ...(plan.file ? { provider: { name: plan.file.split(/[\\/]/).at(-1)!, version: null } } : {}), binary: host === "linux" && plan.file ? { status: "passed", observedAtMs } : { status: "unknown" } };
+  }
+  return evidence;
 }
