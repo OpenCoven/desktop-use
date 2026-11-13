@@ -3,6 +3,7 @@
 Requires GTK/PyGObject, real capture/input helpers, and an existing test server.
 """
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -27,6 +28,69 @@ def wait_for(check, timeout=8):
     raise AssertionError('bounded fixture wait expired')
 
 
+@contextmanager
+def suspended_server(pid):
+    try:
+        os.kill(pid, signal.SIGSTOP)
+        yield
+    finally:
+        # Independent of adapter spawn, assertions, and adapter cleanup.
+        os.kill(pid, signal.SIGCONT)
+
+
+def reap_bounded(proc):
+    result = {'reaped': False, 'errors': []}
+    for action in (proc.terminate, proc.kill):
+        try:
+            if proc.poll() is None:
+                action()
+        except Exception as error:
+            result['errors'].append(repr(error))
+        try:
+            proc.wait(timeout=5)
+            result['reaped'] = True
+            break
+        except Exception as error:
+            result['errors'].append(repr(error))
+    return result
+
+
+@contextmanager
+def cancellation_guard(pid, spawn, receipts):
+    with suspended_server(pid):
+        cancelled = None
+        try:
+            cancelled = spawn()
+            yield cancelled
+        finally:
+            if cancelled is not None:
+                receipts['adapterCleanup'] = reap_bounded(cancelled)
+                if not receipts['adapterCleanup']['reaped']:
+                    raise RuntimeError('cancelled adapter could not be reaped')
+
+
+@contextmanager
+def fixture_guard(spawn, receipts, path):
+    fixture = None
+    try:
+        fixture = spawn()
+        yield fixture
+    except BaseException as error:
+        receipts['failure'] = repr(error)
+        raise
+    finally:
+        try:
+            cleanup = reap_bounded(fixture) if fixture is not None else {'reaped': False, 'errors': []}
+            receipts['fixtureCleanup'] = cleanup
+            receipts['fixtureTerminated'] = cleanup['reaped']
+            if fixture is not None and not cleanup['reaped']:
+                raise RuntimeError('fixture could not be reaped within bounded cleanup')
+        finally:
+            # Persist even if spawn or cleanup fails. Filesystem write failures
+            # still propagate; no claim that an unwritable receipt was saved.
+            path.write_text(json.dumps(receipts, indent=2)+'\n')
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--session', choices=['x11', 'wayland'], required=True)
@@ -47,7 +111,8 @@ def main():
         assert a.session == 'wayland'
         setup = subprocess.check_output(['swaymsg', 'focus', 'output', a.output_name], env=env)
         receipts['fixturePlacement'] = {'output': a.output_name, 'setupOnly': True, 'response': json.loads(setup)}
-    fixture = subprocess.Popen(['python3', str(Path(__file__).with_name('fixture.py')), '--state', str(state_path), '--session', a.session, '--title', title], env=env, stdout=(root/'fixture.stdout').open('w'), stderr=(root/'fixture.stderr').open('w'))
+    def spawn_fixture():
+        return subprocess.Popen(['python3', str(Path(__file__).with_name('fixture.py')), '--state', str(state_path), '--session', a.session, '--title', title], env=env, stdout=(root/'fixture.stdout').open('w'), stderr=(root/'fixture.stderr').open('w'))
     def state():
         try:
             return json.loads(state_path.read_text())
@@ -110,7 +175,7 @@ def main():
         assert all(abs(actual[i]-expected[i]) <= (8 if kind=='jpg' else 0) for i in range(3)), (actual,expected,label,x,y)
         receipts['captures'].append({'label':label,'receipt':r,'referencePixel':{'point':[x,y],'expected':expected,'actual':actual},'actualVisibleContent':True})
         return r
-    try:
+    with fixture_guard(spawn_fixture, receipts, root/'receipt.json') as fixture:
         wait_for(lambda: state().get('ready'))
         if a.session=='x11':
             focused = focus_owned('focus')
@@ -183,9 +248,7 @@ def main():
         # Stop only the dedicated server to hold its real capture helper in flight.
         destination = root/'cancel.png'
         destination.write_bytes(b'original explicit destination')
-        os.kill(a.server_pid,signal.SIGSTOP)
-        cancelled = subprocess.Popen([str(adapter),'screenshot','--mode','screen','--path',str(destination)],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
-        try:
+        with cancellation_guard(a.server_pid, lambda: subprocess.Popen([str(adapter),'screenshot','--mode','screen','--path',str(destination)],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True), receipts) as cancelled:
             def helper_running():
                 children = Path(f'/proc/{cancelled.pid}/task/{cancelled.pid}/children').read_text().split()
                 for pid in children:
@@ -203,16 +266,7 @@ def main():
             assert not Path(f'/proc/{helper["pid"]}').exists()
             assert not list(root.glob('.desktopuse-capture-*'))
             receipts['cancel'] = {'result':result,'actualHelper':helper,'destinationPreserved':True,'helperReaped':True,'privateStagingRemoved':True}
-        finally:
-            if cancelled.poll() is None:
-                cancelled.kill(); cancelled.communicate()
-            os.kill(a.server_pid,signal.SIGCONT)
         receipts['completed'] = True
-    finally:
-        fixture.terminate()
-        fixture.wait(timeout=5)
-        receipts['fixtureTerminated'] = True
-        (root/'receipt.json').write_text(json.dumps(receipts,indent=2)+'\n')
     print(json.dumps({'receipt':str(root/'receipt.json'),'completed':True,'pointerVerified':receipts['effects'][0]['verified'],'keyboardVerified':keyboard_verified}))
     if not keyboard_verified:
         raise SystemExit(1)

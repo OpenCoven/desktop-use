@@ -45,12 +45,16 @@ export async function inspectProviderImage(body, expected) {
     assert.equal(mimeType, "image/jpeg", "Pinned host converts oversized PNG to JPEG");
     const decoded = jpeg.decode(providerBytes, { useTArray: true, maxResolutionInMP: 4, maxMemoryUsageInMB: 64 });
     assert.deepEqual({ width: decoded.width, height: decoded.height }, { width: 1200, height: 675 }, "Pinned default host resize dimensions");
-    const landmarks = [[.25,.25,[224,48,64]], [.75,.25,[32,192,96]], [.25,.75,[40,90,220]], [.75,.75,[240,210,40]]];
-    for (const [x,y,rgb] of landmarks) {
-      const offset = (Math.floor(y*decoded.height)*decoded.width+Math.floor(x*decoded.width))*4;
-      assert.ok(rgb.every((v,index) => Math.abs(v-decoded.data[offset+index])<=8), "Normalized quadrant landmark survives resize without crop, reflection or rotation");
+    // Sample both coordinate ramps across the full frame, including near its
+    // edges. Broad solid quadrants alone cannot detect centered cropping.
+    const positions = [.02,.08,.17,.29,.41,.59,.71,.83,.92,.98];
+    for (const y of positions) for (const x of positions) {
+      const px = Math.floor(x*decoded.width), py = Math.floor(y*decoded.height);
+      const offset = (py*decoded.width+px)*4;
+      const rgb = [16+224*(px+.5)/decoded.width,16+224*(py+.5)/decoded.height,32+64*(x>=.5)+128*(y>=.5)];
+      assert.ok(rgb.every((v,index) => Math.abs(v-decoded.data[offset+index])<=4), "Position-coded landmark survives resize within four channel levels");
     }
-    resizeProof = { normalizedLandmarksPreserved: true, providerDimensions: { width: decoded.width, height: decoded.height }, providerSha256: createHash("sha256").update(providerBytes).digest("hex"), hostResize: true };
+    resizeProof = { normalizedLandmarksPreserved: true, frameSamples: 100, channelTolerance: 4, providerDimensions: { width: decoded.width, height: decoded.height }, providerSha256: createHash("sha256").update(providerBytes).digest("hex"), hostResize: true };
   } else {
     assert.equal(mimeType, expected.mimeType);
     assert.deepEqual(providerBytes, expected.bytes, "Provider received exact synthetic bytes");

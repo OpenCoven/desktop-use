@@ -26,7 +26,7 @@ test("large provider image preserves normalized landmarks after host resize", as
   const bytes = await readFile(new URL("../contracts/v1/fixtures/images/geometry-3200x1800.png", import.meta.url));
   const raw = Buffer.alloc(1200*675*4);
   for (let y=0;y<675;y++) for (let x=0;x<1200;x++) {
-    const color = y<337.5 ? x<600 ? [224,48,64] : [32,192,96] : x<600 ? [40,90,220] : [240,210,40];
+    const color = [Math.round(16+224*(x+.5)/1200),Math.round(16+224*(y+.5)/675),32+64*(x>=600)+128*(y>=337.5)];
     raw.set([...color,255],(y*1200+x)*4);
   }
   const converted = jpeg.encode({width:1200,height:675,data:raw},85).data;
@@ -37,6 +37,15 @@ test("large provider image preserves normalized landmarks after host resize", as
   const proof = await inspectProviderImage(body,{bytes,mimeType:"image/png",sha256:receipt.primaryImage.sha256,width:3200,height:1800,allowHostResize:true});
   assert.equal(proof.normalizedLandmarksPreserved,true);
   assert.deepEqual(proof.providerDimensions,{width:1200,height:675});
+  // Center crop to 60% of each source dimension, then resize: quadrant centers
+  // alone falsely accept this changed coordinate frame.
+  const cropped = Buffer.alloc(raw.length);
+  for (let y=0;y<675;y++) for(let x=0;x<1200;x++) {
+    const sx=Math.floor(240+x*.6), sy=Math.floor(135+y*.6);
+    raw.copy(cropped,(y*1200+x)*4,(sy*1200+sx)*4,(sy*1200+sx+1)*4);
+  }
+  body.messages.at(-1).content[0].image_url.url=`data:image/jpeg;base64,${jpeg.encode({width:1200,height:675,data:cropped},85).data.toString("base64")}`;
+  await assert.rejects(inspectProviderImage(body,{bytes,mimeType:"image/png",sha256:receipt.primaryImage.sha256,width:3200,height:1800,allowHostResize:true}));
   const mirrored = Buffer.alloc(raw.length);
   for (let y=0;y<675;y++) for(let x=0;x<1200;x++) raw.copy(mirrored,(y*1200+x)*4,(y*1200+1199-x)*4,(y*1200+1200-x)*4);
   const bad = jpeg.encode({width:1200,height:675,data:mirrored},85).data;

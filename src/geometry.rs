@@ -187,6 +187,7 @@ pub struct Snapshot {
     width: u32,
     height: u32,
     target: Option<String>,
+    compositor: Option<SwayIdentity>,
 }
 fn probe_output(program: &str, args: &[&str], end: Instant) -> Option<String> {
     crate::resolve_path_binary(program)?;
@@ -196,6 +197,135 @@ fn probe_output(program: &str, args: &[&str], end: Instant) -> Option<String> {
         return None;
     }
     Some(String::from_utf8(output.stdout).ok()?.trim().to_owned())
+}
+// Linux peer credentials bind both endpoints to one compositor process. A
+// filename, equal raster dimensions, or the swaymsg client version cannot.
+#[derive(Clone, Debug, PartialEq)]
+struct SwayIdentity {
+    ipc: String,
+    display: String,
+    peer: (i32, u32, u32),
+    sockets: [(u64, u64); 2],
+}
+#[cfg(any(target_os = "linux", test))]
+fn same_compositor(ipc: (i32, u32, u32), display: (i32, u32, u32)) -> bool {
+    ipc.0 > 0 && ipc == display
+}
+fn sway_server_version(value: &Value) -> Option<&'static str> {
+    (value["variant"] == "sway"
+        && value["major"] == 1
+        && value["minor"] == 7
+        && value["patch"] == 0
+        && value["human_readable"] == "1.7")
+        .then_some("1.7")
+}
+#[cfg(target_os = "linux")]
+fn sway_identity(end: Instant) -> Option<SwayIdentity> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    use std::path::PathBuf;
+    fn peer(path: &str, end: Instant) -> Option<((i32, u32, u32), (u64, u64))> {
+        if Instant::now() >= end || !path.starts_with('/') || path.as_bytes().contains(&0) {
+            return None;
+        }
+        let meta = std::fs::metadata(path).ok()?;
+        if !meta.file_type().is_socket() {
+            return None;
+        }
+        // Nonblocking connect fails closed on a full backlog; never wait beyond
+        // the shared probe deadline. No Wayland protocol or input is sent.
+        unsafe {
+            let mut address: libc::sockaddr_un = std::mem::zeroed();
+            if path.len() >= address.sun_path.len() {
+                return None;
+            }
+            address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+            for (dst, src) in address.sun_path.iter_mut().zip(path.bytes()) {
+                *dst = src as libc::c_char;
+            }
+            let raw = libc::socket(
+                libc::AF_UNIX,
+                libc::SOCK_STREAM | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
+                0,
+            );
+            if raw < 0 {
+                return None;
+            }
+            let fd = OwnedFd::from_raw_fd(raw);
+            if libc::connect(
+                fd.as_raw_fd(),
+                &address as *const _ as *const libc::sockaddr,
+                std::mem::size_of_val(&address) as libc::socklen_t,
+            ) != 0
+            {
+                return None;
+            }
+            let mut credentials: libc::ucred = std::mem::zeroed();
+            let mut size = std::mem::size_of_val(&credentials) as libc::socklen_t;
+            if libc::getsockopt(
+                fd.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_PEERCRED,
+                &mut credentials as *mut _ as *mut libc::c_void,
+                &mut size,
+            ) != 0
+                || size as usize != std::mem::size_of_val(&credentials)
+            {
+                return None;
+            }
+            Some((
+                (credentials.pid, credentials.uid, credentials.gid),
+                (meta.dev(), meta.ino()),
+            ))
+        }
+    }
+    // wl_display_connect(NULL) gives WAYLAND_SOCKET precedence over the path.
+    // Inherited connections are not qualified by this pathname-based producer.
+    if std::env::var_os("WAYLAND_SOCKET").is_some() {
+        return None;
+    }
+    let ipc = std::env::var("SWAYSOCK").ok()?;
+    let display = std::env::var("WAYLAND_DISPLAY").ok()?;
+    if display.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(display);
+    let display = if path.is_absolute() {
+        path
+    } else {
+        PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?).join(path)
+    }
+    .to_str()?
+    .to_owned();
+    let (ipc_peer, ipc_inode) = peer(&ipc, end)?;
+    let (display_peer, display_inode) = peer(&display, end)?;
+    same_compositor(ipc_peer, display_peer).then_some(SwayIdentity {
+        ipc,
+        display,
+        peer: ipc_peer,
+        sockets: [ipc_inode, display_inode],
+    })
+}
+#[cfg(not(target_os = "linux"))]
+fn sway_identity(_end: Instant) -> Option<SwayIdentity> {
+    None
+}
+fn sway_query(identity: &SwayIdentity, query: &str, end: Instant) -> Option<Value> {
+    if sway_identity(end).as_ref() != Some(identity) {
+        return None;
+    }
+    let value = serde_json::from_str(&probe_output(
+        "swaymsg",
+        &["-s", &identity.ipc, "-t", query, "-r"],
+        end,
+    )?)
+    .ok()?;
+    (sway_identity(end).as_ref() == Some(identity)).then_some(value)
+}
+fn qualified_sway(end: Instant) -> Option<SwayIdentity> {
+    let identity = sway_identity(end)?;
+    sway_server_version(&sway_query(&identity, "get_version", end)?)?;
+    Some(identity)
 }
 fn x11_rect(text: &str, root: bool) -> Option<Rect> {
     fn field(text: &str, key: &str) -> Option<f64> {
@@ -278,19 +408,15 @@ pub fn probe(mode: &str) -> Option<Snapshot> {
                 width: r.width as u32,
                 height: r.height as u32,
                 target,
+                compositor: None,
             })
         }
         crate::Platform::LinuxWayland => {
             if mode != "screen" {
                 return None;
             }
-            std::env::var_os("SWAYSOCK")?;
-            if probe_output("swaymsg", &["-v"], end)? != "swaymsg version 1.7" {
-                return None;
-            }
-            let input: Value =
-                serde_json::from_str(&probe_output("swaymsg", &["-t", "get_outputs", "-r"], end)?)
-                    .ok()?;
+            let compositor = qualified_sway(end)?;
+            let input = sway_query(&compositor, "get_outputs", end)?;
             let (_, scale, bounds) = sway_layout("1.7", &input)?;
             let (width, height) = (
                 (bounds.width * scale) as u32,
@@ -306,6 +432,7 @@ pub fn probe(mode: &str) -> Option<Snapshot> {
                 width,
                 height,
                 target: None,
+                compositor: Some(compositor),
             })
         }
         _ => None,
@@ -431,16 +558,12 @@ pub fn wayland_pointer_ready(x: i32, y: i32) -> bool {
         }
         let version = probe_output("dpkg-query", &["-W", "-f=${Version}", "ydotool"], end)?;
         let upstream = version.split('-').next()?;
-        if upstream != "1.0.4" || probe_output("swaymsg", &["-v"], end)? != "swaymsg version 1.7" {
+        if upstream != "1.0.4" {
             return None;
         }
-        std::env::var_os("SWAYSOCK")?;
-        let outputs =
-            serde_json::from_str(&probe_output("swaymsg", &["-t", "get_outputs", "-r"], end)?)
-                .ok()?;
-        let inputs =
-            serde_json::from_str(&probe_output("swaymsg", &["-t", "get_inputs", "-r"], end)?)
-                .ok()?;
+        let compositor = qualified_sway(end)?;
+        let outputs = sway_query(&compositor, "get_outputs", end)?;
+        let inputs = sway_query(&compositor, "get_inputs", end)?;
         pointer_preconditions(upstream, &outputs, &inputs, x, y)
     }
     check(x, y).is_some()
@@ -448,6 +571,35 @@ pub fn wayland_pointer_ready(x: i32, y: i32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn compositor_identity_rejects_equal_rasters_from_different_sessions() {
+        let fixtures: Value = serde_json::from_str(include_str!(
+            "../contracts/v1/fixtures/geometry/producers.json"
+        ))
+        .unwrap();
+        let mut other = fixtures[0]["input"].clone();
+        for output in other.as_array_mut().unwrap() {
+            output["rect"]["x"] = json!(output["rect"]["x"].as_i64().unwrap() + 100);
+        }
+        assert!(normalize("sway", "1.7", &fixtures[0]["input"], 3200, 1200).is_some());
+        assert!(normalize("sway", "1.7", &other, 3200, 1200).is_some());
+        assert!(same_compositor((8, 1000, 1000), (8, 1000, 1000)));
+        assert!(!same_compositor((8, 1000, 1000), (9, 1000, 1000)));
+        assert!(!same_compositor((8, 1000, 1000), (8, 1001, 1000)));
+        assert!(!same_compositor((0, 1000, 1000), (0, 1000, 1000)));
+    }
+    #[test]
+    fn qualified_client_does_not_qualify_unknown_running_server() {
+        let mut server =
+            json!({"human_readable":"1.7","variant":"sway","major":1,"minor":7,"patch":0});
+        assert_eq!(sway_server_version(&server), Some("1.7"));
+        server["minor"] = 8.into();
+        assert_eq!(sway_server_version(&server), None);
+        server["minor"] = 7.into();
+        server["human_readable"] = "1.7-dev".into();
+        assert_eq!(sway_server_version(&server), None);
+        assert_eq!(sway_server_version(&json!("swaymsg version 1.7")), None);
+    }
     #[test]
     fn shared_producers_preserve_negative_origins_and_mixed_display_regions() {
         let fixtures: Value = serde_json::from_str(include_str!(
