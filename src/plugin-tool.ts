@@ -355,7 +355,7 @@ function stopComputerUse(ctx: ComputerUsePolicyContext): ToolResult["details"] {
   const count = calls?.size ?? 0;
   for (const controller of calls ?? []) controller.abort();
   return { status: "success", success: true, action: "stop", cancellationRequested: count,
-    state: count ? "cancelling" : "idle", result: { message: "Cancellation requested for active calls in this agent/session/workspace. Owned helpers terminate within the 250 ms cleanup grace. Completed side effects are not undone; injected runners must honor AbortSignal." } };
+    state: count ? "cancelling" : "idle", result: { message: "Cancellation requested for active calls in this agent/session/workspace. The built-in runner schedules KILL escalation after a 250 ms grace; a blocked host event loop can delay dispatch. Completed side effects are not undone; injected runners must honor AbortSignal." } };
 }
 
 async function runAdapterWithTransientObservationRetry(

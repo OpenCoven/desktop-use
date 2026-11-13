@@ -422,7 +422,9 @@ try {
     await rpc("sessions.patch", { key });
     await httpInvoke(COMPUTER_USE_TOOL_NAME, { action: "stop" }, key);
     let run;
-    const active = runCase(caseName, { action: "shell", command: process.execPath, args: ["stalled-helper.cjs", `${caseName}.pid`], timeoutMs: 30000 }, "allow-once", key, COMPUTER_USE_TOOL_NAME, { abort: mode === "abort", onAccepted: accepted => run = accepted });
+    // Use the supported long-action budget: serial host catalog discovery on the
+    // live cross-scope Stop routes can consume the default 30-second budget.
+    const active = runCase(caseName, { action: "shell", command: process.execPath, args: ["stalled-helper.cjs", `${caseName}.pid`], timeoutMs: 120000 }, "allow-once", key, COMPUTER_USE_TOOL_NAME, { abort: mode === "abort", onAccepted: accepted => run = accepted });
     active.catch(() => {});
     const pid = await until(async () => { const n = Number(await readFile(ready, "utf8")); return Number.isSafeInteger(n) && n > 0 ? n : undefined; }, 45000);
     const otherSessionStop = await httpInvoke(COMPUTER_USE_TOOL_NAME, { action: "stop" }, session);
