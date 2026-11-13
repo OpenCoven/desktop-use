@@ -77,3 +77,6 @@ jobs:
             ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/audit-summary.json
             ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/complete.json
             ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/qualification-failure.json
+            ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/fixture-failure-summary.json
+            ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/minimal-http-policy.json
+            ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/explicit-tool-deny.json

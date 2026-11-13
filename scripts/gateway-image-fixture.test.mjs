@@ -120,10 +120,11 @@ test("explicit replay rejects missing, ambiguous, wrong-turn and unrelated image
 
 // Discovery transport is qualified independently of the image assertions above.
 const capabilitiesFixture = await import("./gateway-capabilities-fixture.mjs");
-const discoveryBody = (text, id = "call_current") => ({ messages: [
+const discoveryBody = (text, id = "call_current", action = "health") => ({ messages: [
   { role: "user", content: "QUALIFICATION_CASE:old" },
   { role: "tool", tool_call_id: "call_old", content: "old private decoy" },
   { role: "user", content: "QUALIFICATION_CASE:current" },
+  { role: "assistant", tool_calls: [{ id, function: { name: "computer_use", arguments: JSON.stringify({ action }) } }] },
   { role: "tool", tool_call_id: id, content: text },
 ] });
 const discoveryOptions = { currentCase: "current", calls: [{ toolCallId: "call_current", action: "health" }] };
@@ -219,6 +220,7 @@ test("Stop-only discovery selection excludes host-denied health, doctor and perm
   const calls = ["health", "doctor", "permissions"].map(action => ({ action, toolCallId: `call_denied_${action}` }));
   const body = { messages: [
     { role: "user", content: "QUALIFICATION_CASE:current" },
+    { role: "assistant", tool_calls: calls.map(call => ({ id: call.toolCallId, function: { name: "computer_use", arguments: JSON.stringify({ action: call.action }) } })) },
     ...calls.map(call => ({ role: "tool", tool_call_id: call.toolCallId, content: `Validation failed for tool computer_use: action ${call.action} is disabled by the trusted action permissions` })),
     { role: "tool", tool_call_id: "call_stop", content: '{"status":"success","action":"stop"}' },
   ] };
@@ -228,7 +230,7 @@ test("Stop-only discovery selection excludes host-denied health, doctor and perm
   assert.deepEqual(selected, []);
   assert.deepEqual(capabilitiesFixture.inspectDiscoveryTransport(body, { currentCase: "current", calls: selected }), []);
   assert.equal(JSON.parse(body.messages.at(-1).content).status, "success");
-  for (const message of body.messages.slice(1, -1)) assert.match(message.content, /Validation failed.*disabled by the trusted/);
+  for (const message of body.messages.slice(1, -1).filter(message => message.role === "tool")) assert.match(message.content, /Validation failed.*disabled by the trusted/);
 });
 
 test("trusted discovery selection preserves full, observation and desktop call identities and notices", () => {
@@ -252,7 +254,7 @@ test("eligible discovery still rejects malformed permitted JSON and response tex
   const canonicalAliases = { permissions: "doctor" };
   const selected = capabilitiesFixture.selectEligibleDiscoveryCalls([call], { allowedActions: ["doctor"], canonicalAliases });
   assert.deepEqual(selected, [call]);
-  assert.throws(() => capabilitiesFixture.inspectDiscoveryTransport(discoveryBody("Validation failed for tool computer_use"), { currentCase: "current", calls: selected }), /Malformed untruncated discovery JSON/);
+  assert.throws(() => capabilitiesFixture.inspectDiscoveryTransport(discoveryBody("Validation failed for tool computer_use", "call_current", "permissions"), { currentCase: "current", calls: selected }), /Malformed untruncated discovery JSON/);
   const denied = capabilitiesFixture.selectEligibleDiscoveryCalls([call], { allowedActions: ["stop"], canonicalAliases });
   assert.deepEqual(capabilitiesFixture.inspectDiscoveryTransport(discoveryBody('{"status":"success","action":"doctor","allowedActions":["doctor"]}'), { currentCase: "current", calls: denied }), []);
 });
@@ -292,4 +294,29 @@ test("caller discovery metadata retains trusted eligibility, call IDs and canoni
   ]);
   assert.deepEqual(build(batch, { ...discoveryPlanOptions, allowedActions: ["stop"] }), []);
   assert.deepEqual(build({ args: { action: "permissions" } }, { ...discoveryPlanOptions, allowedActions: ["permissions"] }), []);
+});
+
+test("discovery proof binds current declarations and results across newer host inserted user-role messages", () => {
+  const body = { messages: [
+    { role: "user", content: "QUALIFICATION_CASE:current" },
+    { role: "user", content: "fixture host-generated context before tool execution" },
+    { role: "assistant", tool_calls: [{ id: "call_current", function: { name: "computer_use", arguments: '{"action":"health"}' } }] },
+    { role: "tool", tool_call_id: "call_current", content: '{"status":"success","action":"health"}' },
+    { role: "user", content: "fixture host-generated context after tool execution" },
+  ] };
+  assert.equal(capabilitiesFixture.inspectDiscoveryTransport(body, discoveryOptions)[0].fullCapabilityJsonTransport, true);
+  for (const mutate of [
+    value => value.messages.push({ role: "user", content: "QUALIFICATION_CASE:later" }),
+    value => value.messages.push({ role: "user", content: "QUALIFICATION_CASE:current" }),
+    value => value.messages.unshift(structuredClone(value.messages[2])),
+    value => value.messages.unshift(structuredClone(value.messages[3])),
+    value => { value.messages[2].tool_calls[0].function.arguments = '{"action":"doctor"}'; },
+    value => { value.messages[2].tool_calls[0].function.name = "desktop_use"; },
+    value => { [value.messages[2], value.messages[3]] = [value.messages[3], value.messages[2]]; },
+    value => value.messages.splice(2, 1),
+    value => { const declaration = value.messages.splice(2, 1)[0]; value.messages.unshift(declaration); },
+  ]) {
+    const changed = structuredClone(body); mutate(changed);
+    assert.throws(() => capabilitiesFixture.inspectDiscoveryTransport(changed, discoveryOptions));
+  }
 });

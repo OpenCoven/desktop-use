@@ -31,21 +31,33 @@ export function discoveryCallsForPlan(plan, { currentCase, batchCallId, allowedA
   return selectEligibleDiscoveryCalls((plan.calls ?? [{ name: currentCase, args: plan.args }]).map(call => ({ action: call.args?.action, toolCallId: plan.calls ? batchCallId(call.name) : `call_${currentCase}`, notices: [...(call.args?.action === "permissions" ? ["permissions is deprecated; use doctor instead."] : []), ...(plan.tool === legacyToolName ? [`${legacyToolName} is deprecated; use ${canonicalToolName} instead.`] : [])] })), { allowedActions, canonicalAliases });
 }
 const normalizedCallId = value => typeof value === "string" ? value.replace(/[^a-zA-Z0-9]/g, "") : "";
-export function inspectDiscoveryTransport(body, { currentCase, calls, contextWindowTokens = QUALIFICATION_CONTEXT_TOKENS }) {
+export function inspectDiscoveryTransport(body, { currentCase, calls, contextWindowTokens = QUALIFICATION_CONTEXT_TOKENS, toolName = "computer_use" }) {
   assert.ok(Number.isSafeInteger(contextWindowTokens) && contextWindowTokens > 0, "Unknown provider context budget");
   // Exact pinned guard: contextTokens*2*.5 estimated chars, then estimate/text ratio2.
   const providerTextBudget = Math.floor(Math.max(1024, Math.floor(contextWindowTokens * 2 * .5)) / 2);
   const messages = body.messages ?? [];
-  const lastUser = messages.findLastIndex(message => message.role === "user");
-  assert.ok(lastUser >= 0 && JSON.stringify(messages[lastUser].content).match(/QUALIFICATION_CASE:([a-z0-9-]+)/)?.[1] === currentCase, "Discovery proof must use the current turn");
-  const tools = messages.slice(lastUser + 1).filter(message => message.role === "tool");
+  // Harness-authored turns carry unique markers. Newer hosts may add unmarked
+  // user-role context; require the real call declaration and result as well.
+  const marked = messages.flatMap((message, index) => message.role === "user"
+    ? [...textContent(message.content).matchAll(/QUALIFICATION_CASE:([a-z0-9-]+)/g)].map(match => ({ name: match[1], index })) : []);
+  const current = marked.filter(marker => marker.name === currentCase);
+  assert.ok(current.length === 1 && marked.at(-1)?.name === currentCase, "Discovery proof must use the unique current turn");
+  const markerIndex = current[0].index;
   assert.ok(calls.every(call => normalizedCallId(call.toolCallId).length > 0), "Missing expected tool identity");
   assert.equal(new Set(calls.map(call => normalizedCallId(call.toolCallId))).size, calls.length, "Ambiguous expected tool call");
   return calls.map(call => {
     assert.ok(discoveryActions.has(call.action), "Only discovery may use this transport proof");
-    const matching = tools.filter(message => normalizedCallId(message.tool_call_id) === normalizedCallId(call.toolCallId));
-    assert.equal(matching.length, 1, "Missing or ambiguous current-turn tool call");
-    const content = matching[0].content;
+    const declarations = messages.flatMap((message, index) => message.role === "assistant"
+      ? (message.tool_calls ?? []).filter(item => normalizedCallId(item.id) === normalizedCallId(call.toolCallId)).map(item => ({ item, index })) : []);
+    assert.ok(declarations.length === 1 && declarations[0].index > markerIndex, "Missing, replayed or ambiguous current-turn tool call declaration");
+    assert.ok(["computer_use", "desktop_use"].includes(toolName), "Unknown expected discovery tool name");
+    assert.equal(declarations[0].item.function?.name, toolName, "Current-turn tool call name mismatch");
+    let argumentsValue;
+    try { argumentsValue = JSON.parse(declarations[0].item.function.arguments); } catch { assert.fail("Malformed discovery tool call arguments"); }
+    assert.equal(argumentsValue.action, call.action, "Current-turn tool call action mismatch");
+    const matching = messages.flatMap((message, index) => message.role === "tool" && normalizedCallId(message.tool_call_id) === normalizedCallId(call.toolCallId) ? [{ message, index }] : []);
+    assert.ok(matching.length === 1 && matching[0].index > declarations[0].index, "Missing, replayed, unordered or ambiguous current-turn tool call result");
+    const content = matching[0].message.content;
     const text = textContent(content);
     assert.ok(text.length > 0 && text.length <= providerTextBudget, "Discovery provider text exceeds the context guard limit");
     assert.ok(!text.includes(DISCOVERY_TRUNCATION_MARKER), "Unexpected persisted-history marker in current provider result");

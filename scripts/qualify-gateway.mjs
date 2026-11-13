@@ -1,6 +1,6 @@
 import { assertPackedMetadata } from "./packed-metadata.mjs";
 import { createCapabilitiesFixture, discoveryCallsForPlan, inspectDiscoveryTransport, correlateDiscoveryReplay, inspectDiscoveryHistory, QUALIFICATION_CONTEXT_TOKENS, DISCOVERY_TRUNCATION_MARKER } from "./gateway-capabilities-fixture.mjs";
-import { linkLaneHost, assertHostInstallation, assertLoadedSdk } from "./release-qualification.mjs";
+import { linkLaneHost, assertHostInstallation, assertLoadedSdk, assertMinimalHttpPolicy } from "./release-qualification.mjs";
 import { createImageFixture, inspectProviderImage } from "./gateway-image-fixture.mjs";
 import { COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME } from "../src/tool-names.ts";
 // Real pinned gateway + local deterministic model transport; no live provider or desktop input.
@@ -62,6 +62,7 @@ const batchCallId = name => `call${name.replace(/[^a-zA-Z0-9]/g, "")}`;
 const cases = new Map();
 const requests = [];
 const modelErrors = [];
+const modelFailures = [];
 const modelSchemas = {};
 const imageFixture = await createImageFixture(repo, root);
 const capabilitiesFixture = await createCapabilitiesFixture(repo, root, imageFixture.adapter);
@@ -75,6 +76,8 @@ const profileActions = {
 }[profile];
 const visibleAliases = Object.keys(legacyActions).filter(action => profileActions.includes(legacyActions[action]));
 const model = createServer(async (req, res) => {
+  let phase = "request";
+  let fixtureCase = null;
   try {
     let input = ""; for await (const chunk of req) input += chunk;
     const body = JSON.parse(input);
@@ -82,7 +85,13 @@ const model = createServer(async (req, res) => {
     const userIndex = messages.findLastIndex(m => m.role === "user" && JSON.stringify(m.content).includes("QUALIFICATION_CASE:"));
     const marker = JSON.stringify(messages[userIndex]?.content ?? "").match(/QUALIFICATION_CASE:([a-z0-9-]+)/)?.[1];
     assert.ok(marker && cases.has(marker), `Unexpected model request ${req.url}`);
+    fixtureCase = marker;
+    phase = "model-schema";
     const plan = cases.get(marker);
+    if (plan.noTools) {
+      assert.deepEqual(body.tools ?? [], [], "Explicit deny leaves no model tools");
+      await save("explicit-deny-model-inventory.json", { tools: [], noDispatch: true });
+    } else {
     assert.deepEqual((body.tools ?? []).map(t => t.function?.name), [plan.tool ?? COMPUTER_USE_TOOL_NAME], "Actual model tool inventory");
     const definition = body.tools[0].function;
     const actionSchema = definition.parameters.properties.action;
@@ -93,16 +102,19 @@ const model = createServer(async (req, res) => {
     if (profile === "stop-only") assert.ok(actionSchema.description.includes("Stop-only"));
     modelSchemas[definition.name] = definition.parameters;
     await save("model-tool-schemas.json", modelSchemas);
+    }
     const currentToolResults = messages.slice(userIndex + 1).filter(m => m.role === "tool");
-    const finished = plan.replaySourceCase ? true : currentToolResults.length > 0;
+    const finished = plan.noTools || plan.replaySourceCase ? true : currentToolResults.length > 0;
     if (plan.replaySourceCase) {
       assert.equal(currentToolResults.length, 0, "Replay turn must not create a tool result");
       assert.equal(plan.responses ?? 0, 0, "Replay is a single no-tool provider response");
     }
+    phase = "provider-image";
     if (finished && plan.imageKind) await save(`provider-image-${plan.replaySourceCase ? "large-replay" : plan.imageKind}.json`, await inspectProviderImage(body, imageFixture.fixtures[plan.imageKind], { currentCase: marker, ...(plan.replaySourceCase ? { stage: "history-replay", sourceCase: plan.replaySourceCase } : {}) }));
     if (finished) {
+      phase = "discovery-transport";
       const calls = discoveryCallsForPlan(plan, { currentCase: marker, batchCallId, allowedActions: profileActions, canonicalAliases: legacyActions, legacyToolName: DESKTOP_USE_TOOL_NAME, canonicalToolName: COMPUTER_USE_TOOL_NAME });
-      const receipts = calls.length ? inspectDiscoveryTransport(body, { currentCase: marker, calls, contextWindowTokens: QUALIFICATION_CONTEXT_TOKENS }) : [];
+      const receipts = calls.length ? inspectDiscoveryTransport(body, { currentCase: marker, calls, contextWindowTokens: QUALIFICATION_CONTEXT_TOKENS, toolName: plan.tool ?? COMPUTER_USE_TOOL_NAME }) : [];
       if (receipts.length) await save(`${marker}-discovery-provider-transport.json`, receipts);
       if (marker === "capability-model-profile") {
         if (profile === "stop-only") {
@@ -116,6 +128,7 @@ const model = createServer(async (req, res) => {
         }
       }
     }
+    phase = "fixture-response";
     // The host can run a batch in parallel: execute Stop on the next provider
     // response so it cannot cancel the observations being qualified alongside it.
     const stopAfterBatch = plan.stopAfterBatch && finished && !plan.stopSent;
@@ -137,6 +150,8 @@ const model = createServer(async (req, res) => {
   } catch (e) {
     modelErrors.push({ message: String(e) });
     await save("model-errors.json", modelErrors);
+    modelFailures.push({ phase, fixtureCase, errorKind: e.name === "AssertionError" ? "fixture-assertion" : "fixture-error" });
+    await save("fixture-failure-summary.json", { failures: modelFailures, rawContentRetained: false });
     res.writeHead(500, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: { code: "FIXTURE_REQUEST_REJECTED", message: "Fixture model request rejected." } }));
   }
@@ -178,6 +193,7 @@ const config = {
     list: [
       { id: "computer-use", default: true, workspace, agentDir, tools: template.tools },
       { id: "minimal-qualification", workspace, agentDir: join(root, "state/agents/minimal-qualification/agent"), tools: { ...template.tools, profile: "minimal" } },
+      { id: "denied-qualification", workspace, agentDir: join(root, "state/agents/denied-qualification/agent"), tools: { ...template.tools, profile: "full", allow: [COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME], deny: [...template.tools.deny, COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME] } },
       { id: "legacy-qualification", workspace: legacyWorkspace, agentDir: join(root, "state/agents/legacy-qualification/agent"), tools: { ...template.tools, allow: [DESKTOP_USE_TOOL_NAME] } },
     ],
   },
@@ -289,7 +305,34 @@ try {
     await save("minimal-effective-tools.json", minimalInventory);
     assert.equal(minimalInventory.profile, "minimal");
     assert.deepEqual(minimalInventory.groups, []);
-    assert.equal((await httpInvoke(COMPUTER_USE_TOOL_NAME, { action: "stop" }, minimalSession)).status, 404);
+    const minimalHttp = await httpInvoke(COMPUTER_USE_TOOL_NAME, { action: "stop" }, minimalSession);
+    const httpPolicy = assertMinimalHttpPolicy(expectedHost, minimalHttp);
+    const minimalAuditPath = join(root, "state/agents/minimal-qualification/audit/computer-use.jsonl");
+    let minimalAudit = [];
+    if (newerHost) {
+      minimalAudit = (await readFile(minimalAuditPath, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+      assert.equal(minimalAudit.length, 1);
+      assert.equal(minimalAudit[0].agentId, "minimal-qualification");
+      assert.equal(minimalAudit[0].sessionKey, minimalSession);
+      assert.equal(minimalAudit[0].action, "stop");
+      assert.equal(minimalAudit[0].result.status, "success");
+    } else await assert.rejects(access(minimalAuditPath), { code: "ENOENT" });
+    await save("minimal-http-policy.json", { hostVersion: expectedHost, modelInventory: [], httpPolicy, status: minimalHttp.status, details: minimalHttp.body.result?.details ?? null, auditRecords: minimalAudit.length, sessionKey: minimalSession });
+    const deniedSession = "agent:denied-qualification:qualification";
+    await rpc("sessions.patch", { key: deniedSession });
+    const deniedInventory = await rpc("tools.effective", { sessionKey: deniedSession });
+    assert.deepEqual(deniedInventory.groups, []);
+    const beforeDenied = events.length;
+    for (const deniedTool of [COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME]) {
+      const denied = await httpInvoke(deniedTool, { action: "stop", confirm: true }, deniedSession);
+      assert.equal(denied.status, 404, "Explicit tool deny applies to operator HTTP as well as model inventory");
+      assert.equal(denied.body.ok, false);
+    }
+    const deniedModel = await runCase("explicit-deny-model", undefined, "none", deniedSession, COMPUTER_USE_TOOL_NAME, { noTools: true });
+    assert.equal(deniedModel.history.messages?.filter(message => message.role === "toolResult").length, 0);
+    assert.equal(events.slice(beforeDenied).some(event => event.event === "plugin.approval.requested"), false);
+    await assert.rejects(access(join(root, "state/agents/denied-qualification/audit/computer-use.jsonl")), { code: "ENOENT" });
+    await save("explicit-tool-deny.json", { hostVersion: expectedHost, sessionKey: deniedSession, deniedTools: [COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME], httpStatus: 404, modelInventory: [], toolResults: 0, approvals: 0, executorAuditAbsent: true });
     const health = await httpInvoke(COMPUTER_USE_TOOL_NAME, { action: "health" }); await save("health.json", health);
     assert.equal(health.status, 200); assert.deepEqual(health.body.result.details.agent.toolPolicy, template.tools);
     assert.deepEqual(health.body.result.details.actionPermissions.allowedActions, profileActions);
@@ -301,7 +344,7 @@ try {
     const timing = {};
     let modelRequested;
     const modelReady = new Promise(resolve => modelRequested = resolve);
-    cases.set(name, { args, tool, calls: options.calls, stopAfterBatch: options.stopAfterBatch, imageKind: options.imageKind, replaySourceCase: options.replaySourceCase, onModelRequest: () => { timing.modelRequestedMs = Date.now() - startedAt; modelRequested(); } });
+    cases.set(name, { args, tool, noTools: options.noTools, calls: options.calls, stopAfterBatch: options.stopAfterBatch, imageKind: options.imageKind, replaySourceCase: options.replaySourceCase, onModelRequest: () => { timing.modelRequestedMs = Date.now() - startedAt; modelRequested(); } });
     const start = events.length;
     const accepted = await rpc(newerHost ? "chat.send" : "agent", { message: `QUALIFICATION_CASE:${name}`, agentId: sessionKey.split(":")[1], sessionKey, idempotencyKey: randomUUID(), deliver: false, ...(newerHost ? { timeoutMs: 420000 } : { timeout: 420 }) });
     timing.acceptedMs = Date.now() - startedAt;

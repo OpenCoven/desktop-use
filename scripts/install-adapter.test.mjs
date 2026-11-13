@@ -92,3 +92,53 @@ test('dangling Cargo symlinks are skipped in favor of the executable on PATH',as
  const {existsSync}=await import('node:fs');assert.equal(existsSync(cargo),false);const launched=JSON.parse(execFileSync('coven-desktop-use',['--version'],{env:{...process.env,PATH:f.root},encoding:'utf8'}));
  const result=await inspectBinarySelection(desired,{home,environment:{PATH:f.root}});assert.equal(result.discovery.resolvedPath,await realpath(desired));assert.equal(result.discovery.version,launched.version);assert.equal(result.discovery.reason,'PATH');assert.equal(result.discovery.shadowsSelectedPair,false);
 });
+
+async function publicationFilesystemFixture(f, failFinalSeal = false) {
+ const hook = join(f.root, 'publication-filesystem.mjs');
+ const final = join(f.root, 'installed', 'versions', f.manifest.releaseVersion);
+ await writeFile(hook, `import fs from 'node:fs/promises';
+import {syncBuiltinESMExports} from 'node:module';
+const rename=fs.rename,chmod=fs.chmod;
+fs.rename=async(source,destination)=>{
+ if(String(source).includes('/.stage-')) {
+  const mode=(await fs.stat(source)).mode&0o777;
+  await fs.writeFile(${JSON.stringify(join(f.root, 'rename-mode.json'))},JSON.stringify({mode}));
+  if(!(mode&0o200))throw Object.assign(new Error('fixture Darwin requires writable renamed directory'),{code:'EACCES'});
+ }
+ return rename(source,destination);
+};
+fs.chmod=async(path,mode)=>{
+ if(${JSON.stringify(failFinalSeal)}&&path===${JSON.stringify(final)}&&mode===0o500)throw Object.assign(new Error('fixture final seal failure'),{code:'EPERM'});
+ return chmod(path,mode);
+};
+syncBuiltinESMExports();
+`);
+ return spawnSync(process.execPath, ['--import', hook, cli, 'stage', '--version', f.manifest.releaseVersion, '--root', join(f.root, 'installed'), '--manifest', f.manifestPath, '--assets', f.root], { env: f.env, encoding: 'utf8' });
+}
+test('publication retains private top-directory write permission until rename, then seals before return', async t => {
+ const f = await setup(t);
+ const result = await publicationFilesystemFixture(f);
+ assert.equal(result.status, 0, result.stderr);
+ assert.equal(JSON.parse(await readFile(join(f.root, 'rename-mode.json'))).mode, 0o700);
+ const { stat } = await import('node:fs/promises');
+ const final = join(f.root, 'installed', 'versions', f.manifest.releaseVersion);
+ assert.equal((await stat(final)).mode & 0o777, 0o500);
+ assert.equal((await stat(join(final, 'native'))).mode & 0o777, 0o500);
+ assert.equal((await stat(join(final, 'receipt.json'))).mode & 0o777, 0o400);
+ assert.equal(invoke(f, 'activate').status, 0);
+});
+test('failed final sealing reports retained published path and cannot activate the incomplete pair', async t => {
+ const f = await setup(t);
+ const result = await publicationFilesystemFixture(f, true);
+ assert.notEqual(result.status, 0);
+ const failure = JSON.parse(result.stderr);
+ const final = join(f.root, 'installed', 'versions', f.manifest.releaseVersion);
+ assert.equal(failure.phase, 'seal-published-stage');
+ assert.equal(failure.stagingDirectory, final);
+ assert.equal(failure.selectionChanged, false);
+ assert.equal(failure.recovery, 'Retained incomplete version requires explicit recovery; it cannot be activated.');
+ const activation = invoke(f, 'activate');
+ assert.notEqual(activation.status, 0);
+ assert.match(activation.stderr, /RELEASE_STAGE_INCOMPLETE/);
+ await assert.rejects(readFile(join(f.root, 'installed', 'active.json')));
+});

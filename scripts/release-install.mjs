@@ -5,7 +5,7 @@ import { readFile, writeFile, mkdir, cp, realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { stageCandidateRelease, activateCandidateRelease } from './install-adapter.mjs';
-import { assertUpgradePair, assertInstalledPackage, qualifyCandidateSequence } from './release-qualification.mjs';
+import { assertUpgradePair, assertInstalledPackage, qualifyCandidateSequence, createNoRustGuard } from './release-qualification.mjs';
 import { sha256 } from './release-manifest.mjs';
 const [assetsArg, rootArg, previousArg] = process.argv.slice(2);
 assert.ok(assetsArg && rootArg);
@@ -16,8 +16,11 @@ const run = (command, args, cwd) => execFileSync(command, args, { cwd, encoding:
 await writeFile(join(root, 'npmrc'), '');
 process.env.COVEN_HOME = join(root, 'coven');
 process.env.OPENCLAW_STATE_DIR = join(root, 'openclaw');
+let rustGuard;
 const receipt = { status: 'running', rustRequired: false, steps: [], graphicalAcceptance: 'not-run', liveGateway: 'not-run', publication: 'not-run', updateRollback: previousArg ? 'pending' : 'not-run-no-previous-candidate' };
 try {
+  rustGuard = await createNoRustGuard(root, process.env.PATH);
+  process.env.PATH = rustGuard.path;
   const current = JSON.parse(await readFile(join(assets, 'release.json'), 'utf8'));
   assert.equal(current.source.commit, process.env.GITHUB_SHA);
   assert.equal(current.source.ref, process.env.GITHUB_REF);
@@ -62,10 +65,13 @@ try {
     step.packageSha256 = manifest.package.sha256;
     await writeFile(join(root, 'installation.json'), JSON.stringify(receipt, null, 2) + '\n');
   } });
+  await rustGuard.assertUnused();
   receipt.status = 'passed';
   if (previous) receipt.updateRollback = 'passed';
 } catch (error) {
   receipt.status = 'failed';
   receipt.failure = { name: error.name, message: error.message, releaseState: error.releaseState ?? null };
   throw error;
-} finally { await writeFile(join(root, 'installation.json'), JSON.stringify(receipt, null, 2) + '\n'); }
+} finally {
+  if (rustGuard) receipt.rustGuard = await rustGuard.receipt();
+  await writeFile(join(root, 'installation.json'), JSON.stringify(receipt, null, 2) + '\n'); }

@@ -1,6 +1,7 @@
 /** Shared release-lane invariants. These checks never grant publisher trust. */
 import assert from 'node:assert/strict';
-import { readFile, realpath, mkdir, symlink, lstat } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { readFile, realpath, mkdir, symlink, lstat, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { join, sep } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -98,4 +99,43 @@ export async function qualifyCandidateSequence({ previous, current, stage, activ
 export function assertLoadedSdk(records, lane) {
   assert.ok(Array.isArray(records) && records.length > 0, 'Actual plugin execution must report its loaded SDK');
   for (const record of records) assert.equal(record.sdkEntry, lane.pluginSdk, 'Loaded plugin SDK equals lane preflight SDK host');
+}
+export function assertMinimalHttpPolicy(version, response) {
+  assert.ok(HOSTS.some(host => host.version === version));
+  if (version === '2026.4.26') {
+    assert.equal(response.status, 404);
+    assert.equal(response.body.ok, false);
+    return 'profile-denied';
+  }
+  assert.equal(response.status, 200);
+  assert.equal(response.body.ok, true);
+  const details = response.body.result?.details;
+  assert.equal(details?.status, 'success');
+  assert.equal(details.success, true);
+  assert.equal(details.action, 'stop');
+  assert.equal(details.cancellationRequested, 0);
+  assert.equal(details.state, 'idle');
+  assert.deepEqual(JSON.parse(response.body.result.content.filter(block => block.type === 'text').map(block => block.text).join('\n')), details);
+  return 'authenticated-request-expands-profile';
+}
+
+export async function createNoRustGuard(root, originalPath) {
+  const directory = join(root, 'without-rust');
+  const attemptsPath = join(root, 'rust-attempts.jsonl');
+  await mkdir(directory, { mode: 0o700 });
+  const tools = ['cargo', 'rustc', 'rustup'];
+  for (const tool of tools) {
+    await writeFile(join(directory, tool), `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(attemptsPath)},JSON.stringify({tool:${JSON.stringify(tool)}})+'\\n',{mode:0o600});process.stderr.write('Rust tool invocation is forbidden in clean installation.\\n');process.exit(97);\n`, { mode: 0o700 });
+  }
+  const path = `${directory}:${originalPath ?? ''}`;
+  const resolved = {};
+  for (const tool of tools) {
+    resolved[tool] = execFileSync('/bin/sh', ['-c', 'command -v "$1"', 'release-guard', tool], { encoding: 'utf8', env: { ...process.env, PATH: path } }).trim();
+    assert.equal(resolved[tool], join(directory, tool), 'Rust tool is blocked by task-owned PATH guard');
+  }
+  const receipt = async () => {
+    const text = await readFile(attemptsPath, 'utf8').catch(error => { if (error.code !== 'ENOENT') throw error; return ''; });
+    return { active: true, scope: 'task-owned PATH guard; global tools remain installed', resolved, attempts: text.trim() ? text.trim().split('\n').map(line => JSON.parse(line)) : [] };
+  };
+  return { path, receipt, async assertUnused() { assert.deepEqual((await receipt()).attempts, [], 'Rust tool invocation occurred during clean installation'); } };
 }

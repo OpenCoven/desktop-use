@@ -96,3 +96,34 @@ test('loaded SDK receipt rejects a different host and requires actual plugin exe
   assert.throws(() => assertLoadedSdk([], lane));
   assert.throws(() => assertLoadedSdk([{ sdkEntry: '/checkout/peer/plugin-entry.js' }], lane));
 });
+
+test('minimal model profile does not imply newer authenticated HTTP denial, but the exact safe Stop result is required', async () => {
+  const { assertMinimalHttpPolicy } = await import('./release-qualification.mjs');
+  const details = { status: 'success', success: true, action: 'stop', cancellationRequested: 0, state: 'idle' };
+  const direct = { status: 200, body: { ok: true, result: { details, content: [{ type: 'text', text: JSON.stringify(details) }] } } };
+  assert.equal(assertMinimalHttpPolicy('2026.11.3', direct), 'authenticated-request-expands-profile');
+  assert.equal(assertMinimalHttpPolicy('2026.4.26', { status: 404, body: { ok: false } }), 'profile-denied');
+  assert.throws(() => assertMinimalHttpPolicy('2026.4.26', direct));
+  for (const change of [{ action: 'shell' }, { status: 'error' }, { cancellationRequested: 1 }, { state: 'cancelling' }]) {
+    const forged = structuredClone(direct); Object.assign(forged.body.result.details, change);
+    assert.throws(() => assertMinimalHttpPolicy('2026.11.3', forged));
+  }
+});
+
+test('clean-install guard blocks Rust tool resolution and records any attempted use', async () => {
+  const { createNoRustGuard } = await import('./release-qualification.mjs');
+  const { spawnSync } = await import('node:child_process');
+  const root = await mkdtemp(join(tmpdir(), 'release-no-rust-'));
+  try {
+    const guard = await createNoRustGuard(root, process.env.PATH);
+    await guard.assertUnused();
+    assert.equal((await guard.receipt()).active, true);
+    for (const tool of ['cargo', 'rustc', 'rustup']) {
+      const result = spawnSync(tool, ['--version', 'private-argument'], { env: { ...process.env, PATH: guard.path }, encoding: 'utf8' });
+      assert.equal(result.status, 97);
+      assert.doesNotMatch(result.stdout + result.stderr, /private-argument/);
+    }
+    assert.deepEqual((await guard.receipt()).attempts.map(attempt => attempt.tool), ['cargo', 'rustc', 'rustup']);
+    await assert.rejects(guard.assertUnused(), /Rust tool invocation/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

@@ -56,7 +56,7 @@ async function durableJson(path,value) { const f=await open(path,'wx',0o600);try
 async function syncDirectory(path) {const f=await open(path,'r');try{await f.sync();}finally{await f.close();}}
 function bytesMatch(data,asset) {if(data.length!==asset.bytes||sha256(data)!==asset.sha256)fail('RELEASE_ASSET_MISMATCH');const actual=describeArchive(asset.asset,data);if(JSON.stringify(actual.entries)!==JSON.stringify(asset.entries))fail('RELEASE_ARCHIVE_ENTRIES_MISMATCH');}
 async function extract(entries,destination) {await mkdir(destination,{mode:0o700});for(const e of entries){const path=join(destination,e.path);await mkdir(dirname(path),{recursive:true,mode:0o700});await writeFile(path,e.data,{flag:'wx',mode:e.executable?0o500:0o400});}}
-async function seal(path) {for(const entry of await readdir(path,{withFileTypes:true})){const p=join(path,entry.name);if(entry.isDirectory())await seal(p);else await chmod(p,(await lstat(p)).mode&0o111?0o500:0o400);}await chmod(path,0o500);}
+async function seal(path,sealRoot=true) {for(const entry of await readdir(path,{withFileTypes:true})){const p=join(path,entry.name);if(entry.isDirectory())await seal(p);else await chmod(p,(await lstat(p)).mode&0o111?0o500:0o400);}if(sealRoot)await chmod(path,0o500);}
 async function checkExtracted(base,entries) {
   const expected=new Set(entries.map(e=>e.path));const found=[];
   async function walk(path,relative='') {await directory(path);for(const e of await readdir(path,{withFileTypes:true})){const name=relative?relative+'/'+e.name:e.name;const p=join(path,e.name);if(e.isDirectory())await walk(p,name);else{if(!e.isFile()||!expected.has(name))fail('RELEASE_STAGED_CONTENT_CHANGED');found.push(name);}}}
@@ -70,7 +70,7 @@ async function stage(options,trusted) {
   return withRoot(options.root,async root=>{
     const versions=join(root,'versions');await directory(versions,true);const final=join(versions,version);
     try{await lstat(final);fail('RELEASE_VERSION_ALREADY_STAGED');}catch(e){if(e.code!=='ENOENT')throw e;}
-    const staging=await mkdtemp(join(versions,'.stage-'));let phase='manifest-verification';
+    const staging=await mkdtemp(join(versions,'.stage-'));let phase='manifest-verification';let published=false;
     try {
       const manifestBytes=await readRegular(manifestPath,2*1024*1024);const m=validateReleaseManifest(json(manifestBytes));checkPolicy(m,version,policy);
       const manifestCopy=join(staging,'release.json');await writeFile(manifestCopy,manifestBytes,{flag:'wx',mode:0o600});verify(manifestCopy,m,policy);
@@ -80,11 +80,16 @@ async function stage(options,trusted) {
       const pair=inspectPair(m,...blobs,artifact);phase='extraction';await extract(pair.pkg,join(staging,'package'));await extract(pair.native,join(staging,'native'));
       const adapter=join(staging,'native','coven-desktop-use');phase='executable-identity';const identity=executableIdentity(adapter,m,artifact.target);
       const receipt={schemaVersion:1,releaseVersion:version,sourceCommit:m.source.commit,target:artifact.target,manifestSha256:sha256(manifestBytes),provenance:{verifier:'gh',repository:REPOSITORY,workflow:WORKFLOW,sourceRef:policy.sourceRef,sourceCommit:m.source.commit,candidate:policy.candidate},identity,stagedAt:new Date().toISOString(),hostSynchronization:'not-performed'};
-      await durableJson(join(staging,'receipt.json'),receipt);await seal(staging);phase='publish-stage';await rename(staging,final);await syncDirectory(versions);
+      await durableJson(join(staging,'receipt.json'),receipt);
+      // Darwin can require write permission on a directory being renamed. Keep only
+      // the private top directory writable under the lock; all contents are sealed.
+      await seal(staging,false);phase='publish-stage';await rename(staging,final);published=true;
+      phase='seal-published-stage';await chmod(final,0o500);
+      phase='sync-published-stage';await syncDirectory(final);await syncDirectory(versions);
       return {status:'staged',releaseVersion:version,versionDirectory:final,adapterPath:join(final,'native','coven-desktop-use'),packagePath:join(final,m.package.asset),activation:'not-performed',hostSynchronization:'not-performed'};
     } catch(e) {
       // Keep an interrupted stage visible for explicit recovery; never select it.
-      e.releaseState={phase,stagingDirectory:staging,selectionChanged:false};throw e;
+      e.releaseState={phase,stagingDirectory:published?final:staging,selectionChanged:false,...(published?{recovery:phase==='seal-published-stage'?'Retained incomplete version requires explicit recovery; it cannot be activated.':'Retained sealed version has uncertain durability; inspect retained state before retrying.'}:{})};throw e;
     }
   });
 }
@@ -93,6 +98,7 @@ export const stageRelease=options=>stage(options);
 export const stageCandidateRelease=(options,trustedPolicy)=>{if(!trustedPolicy)fail('RELEASE_CANDIDATE_POLICY_REQUIRED');return stage(options,trustedPolicy);};
 async function loadStaged(root,version,policy) {
   const folder=join(root,'versions',version);await directory(join(root,'versions'));await directory(folder);
+  if((await lstat(folder)).mode&0o200)fail('RELEASE_STAGE_INCOMPLETE');
   const manifestBytes=await readRegular(join(folder,'release.json'),2*1024*1024),m=validateReleaseManifest(json(manifestBytes));checkPolicy(m,version,policy);
   const receipt=json(await readRegular(join(folder,'receipt.json'),2*1024*1024));
   const a=m.artifacts.find(a=>a.target===receipt.target);if(!a||receipt.releaseVersion!==version||receipt.sourceCommit!==m.source.commit||receipt.manifestSha256!==sha256(manifestBytes)||receipt.provenance?.sourceRef!==policy.sourceRef||receipt.provenance?.candidate!==policy.candidate)fail('RELEASE_RECEIPT_INVALID');

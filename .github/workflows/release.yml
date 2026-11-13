@@ -271,4 +271,8 @@ jobs:
             ${{ runner.temp }}/host-evidence/*/restricted-summary.json
             ${{ runner.temp }}/host-evidence/*/audit-summary.json
             ${{ runner.temp }}/host-evidence/*/qualification-failure.json
+            ${{ runner.temp }}/host-evidence/*/fixture-failure-summary.json
+            ${{ runner.temp }}/host-evidence/*/minimal-http-policy.json
+            ${{ runner.temp }}/host-evidence/*/explicit-tool-deny.json
+            ${{ runner.temp }}/host-evidence/*/explicit-deny-model-inventory.json
           if-no-files-found: error

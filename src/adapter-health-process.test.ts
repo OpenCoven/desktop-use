@@ -41,19 +41,54 @@ test("real adapter spawn/output provenance distinguishes absent/nonexecutable ad
 });
 
 test("real adapter post-start timeout, output limit and cancellation retain execution provenance", async () => {
-  const root = await mkdtemp(join(tmpdir(), "desktopuse-health-lifecycle-")); const previous = process.env.COVEN_DESKTOP_USE_BIN;
+  const root = await mkdtemp(join(tmpdir(), "desktopuse-health-lifecycle-"));
+  const previous = process.env.COVEN_DESKTOP_USE_BIN;
+  const ready = join(root, "ready");
   try {
-    for (const [name, body, expectedCode, expectedStatus] of [
-      ["timeout", "setInterval(()=>{},1000)", "ETIMEDOUT", "timeout"],
-      ["output", "process.stdout.write('x'.repeat(11*1024*1024));setInterval(()=>{},1000)", "OUTPUT_LIMIT", "error"],
-      ["cancel", `require('fs').writeFileSync(${JSON.stringify(join(root,"ready"))},'ready');setInterval(()=>{},1000)`, "CANCELLED", "cancelled"],
+    // Delay non-timeout events beyond the independent timeout probe's deadline.
+    // Their watchdog bounds a broken fixture without racing ordinary CI startup/pipe throughput.
+    for (const [name, body, timeoutMs, expectedCode, expectedStatus] of [
+      ["timeout", "setInterval(()=>{},1000)", 1000, "ETIMEDOUT", "timeout"],
+      ["output", "setTimeout(()=>process.stdout.write('x'.repeat(11*1024*1024)),1200);setInterval(()=>{},1000)", 30000, "OUTPUT_LIMIT", "error"],
+      ["cancel", `setTimeout(()=>require('fs').writeFileSync(${JSON.stringify(ready)},'ready'),1200);setInterval(()=>{},1000)`, 30000, "CANCELLED", "cancelled"],
     ] as const) {
-      const path=join(root,name); await writeFile(path,`#!${process.execPath}\n${body}\n`,{mode:0o700}); process.env.COVEN_DESKTOP_USE_BIN=path;
-      const controller=new AbortController(); const pending=createComputerUseTool({appendAuditEvent:async()=>{}}).execute(name,{action:"health",timeoutMs:1000},controller.signal);
-      if(name==="cancel") { for(let tries=0;;tries++){if(await readFile(join(root,"ready"),"utf8").catch(()=>"")==="ready")break;assert.ok(tries<80);await new Promise(r=>setTimeout(r,10));} controller.abort(); }
-      const {details}=await pending; assert.equal(details.status,expectedStatus); assert.equal((details.adapterInvocation as any).phase,"process"); assert.equal((details.adapterInvocation as any).processStarted,true); assert.equal((details.adapterInvocation as any).code,expectedCode); assert.doesNotMatch(JSON.stringify(details.repairHints),/malformed|schema v1|could not be started|Screen Recording/);
+      const path = join(root, name);
+      await writeFile(path, `#!${process.execPath}\n${body}\n`, { mode: 0o700 });
+      process.env.COVEN_DESKTOP_USE_BIN = path;
+      const controller = new AbortController();
+      let settled = false;
+      const pending = createComputerUseTool({ appendAuditEvent: async () => {} }).execute(name, { action: "health", timeoutMs }, controller.signal);
+      pending.then(() => { settled = true; }, () => { settled = true; });
+      try {
+        if (name === "cancel") {
+          const readinessDeadline = Date.now() + 10000;
+          while (await readFile(ready, "utf8").catch(() => "") !== "ready") {
+            assert.equal(settled, false, "Adapter must remain active until cancellation readiness");
+            assert.ok(Date.now() < readinessDeadline, "Adapter must report cancellation readiness within its fixture budget");
+            await new Promise(resolve => setTimeout(resolve, 10));
+          }
+          controller.abort();
+        }
+        const { details } = await pending;
+        assert.equal(details.status, expectedStatus, name);
+        assert.equal((details.adapterInvocation as any).phase, "process", name);
+        assert.equal((details.adapterInvocation as any).processStarted, true, name);
+        assert.equal((details.adapterInvocation as any).code, expectedCode, name);
+        assert.doesNotMatch(JSON.stringify(details.repairHints), /malformed|schema v1|could not be started|Screen Recording/);
+      } finally {
+        controller.abort();
+        await pending.catch(() => {});
+      }
     }
-    const aborted=new AbortController();aborted.abort();const {details}=await createComputerUseTool({appendAuditEvent:async()=>{}}).execute("prestart",{action:"health"},aborted.signal);
-    assert.equal((details.adapterInvocation as any)?.phase,"before-start");assert.equal((details.adapterInvocation as any)?.processStarted,false);
-  } finally {if(previous===undefined)delete process.env.COVEN_DESKTOP_USE_BIN;else process.env.COVEN_DESKTOP_USE_BIN=previous;await rm(root,{recursive:true,force:true});}
+    const aborted = new AbortController();
+    aborted.abort();
+    const { details } = await createComputerUseTool({ appendAuditEvent: async () => {} }).execute("prestart", { action: "health" }, aborted.signal);
+    assert.equal((details.adapterInvocation as any)?.phase, "before-start");
+    assert.equal((details.adapterInvocation as any)?.processStarted, false);
+    assert.equal((details.adapterInvocation as any)?.code, "CANCELLED");
+  } finally {
+    if (previous === undefined) delete process.env.COVEN_DESKTOP_USE_BIN;
+    else process.env.COVEN_DESKTOP_USE_BIN = previous;
+    await rm(root, { recursive: true, force: true });
+  }
 });
