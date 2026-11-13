@@ -1,4 +1,4 @@
-import { createCapabilitiesFixture } from "./gateway-capabilities-fixture.mjs";
+import { createCapabilitiesFixture, inspectDiscoveryTransport, correlateDiscoveryReplay, DISCOVERY_TRUNCATION_MARKER } from "./gateway-capabilities-fixture.mjs";
 import { createImageFixture, inspectProviderImage } from "./gateway-image-fixture.mjs";
 import { COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME } from "../src/tool-names.ts";
 // Real pinned gateway + local deterministic model transport; no live provider or desktop input.
@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { createServer, request as httpRequest } from "node:http";
 import { createRequire } from "node:module";
 import { spawn, spawnSync } from "node:child_process";
-import { randomUUID, randomBytes } from "node:crypto";
+import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { mkdir, readFile, writeFile, open, symlink, access, rename, realpath, rm } from "node:fs/promises";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -88,6 +88,22 @@ const model = createServer(async (req, res) => {
       assert.equal(plan.responses ?? 0, 0, "Replay is a single no-tool provider response");
     }
     if (finished && plan.imageKind) await save(`provider-image-${plan.replaySourceCase ? "large-replay" : plan.imageKind}.json`, await inspectProviderImage(body, imageFixture.fixtures[plan.imageKind], { currentCase: marker, ...(plan.replaySourceCase ? { stage: "history-replay", sourceCase: plan.replaySourceCase } : {}) }));
+    if (finished) {
+      const calls = (plan.calls ?? [{ name: marker, args: plan.args }]).filter(call => ["health", "doctor", "permissions"].includes(call.args?.action)).map(call => ({ action: call.args.action, toolCallId: plan.calls ? batchCallId(call.name) : `call_${marker}`, notices: [...(call.args.action === "permissions" ? ["permissions is deprecated; use doctor instead."] : []), ...(plan.tool === DESKTOP_USE_TOOL_NAME ? [`${DESKTOP_USE_TOOL_NAME} is deprecated; use ${COMPUTER_USE_TOOL_NAME} instead.`] : [])] }));
+      const receipts = calls.length ? inspectDiscoveryTransport(body, { currentCase: marker, calls }) : [];
+      if (receipts.length) await save(`${marker}-discovery-provider-transport.json`, receipts);
+      if (marker === "capability-model-profile") {
+        if (profile === "stop-only") {
+          const content = currentToolResults.at(-1)?.content;
+          assert.equal(typeof content, "string");
+          assert.equal(JSON.parse(content).status, "success");
+          await save("capability-model-provider-transport.json", { profile, stage: "provider-current-turn", textChars: content.length, sha256: createHash("sha256").update(content).digest("hex"), hostDefaultTextLimit: 16000, truncated: false, fullCapabilityJsonTransport: false, smallStopResultComplete: true });
+        } else {
+          assert.equal(receipts[0]?.truncated, true, "Preserved discovery JSON exceeds the default host live-text limit");
+          await save("capability-model-provider-transport.json", { profile, ...receipts[0], structuredHttpReportComplete: true });
+        }
+      }
+    }
     // The host can run a batch in parallel: execute Stop on the next provider
     // response so it cannot cancel the observations being qualified alongside it.
     const stopAfterBatch = plan.stopAfterBatch && finished && !plan.stopSent;
@@ -283,6 +299,22 @@ try {
     const text = message.content?.filter(c => c.type === "text").map(c => c.text).join("\n");
     return JSON.parse(text);
   };
+  async function structuredDiscoveryReplay(name, result, args, tool = COMPUTER_USE_TOOL_NAME, sessionKey = session, toolCallId = `call_${name}`) {
+    const message = result.history.messages?.findLast(message => message.role === "toolResult" && message.toolName === tool && message.toolCallId === toolCallId);
+    assert.ok(message, "Missing exact discovery history tool call");
+    const text = message.content.filter(block => block.type === "text").map(block => block.text).join("\n");
+    if (!text.includes(DISCOVERY_TRUNCATION_MARKER)) return JSON.parse(text);
+    const transports = JSON.parse(await readFile(join(root, `${name}-discovery-provider-transport.json`), "utf8"));
+    const transport = transports.find(receipt => receipt.toolCallId === toolCallId);
+    assert.ok(transport?.truncated, "Replay requires actual provider-wire truncation");
+    const agentId = sessionKey.split(":")[1];
+    const auditPath = join(root, `state/agents/${agentId}/audit/computer-use.jsonl`);
+    const auditRecords = (await readFile(auditPath, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    const replay = await httpInvoke(tool, args, sessionKey);
+    const details = correlateDiscoveryReplay({ transport, auditRecords, call: { toolCallId, action: args.action }, replay, scope: { agentId, sessionKey, auditPath } });
+    await save(`${name}-${args.action}-structured-replay.json`, { stage: "separate-structured-http-replay", originalModelCall: { toolCallId, transport }, scope: { agentId, sessionKey, workspace: agentId === "legacy-qualification" ? legacyWorkspace : workspace }, response: replay, auditCorrelation: { action: details.action, status: details.status, success: details.success } });
+    return details;
+  }
   const noFile = async path => assert.rejects(access(path), { code: "ENOENT" });
   // Dedicated capabilities lane retains the complete lane's image, approval,
   // canonical-path, cancellation, legacy and audit assertions below unchanged.
@@ -323,8 +355,22 @@ try {
     await capabilitiesFixture.select("x11");
     try {
       const result = await runCase("capability-model-profile", { action: profile === "stop-only" ? "stop" : "health" }, "none");
-      assert.equal(toolResult(result.history).status, "success");
+      const providerReceipt = JSON.parse(await readFile(join(root, "capability-model-provider-transport.json"), "utf8"));
+      assert.equal(providerReceipt.truncated, profile !== "stop-only");
       assert.equal(result.events.some(event => event.event === "plugin.approval.requested"), false);
+      if (profile !== "stop-only") {
+        const health = await structuredDiscoveryReplay("capability-model-profile", result, { action: "health" });
+        assert.equal(health.status, "success");
+        const legacyDoctor = await runCase("capability-model-permissions", { action: "permissions" }, "none");
+        const doctor = await structuredDiscoveryReplay("capability-model-permissions", legacyDoctor, { action: "permissions" });
+        assert.equal(doctor.status, "success");
+        assert.ok(doctor.deprecation.includes("permissions is deprecated; use doctor instead."));
+      }
+      // The host truncates large live tool text before provider/history delivery.
+      // Keep that limit observable, and independently prove a small model result.
+      const stopped = await runCase("capability-model-stop", { action: "stop" }, "none");
+      assert.equal(toolResult(stopped.history).status, "success");
+      assert.equal(stopped.events.some(event => event.event === "plugin.approval.requested"), false);
     } finally { await capabilitiesFixture.restore(); }
     const legacySession = "agent:legacy-qualification:capability";
     await rpc("sessions.patch", { key: legacySession });
@@ -342,7 +388,7 @@ try {
     const records = (await readFile(join(dirname(agentDir), "audit/computer-use.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
     assert.ok(records.every(record => profileActions.includes(record.action)));
     assert.ok(!JSON.stringify(records).includes("qualification-private"));
-    await save("capability-summary.json", { lane, profile, pluginRoot, host, openclawVersion: pkg.version, synthetic: true, desktopEffects: false, liveProvider: false, receipts, modelSchema: true, legacyStop: true, audit: { records: records.length, privateContentAbsent: true } });
+    await save("capability-summary.json", { lane, profile, pluginRoot, host, openclawVersion: pkg.version, synthetic: true, desktopEffects: false, liveProvider: false, receipts, modelSchema: true, modelStop: true, modelLegacyDoctor: profile !== "stop-only", providerTransport: JSON.parse(await readFile(join(root, "capability-model-provider-transport.json"), "utf8")), legacyStop: true, audit: { records: records.length, privateContentAbsent: true } });
     console.log(`Gateway capabilities ${profile} checkpoint: ${root}`);
   } else {
 
@@ -409,7 +455,7 @@ try {
     };
     const allowed = [];
     for (const action of allowedActions) {
-      const details = JSON.parse(await resultFor("allowed", action));
+      const details = ["health", "doctor"].includes(action) ? await structuredDiscoveryReplay("restricted-matrix", batch, { action, ...fixtures[action] }, COMPUTER_USE_TOOL_NAME, session, batchCallId(callName("allowed", action))) : JSON.parse(await resultFor("allowed", action));
       assert.equal(details.status, ["health", "doctor", "inspect", "screenshot"].includes(action) ? "error" : "success");
       if (action === "health") {
         assert.deepEqual(details.actionPermissions.allowedActions, profileActions);
@@ -457,7 +503,7 @@ try {
   for (const [legacy, canonical] of Object.entries(legacyActions)) {
     const args = { action: legacy, ...(legacy === "type" ? { text: secret } : legacy === "press" ? { keys: ["Tab"] } : {}) };
     const result = await runCase(`legacy-action-${legacy}`, args, ["type", "press"].includes(legacy) ? "allow-once" : "none");
-    const details = toolResult(result.history);
+    const details = canonical === "doctor" ? await structuredDiscoveryReplay(`legacy-action-${legacy}`, result, args) : toolResult(result.history);
     assert.equal(details.status, "error", "Unavailable fixture adapter must not claim desktop success");
     assert.equal(details.action, canonical);
     assert.ok(details.deprecation.includes(`${legacy} is deprecated; use ${canonical} instead.`));
@@ -491,7 +537,7 @@ try {
   const legacy = await runCase("legacy-denied", { action: "file-write", path: "legacy.txt", content: secret, confirm: true }, "deny", legacySession, DESKTOP_USE_TOOL_NAME);
   await noFile(join(legacyWorkspace, "legacy.txt"));
   const legacyHealth = await runCase("legacy-tool-health", { action: "health" }, "none", legacySession, DESKTOP_USE_TOOL_NAME);
-  const legacyHealthDetails = toolResult(legacyHealth.history, DESKTOP_USE_TOOL_NAME);
+  const legacyHealthDetails = await structuredDiscoveryReplay("legacy-tool-health", legacyHealth, { action: "health" }, DESKTOP_USE_TOOL_NAME, legacySession);
   assert.ok(legacyHealthDetails.deprecation.includes(`${DESKTOP_USE_TOOL_NAME} is deprecated; use ${COMPUTER_USE_TOOL_NAME} instead.`));
   await save("legacy-tool-compatibility.json", { deprecation: legacyHealthDetails.deprecation });
   const clipboard = await runCase("legacy-clipboard-denied", { action: "clipboard-write", text: secret, confirm: true }, "deny");

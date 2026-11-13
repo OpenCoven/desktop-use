@@ -16,3 +16,56 @@ export async function createCapabilitiesFixture(repo, root, fallbackAdapter) {
     async restore() { await rename(parked, adapter).catch(error => { if (error.code !== "ENOENT") throw error; }); await rm(marker, { force: true }); },
   };
 }
+
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+export const DISCOVERY_TRUNCATION_MARKER = "⚠️ [... middle content omitted — showing head and tail ...]";
+const discoveryActions = new Set(["health", "doctor", "permissions"]);
+const normalizedCallId = value => typeof value === "string" ? value.replace(/[^a-zA-Z0-9]/g, "") : "";
+export function inspectDiscoveryTransport(body, { currentCase, calls }) {
+  const messages = body.messages ?? [];
+  const lastUser = messages.findLastIndex(message => message.role === "user");
+  assert.ok(lastUser >= 0 && JSON.stringify(messages[lastUser].content).match(/QUALIFICATION_CASE:([a-z0-9-]+)/)?.[1] === currentCase, "Discovery proof must use the current turn");
+  const tools = messages.slice(lastUser + 1).filter(message => message.role === "tool");
+  assert.ok(calls.every(call => normalizedCallId(call.toolCallId).length > 0), "Missing expected tool identity");
+  assert.equal(new Set(calls.map(call => normalizedCallId(call.toolCallId))).size, calls.length, "Ambiguous expected tool call");
+  return calls.map(call => {
+    assert.ok(discoveryActions.has(call.action), "Only discovery may use this transport proof");
+    const matching = tools.filter(message => normalizedCallId(message.tool_call_id) === normalizedCallId(call.toolCallId));
+    assert.equal(matching.length, 1, "Missing or ambiguous current-turn tool call");
+    const content = matching[0].content;
+    const text = typeof content === "string" ? content : Array.isArray(content) ? content.filter(block => block.type === "text").map(block => block.text).join("\n") : "";
+    assert.ok(text.length > 0 && text.length <= 16000, "Discovery live text exceeds the default host limit");
+    assert.ok((call.notices ?? []).every(notice => text.includes(notice)), "Discovery deprecation notice is absent from provider wire");
+    const truncated = text.includes(DISCOVERY_TRUNCATION_MARKER);
+    if (!truncated) {
+      let complete;
+      try { complete = JSON.parse(text); } catch { assert.fail("Malformed untruncated discovery JSON"); }
+      assert.ok(["success", "error", "unsupported", "needsApproval", "timeout", "cancelled"].includes(complete.status), "Invalid complete discovery status");
+    }
+    return { action: call.action, toolCallId: call.toolCallId, stage: "provider-current-turn", textChars: text.length, sha256: createHash("sha256").update(text).digest("hex"), hostDefaultTextLimit: 16000, truncated, fullCapabilityJsonTransport: !truncated };
+  });
+}
+
+export function correlateDiscoveryReplay({ transport, auditRecords, call, replay, scope }) {
+  assert.ok(discoveryActions.has(call.action) && transport?.truncated === true, "Discovery replay requires explicit provider truncation");
+  assert.equal(transport.toolCallId, call.toolCallId, "Discovery tool identity mismatch");
+  assert.equal(transport.action, call.action, "Discovery transport action mismatch");
+  const matching = auditRecords.filter(record => record.toolCallId === call.toolCallId);
+  assert.equal(matching.length, 1, "Missing or ambiguous discovery audit");
+  const audit = matching[0];
+  const canonical = call.action === "permissions" ? "doctor" : call.action;
+  assert.equal(audit.action, canonical, "Discovery audit action mismatch");
+  assert.equal(audit.agentId, scope.agentId, "Discovery audit agent scope mismatch");
+  assert.equal(audit.sessionKey, scope.sessionKey, "Discovery audit session scope mismatch");
+  assert.equal(replay.status, 200, "Structured discovery replay failed");
+  const details = replay.body?.result?.details;
+  assert.equal(details?.action, canonical, "Structured replay action mismatch");
+  assert.equal(details?.status, audit.result.status, "Structured replay status mismatch");
+  assert.equal(details?.success, audit.result.success, "Structured replay outcome mismatch");
+  if (canonical === "doctor") {
+    assert.equal(details.evidence?.agentId, scope.agentId, "Structured replay agent scope mismatch");
+    assert.equal(details.evidence?.sessionKey, scope.sessionKey, "Structured replay session scope mismatch");
+  } else assert.equal(details.auditLog, scope.auditPath, "Structured replay audit scope mismatch");
+  return details;
+}

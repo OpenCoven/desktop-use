@@ -117,3 +117,70 @@ test("explicit replay rejects missing, ambiguous, wrong-turn and unrelated image
   await assert.rejects(inspectProviderImage({ messages: [...messages, marker("replay")] }, expected, replay), /JPEG/);
   await assert.rejects(inspectProviderImage({ messages: [...messages, marker("replay-extra")] }, expected, replay), /current/);
 });
+
+// Discovery transport is qualified independently of the image assertions above.
+const capabilitiesFixture = await import("./gateway-capabilities-fixture.mjs");
+const discoveryBody = (text, id = "call_current") => ({ messages: [
+  { role: "user", content: "QUALIFICATION_CASE:old" },
+  { role: "tool", tool_call_id: "call_old", content: "old private decoy" },
+  { role: "user", content: "QUALIFICATION_CASE:current" },
+  { role: "tool", tool_call_id: id, content: text },
+] });
+const discoveryOptions = { currentCase: "current", calls: [{ toolCallId: "call_current", action: "health" }] };
+
+test("discovery provider receipts identify complete JSON and explicit host truncation without saving content", () => {
+  assert.equal(typeof capabilitiesFixture.inspectDiscoveryTransport, "function");
+  const full = capabilitiesFixture.inspectDiscoveryTransport(discoveryBody('{"status":"success","action":"health"}'), discoveryOptions);
+  assert.equal(full[0].fullCapabilityJsonTransport, true);
+  const clipped = capabilitiesFixture.inspectDiscoveryTransport(discoveryBody('{"status":"success"\n\n⚠️ [... middle content omitted — showing head and tail ...]\n\n"private tail"}'), discoveryOptions);
+  assert.equal(clipped[0].truncated, true);
+  assert.equal(clipped[0].stage, "provider-current-turn");
+  assert.equal(clipped[0].sha256.length, 64);
+  assert.equal(JSON.stringify(clipped).includes("private"), false);
+});
+
+test("discovery provider receipts reject wrong turns, missing or duplicate call ids and oversized live text", () => {
+  const inspect = capabilitiesFixture.inspectDiscoveryTransport;
+  assert.equal(typeof inspect, "function");
+  assert.throws(() => inspect(discoveryBody('{}'), { ...discoveryOptions, currentCase: "old" }), /current turn/);
+  assert.throws(() => inspect(discoveryBody('{"status":"success"}'), { ...discoveryOptions, currentCase: "curr" }), /current turn/);
+  assert.throws(() => inspect(discoveryBody('{"status":"success"}', ""), { ...discoveryOptions, calls: [{ toolCallId: "", action: "health" }] }), /identity/);
+  assert.throws(() => inspect(discoveryBody('{}', "call_wrong"), discoveryOptions), /tool call/);
+  const duplicate = discoveryBody('{"status":"success"}'); duplicate.messages.push(duplicate.messages.at(-1));
+  assert.throws(() => inspect(duplicate, discoveryOptions), /tool call/);
+  assert.throws(() => inspect(discoveryBody("x".repeat(16001)), discoveryOptions), /limit/);
+});
+
+test("discovery provider receipts reject malformed complete JSON and never reconstruct clipped JSON", () => {
+  const inspect = capabilitiesFixture.inspectDiscoveryTransport;
+  assert.equal(typeof inspect, "function");
+  assert.throws(() => inspect(discoveryBody("private invalid output"), discoveryOptions), /JSON/);
+  assert.throws(() => inspect(discoveryBody('{"status":"invented"}'), discoveryOptions), /status/);
+  assert.throws(() => inspect(discoveryBody('{"status":"success"}'), { ...discoveryOptions, calls: [{ toolCallId: "call_current", action: "file-write" }] }), /discovery/);
+});
+
+test("discovery replay correlation rejects missing evidence and action, status or scope mismatches", () => {
+  const correlate = capabilitiesFixture.correlateDiscoveryReplay;
+  assert.equal(typeof correlate, "function");
+  const input = { transport: { truncated: true, toolCallId: "call", action: "permissions" }, call: { toolCallId: "call", action: "permissions" }, scope: { agentId: "agent", sessionKey: "session", auditPath: "/scratch/audit" }, auditRecords: [{ toolCallId: "call", action: "doctor", agentId: "agent", sessionKey: "session", result: { status: "error", success: false } }], replay: { status: 200, body: { result: { details: { action: "doctor", status: "error", success: false, evidence: { agentId: "agent", sessionKey: "session" } } } } } };
+  assert.equal(correlate(input).status, "error");
+  for (const mutate of [
+    v => { v.transport.truncated = false; },
+    v => { v.transport.toolCallId = "wrong"; },
+    v => { v.transport.action = "health"; },
+    v => { v.auditRecords = []; },
+    v => { v.auditRecords.push(v.auditRecords[0]); },
+    v => { v.auditRecords[0].action = "health"; },
+    v => { v.auditRecords[0].sessionKey = "wrong"; },
+    v => { v.auditRecords[0].agentId = "wrong"; },
+    v => { v.replay.body.result.details.status = "success"; },
+    v => { v.replay.body.result.details.action = "health"; },
+    v => { v.replay.body.result.details.evidence.sessionKey = "wrong"; },
+  ]) { const bad = structuredClone(input); mutate(bad); assert.throws(() => correlate(bad)); }
+});
+
+test("discovery provider proof rejects a missing legacy notice without trusting a separate replay", () => {
+  const options = { ...discoveryOptions, calls: [{ ...discoveryOptions.calls[0], notices: ["fixed legacy notice"] }] };
+  assert.throws(() => capabilitiesFixture.inspectDiscoveryTransport(discoveryBody('{"status":"success"}'), options), /notice/);
+  assert.equal(capabilitiesFixture.inspectDiscoveryTransport(discoveryBody('{"status":"success","deprecation":"fixed legacy notice"}'), options).length, 1);
+});
