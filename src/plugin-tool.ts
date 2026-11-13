@@ -1,4 +1,5 @@
-import { buildPluginCapabilities, repairHintsForCapabilities, type HostEvidence, type CapabilityOutcome } from "./capabilities.js";
+import { MAX_TEXT_BYTES, MAX_ARG_BYTES, MAX_ARRAY_ITEMS, KEY_SEPARATOR, PLUGIN_NUMBER_LIMITS, PLUGIN_COORD_LIMITS } from "./plugin-request-limits.js";
+import { explicitMacPermissionFailure, buildPluginCapabilities, repairHintsForCapabilities, type HostEvidence, type CapabilityOutcome } from "./capabilities.js";
 import { withOwnedObservation, type ObservationImage } from "./observation.js";
 import { CANONICAL_ACTIONS, LEGACY_ACTION_ALIASES, type LegacyAction } from "./computer-use-actions.js";
 import { ACTION_PROFILE_DENIED_REASON, isActionAllowed, resolveActionPermissions, validateActionPermissions, type ActionPermissions } from "./action-permissions.js";
@@ -36,8 +37,6 @@ const adapterOutcomes = new WeakMap<object, CapabilityOutcome>();
 const activeCalls = new Map<string, Set<AbortController>>();
 const scopeKey = (ctx: ComputerUsePolicyContext) => computerUseScopeKey(ctx, "call");
 
-const MAX_TEXT_BYTES = 100_000;
-const MAX_ARG_BYTES = 2_048;
 const MAX_STDIO_BYTES = 64_000;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const CAPTURE_TIMEOUT_MS = 45_000;
@@ -86,8 +85,8 @@ const ComputerUseToolSchema = {
     },
     app: { type: "string", description: "Target app name, bundle id, or PID:123." },
     windowTitle: { type: "string", description: "Partial target window title." },
-    windowId: { type: "number", description: "Platform window id." },
-    screenIndex: { type: "number", minimum: 0 },
+    windowId: { type: "number", ...PLUGIN_NUMBER_LIMITS.windowId, description: "Platform window id." },
+    screenIndex: { type: "number", ...PLUGIN_NUMBER_LIMITS.screenIndex },
     mode: { type: "string", enum: ["screen", "window", "frontmost", "auto"] },
     path: { type: "string", description: "Target file path or output image path." },
     format: { type: "string", enum: ["png", "jpg"] },
@@ -110,7 +109,7 @@ const ComputerUseToolSchema = {
     pressReturn: { type: "boolean" },
     keys: { type: "array", items: { type: "string" }, description: "Keys for keypress." },
     direction: { type: "string", enum: ["up", "down", "left", "right"] },
-    amount: { type: "number", minimum: 1, maximum: 50 },
+    amount: { type: "number", ...PLUGIN_NUMBER_LIMITS.amount },
     command: { type: "string", description: "Executable for shell action. No shell interpolation." },
     args: { type: "array", items: { type: "string" }, description: "Shell argv." },
     cwd: { type: "string", description: "Shell cwd. Defaults to the agent workspace." },
@@ -125,7 +124,7 @@ const ComputerUseToolSchema = {
       description:
         "Set by OpenClaw approval hooks after explicit user approval for gated actions.",
     },
-    timeoutMs: { type: "number", minimum: 1000, maximum: 120000 },
+    timeoutMs: { type: "number", ...PLUGIN_NUMBER_LIMITS.timeoutMs },
   },
 } as const;
 
@@ -526,7 +525,7 @@ export function normalizeParams(params: unknown): ComputerUseParams {
       if (!Array.isArray(value) || Array.from(value).some((item) => typeof item !== "string")) {
         throw new ToolInputError(`${label} must be an array of strings.`);
       }
-      if (value.length > 256) throw new ToolInputError(`${label} exceeds 256 items.`);
+      if (value.length > MAX_ARRAY_ITEMS) throw new ToolInputError(`${label} exceeds ${MAX_ARRAY_ITEMS} items.`);
       for (const item of value) {
         if (item.includes("\0")) throw new ToolInputError(`${label} must not contain NUL bytes.`);
         assertMaxBytes(item, label, MAX_ARG_BYTES);
@@ -552,9 +551,9 @@ export function normalizeParams(params: unknown): ComputerUseParams {
     }
   }
   if (Array.isArray(record.keys)) {
-    assertMaxBytes(record.keys.join(","), "keys", MAX_ARG_BYTES);
+    assertMaxBytes(record.keys.join(KEY_SEPARATOR), "keys", MAX_ARG_BYTES);
   }
-  if (record.coords !== undefined && (!/^-?\d{1,10},-?\d{1,10}$/.test((record.coords as string).trim()) || (record.coords as string).split(",").some(n => Number(n) < -2147483648 || Number(n) > 2147483647))) {
+  if (record.coords !== undefined && (!/^-?\d{1,10},-?\d{1,10}$/.test((record.coords as string).trim()) || (record.coords as string).split(",").some(n => Number(n) < PLUGIN_COORD_LIMITS.minimum || Number(n) > PLUGIN_COORD_LIMITS.maximum))) {
     throw new ToolInputError("coords must be in x,y form, for example 120,240.");
   }
   const normalized = record as ComputerUseParams;
@@ -702,7 +701,7 @@ function buildTypeTextArgs(params: ComputerUseParams): string[] {
 
 function buildKeypressArgs(params: ComputerUseParams): string[] {
   if (!params.keys?.length) throw new ToolInputError("keypress requires keys.");
-  const args = ["keypress", "--confirm", "--keys", params.keys.join(",")];
+  const args = ["keypress", "--confirm", "--keys", params.keys.join(KEY_SEPARATOR)];
   addCommonTargetArgs(args, params);
   return args;
 }
@@ -848,24 +847,6 @@ function resolvePathBinary(name: string): string | undefined {
     }
   }
   return undefined;
-}
-
-function explicitMacPermissionFailure(value: unknown): boolean {
-  const report = readObjectField(value, "capabilitiesV1");
-  const environment = readObjectField(report, "environment");
-  const mac = readStringField(value, "platform") === "macos" || readStringField(value, "backend") === "peekaboo" || environment?.platform === "macos";
-  if (!mac) return false;
-  const decoded = decodeAdapterAction(value);
-  if (decoded.code === "PERMISSION_ERROR" || readStringField(value, "code") === "PERMISSION_ERROR") return true;
-  const walk = (record: unknown, depth = 0): boolean => {
-    if (depth > 8 || !record || typeof record !== "object") return false;
-    if (Array.isArray(record)) return record.some(item => walk(item, depth + 1));
-    const data = record as Record<string, unknown>;
-    const name = data.name ?? data.permission;
-    if ((name === "Screen Recording" || name === "Accessibility") && data.isGranted === false) return true;
-    return ["permissions", "data", "result"].some(key => walk(data[key], depth + 1));
-  };
-  return walk(decoded);
 }
 
 function missingAdapterHint(adapterBin: string): string {

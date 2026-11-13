@@ -97,7 +97,7 @@ const model = createServer(async (req, res) => {
           const content = currentToolResults.at(-1)?.content;
           assert.equal(typeof content, "string");
           assert.equal(JSON.parse(content).status, "success");
-          await save("capability-model-provider-transport.json", { profile, stage: "provider-current-turn", textChars: content.length, sha256: createHash("sha256").update(content).digest("hex"), hostDefaultTextLimit: 16000, truncated: false, fullCapabilityJsonTransport: false, smallStopResultComplete: true });
+          await save("capability-model-provider-transport.json", { profile, stage: "provider-current-turn", textChars: content.length, sha256: createHash("sha256").update(content).digest("hex"), truncated: false, fullCapabilityJsonTransport: false, smallStopResultComplete: true });
         } else {
           assert.equal(receipts[0]?.truncated, true, "Preserved discovery JSON exceeds the default host live-text limit");
           await save("capability-model-provider-transport.json", { profile, ...receipts[0], structuredHttpReportComplete: true });

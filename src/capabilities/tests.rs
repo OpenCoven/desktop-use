@@ -594,3 +594,53 @@ fn no_display_does_not_erase_host_implementation_or_claim_cli_host_dispatch() {
         }
     }
 }
+
+#[test]
+fn recognized_permission_queries_are_bounded_and_shared_with_node() {
+    let cases: Value = serde_json::from_str(include_str!(
+        "../../contracts/v1/fixtures/permission-queries.json"
+    ))
+    .unwrap();
+    for case in cases.as_array().unwrap() {
+        assert_eq!(
+            permission_denied(&json!({"result":case["query"]})),
+            case["denied"].as_bool().unwrap(),
+            "{}",
+            case["name"]
+        );
+    }
+    let denial = json!({"name":"Accessibility","isGranted":false});
+    let mut items = vec![Value::Null; 256];
+    items.push(denial.clone());
+    assert!(!permission_denied(&json!({"permissions":items})));
+    let mut nested = denial;
+    for _ in 0..10 {
+        nested = json!({"data":nested});
+    }
+    assert!(!permission_denied(&nested));
+}
+
+#[test]
+fn shared_collection_limits_validate_in_rust_without_becoming_cli_limits() {
+    let schema: Value =
+        serde_json::from_str(include_str!("../../contracts/v1/capabilities.schema.json")).unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    let samples: Value = serde_json::from_str(include_str!(
+        "../../contracts/v1/fixtures/collection-limits.json"
+    ))
+    .unwrap();
+    let (_, facts) = fixtures()
+        .into_iter()
+        .find(|(name, _)| *name == "macos")
+        .unwrap();
+    let mut value = report(&facts);
+    assert!(value["actions"]["keypress"]["variants"][0]["limits"]["parameters"]["keys"].is_null());
+    value["actions"]["keypress"]["variants"][0]["limits"]["parameters"]["keys"] =
+        samples["valid"].clone();
+    assert!(validator.is_valid(&value));
+    for sample in samples["invalid"].as_array().unwrap() {
+        value["actions"]["keypress"]["variants"][0]["limits"]["parameters"]["keys"] =
+            sample.clone();
+        assert!(!validator.is_valid(&value), "{sample}");
+    }
+}

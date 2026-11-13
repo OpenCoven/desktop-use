@@ -181,7 +181,7 @@ fn run_macos(command: &'static str, args: &[String]) -> String {
             let result = run_peekaboo(vec!["permissions".into()], false, true);
             let mut facts = capabilities::discover(Platform::Macos);
             let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
-            if parsed["code"] == "PERMISSION_ERROR" {
+            if parsed["code"] == "PERMISSION_ERROR" || capabilities::permission_denied(&parsed) {
                 facts.permission = "failed";
             }
             capabilities::attach(result, &facts)
@@ -2464,6 +2464,55 @@ mod peekaboo_outcome_tests {
         assert!(result.contains("\"ok\":false"));
         assert!(result.contains("PERMISSION_ERROR"));
         assert!(!result.contains("private-typed-diagnostic"));
+    }
+
+    // Execute the real doctor path in an isolated test process whose PATH contains only a controlled fixture.
+    #[test]
+    fn successful_permission_query_denial_reaches_doctor_contract() {
+        use std::os::unix::fs::PermissionsExt;
+        const CHILD: &str = "DESKTOPUSE_PERMISSION_FIXTURE_CHILD";
+        if env::var_os(CHILD).is_some() {
+            let result: serde_json::Value =
+                serde_json::from_str(&run_macos("doctor", &[])).unwrap();
+            assert_eq!(result["ok"], true);
+            assert_eq!(
+                result["result"]["data"]["permissions"][0]["isGranted"],
+                false
+            );
+            let click = &result["capabilitiesV1"]["actions"]["click"];
+            assert_eq!(click["state"], "unverified");
+            assert_eq!(
+                click["reasonCodes"],
+                serde_json::json!(["PERMISSION_DENIED"])
+            );
+            assert!(click["evidence"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["kind"] == "permission" && e["status"] == "failed"));
+            assert!(click["evidence"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["kind"] == "actual-action" && e["status"] == "not-run"));
+            return;
+        }
+        let root = env::temp_dir().join(format!(
+            "desktopuse-permission-query-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let helper = root.join("peekaboo");
+        std::fs::write(&helper, "#!/bin/sh\n[ \"$*\" = \"permissions --json --no-remote\" ] || exit 99\nprintf '%s' '{\"success\":true,\"data\":{\"permissions\":[{\"name\":\"Screen Recording\",\"isGranted\":false}]}}'\n").unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let output = Command::new(env::current_exe().unwrap()).args(["--exact", "peekaboo_outcome_tests::successful_permission_query_denial_reaches_doctor_contract", "--nocapture"]).env("PATH", &root).env(CHILD, "1").output().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]

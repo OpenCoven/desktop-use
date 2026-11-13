@@ -4,14 +4,14 @@ import { test } from "node:test";
 import Ajv2020 from "ajv/dist/2020.js";
 import { buildPluginCapabilities, discoverCapabilityControls, repairHintsForCapabilities, type HostEvidence } from "./capabilities.js";
 import { resolveActionPermissions } from "./action-permissions.js";
-import { createComputerUseTool } from "./plugin-tool.js";
+import { createComputerUseTool, normalizeParams } from "./plugin-tool.js";
 
 const fixture = async (name: string) => JSON.parse(await readFile(new URL(`../contracts/v1/fixtures/capabilities/${name}.json`, import.meta.url), "utf8")).report;
 const host: HostEvidence = { environment: { platform: "linux", session: null }, adapter: { configuredPath: "coven-desktop-use", resolvedPath: "/fixture/adapter" }, integrations: {}, observedAtMs: 1700000000001 };
 const permissions = resolveActionPermissions();
 
 
-test("plugin normalization preserves every fixture and overlays only trusted action authority", async () => {
+test("plugin normalization preserves backend facts and overlays trusted authority plus request bounds", async () => {
   const schema = JSON.parse(await readFile(new URL("../contracts/v1/capabilities.schema.json", import.meta.url), "utf8"));
   const validate = new Ajv2020.default({ strict: true }).compile(schema);
   for (const name of await readdir(new URL("../contracts/v1/fixtures/capabilities/", import.meta.url))) {
@@ -20,7 +20,12 @@ test("plugin normalization preserves every fixture and overlays only trusted act
     const result = buildPluginCapabilities({ capabilitiesV1: report }, host, permissions);
     assert.equal(validate(result), true, `${name}: ${JSON.stringify(validate.errors)}`);
     assert.deepEqual(report, before);
-    assert.deepEqual(result.actions.screenshot.variants, report.actions.screenshot.variants);
+    for (const [index, variant] of result.actions.screenshot.variants.entries()) {
+      const source = report.actions.screenshot.variants[index];
+      assert.deepEqual({ ...variant, limits: undefined }, { ...source, limits: undefined });
+      assert.deepEqual(variant.limits.constraints, source.limits.constraints);
+      for (const [name, limit] of Object.entries(source.limits.parameters)) assert.deepEqual(variant.limits.parameters[name], limit);
+    }
     assert.equal(result.actions["file-read"].state, "available");
     assert.equal(result.actions.stop.state, "available");
     assert.equal(result.actions.click.policy.profile, "allowed");
@@ -159,4 +164,99 @@ test("planned Mac provider identity cannot assert a successful executable observ
   const report = buildPluginCapabilities(undefined, { ...host, integrations: { "clipboard-read": { state: "unverified", reasonCodes: ["HOST_ACCESS_UNVERIFIED"], provider: { name: "pbpaste", version: null } } } }, permissions);
   const binary = report.actions["clipboard-read"].evidence.find(e=>e.kind==="binary")!;
   assert.equal(binary.status,"unknown"); assert.equal(binary.observedAtMs,undefined); assert.equal(binary.provider?.name,"pbpaste");
+});
+
+
+test("plugin controls disclose enforced UTF-8 text, selector, path, key collection and scroll bounds", async () => {
+  for (const name of ["x11", "wayland-advertised", "wayland-unknown", "macos"]) {
+    const cli = await fixture(name);
+    const before = structuredClone(cli);
+    const report = buildPluginCapabilities({ capabilitiesV1: cli }, host, permissions);
+    const controls = discoverCapabilityControls(report);
+    const variants = (action: string) => controls.find(c => c.action === action)!.variants;
+    for (const variant of variants("type-text")) {
+      assert.equal(variant.parameters.text?.maxBytes, 100000);
+      if (variant.provider.name === "ydotool") assert.equal(variant.parameters.text.encoding, "ascii");
+    }
+    for (const variant of variants("screenshot")) {
+      assert.equal(variant.parameters.path.maxBytes, 2048);
+      assert.equal(Boolean(variant.parameters.app), variant.selectors.includes("app"));
+      if (variant.selectors.includes("app")) assert.equal(variant.parameters.app.maxBytes, 2048);
+    }
+    for (const variant of variants("keypress")) {
+      assert.equal(variant.parameters.keys.maxItems, 256);
+      assert.equal(variant.parameters.keys.maxItemBytes, 2048);
+      assert.equal(variant.parameters.keys.joined?.maxBytes, 2048);
+      assert.equal(variant.parameters.keys.joined?.separator, ",");
+    }
+    for (const variant of variants("scroll")) assert.equal(variant.parameters.amount.maximum, 50);
+    assert.deepEqual(cli, before, "plugin bounds must not modify CLI-relative reports");
+  }
+  for (const [good, bad] of [
+    [{ action: "type-text", text: "é".repeat(50000) }, { action: "type-text", text: "é".repeat(50000) + "a" }],
+    [{ action: "focus", app: "é".repeat(1024) }, { action: "focus", app: "é".repeat(1024) + "a" }],
+    [{ action: "screenshot", path: "é".repeat(1024) }, { action: "screenshot", path: "é".repeat(1024) + "a" }],
+    [{ action: "keypress", keys: Array(256).fill("a") }, { action: "keypress", keys: Array(257).fill("a") }],
+    [{ action: "keypress", keys: ["é".repeat(1023), "a"] }, { action: "keypress", keys: ["é".repeat(1023), "aa"] }],
+    [{ action: "scroll", direction: "down", amount: 50 }, { action: "scroll", direction: "down", amount: 51 }],
+    [{ action: "shell", command: "echo", args: Array(256).fill("é".repeat(1024)) }, { action: "shell", command: "echo", args: ["é".repeat(1024) + "a"] }],
+  ]) {
+    assert.doesNotThrow(() => normalizeParams(good));
+    assert.throws(() => normalizeParams(bad));
+  }
+  const local = buildPluginCapabilities(undefined, host, permissions);
+  const shell = local.actions.shell.variants[0].limits.parameters;
+  assert.equal(shell.args.maxItems, 256);
+  assert.equal(shell.args.maxItemBytes, 2048);
+  assert.equal(shell.args.joined, undefined, "shell argv has no joined total ceiling");
+  assert.equal(shell.cwd.maxBytes, 2048);
+});
+
+test("plugin limit intersection retains stricter backend values, units, selectors and encodings", async () => {
+  const cli = await fixture("wayland-unknown");
+  cli.actions["type-text"].variants[1].limits.parameters.text.maxBytes = 128;
+  cli.actions.scroll.variants[1].limits.parameters.amount = { minimum: 2, maximum: 7, units: "wheel-steps" };
+  const report = buildPluginCapabilities({ capabilitiesV1: cli }, host, permissions);
+  assert.deepEqual(report.actions["type-text"].variants[1].limits.parameters.text, { encoding: "ascii", maxBytes: 128 });
+  assert.deepEqual(report.actions.scroll.variants[1].limits.parameters.amount, { minimum: 2, maximum: 7, units: "wheel-steps" });
+  assert.deepEqual(report.actions["type-text"].variants[1].selectors, cli.actions["type-text"].variants[1].selectors);
+});
+
+
+test("runtime and independent schema validator agree on shared collection limits", async () => {
+  const root = new URL("../contracts/v1/", import.meta.url);
+  const schema = JSON.parse(await readFile(new URL("capabilities.schema.json", root), "utf8"));
+  const samples = JSON.parse(await readFile(new URL("fixtures/collection-limits.json", root), "utf8"));
+  const validate = new Ajv2020.default({ strict: true }).compile(schema);
+  for (const [parameter, valid] of [[samples.valid, true], ...samples.invalid.map((value: unknown) => [value, false])]) {
+    const cli = await fixture("macos");
+    cli.actions.keypress.variants[0].limits.parameters.keys = parameter;
+    assert.equal(validate(cli), valid, JSON.stringify(parameter));
+    if (valid) {
+      const controls = discoverCapabilityControls(buildPluginCapabilities({ capabilitiesV1: cli }, host, permissions));
+      assert.deepEqual(controls.find(c => c.action === "keypress")!.variants[0].parameters.keys, samples.valid);
+    } else assert.throws(() => buildPluginCapabilities({ capabilitiesV1: cli }, host, permissions), /CAPABILITY_SCHEMA_INVALID/);
+  }
+});
+
+
+test("plugin coordinate and numeric bounds match validation without weakening X11 input bounds", async () => {
+  const mac = buildPluginCapabilities({ capabilitiesV1: await fixture("macos") }, host, permissions);
+  const coords = discoverCapabilityControls(mac).find(c => c.action === "click")!.variants[0].parameters.coords;
+  assert.equal(coords.minimum, -2147483648);
+  assert.equal(coords.maximum, 2147483647);
+  const x11 = buildPluginCapabilities({ capabilitiesV1: await fixture("x11") }, host, permissions);
+  assert.equal(x11.actions.click.variants[0].limits.parameters.coords.minimum, 0);
+  assert.equal(x11.actions.click.variants[0].limits.parameters.coords.maximum, 32767);
+  assert.doesNotThrow(() => normalizeParams({ action: "click", coords: "-2147483648,2147483647" }));
+  assert.throws(() => normalizeParams({ action: "click", coords: "-2147483649,2147483647" }));
+  assert.throws(() => normalizeParams({ action: "click", coords: "0,2147483648" }));
+  for (const [property, minimum, maximum] of [["windowId", -9007199254740991, 9007199254740991], ["screenIndex", 0, 9007199254740991], ["timeoutMs", 1000, 120000]] as const) {
+    const variant = mac.actions.screenshot.variants.find(v => v.selectors.includes(property)) ?? mac.actions.screenshot.variants[0];
+    assert.equal(variant.limits.parameters[property].minimum, minimum);
+    assert.equal(variant.limits.parameters[property].maximum, maximum);
+    assert.doesNotThrow(() => normalizeParams({ action: "screenshot", [property]: minimum }));
+    assert.doesNotThrow(() => normalizeParams({ action: "screenshot", [property]: maximum }));
+    for (const bad of [minimum - 1, maximum + 1, 1.5, Infinity]) assert.throws(() => normalizeParams({ action: "screenshot", [property]: bad }));
+  }
 });

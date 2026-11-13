@@ -292,6 +292,31 @@
                 "type": "integer",
                 "minimum": 0
               },
+              "maxItems": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "maxItemBytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "joined": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "maxBytes",
+                  "separator"
+                ],
+                "properties": {
+                  "maxBytes": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "separator": {
+                    "const": ","
+                  }
+                }
+              },
               "maxWidth": {
                 "type": "integer",
                 "minimum": 1

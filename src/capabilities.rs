@@ -130,6 +130,48 @@ fn image_limits(inspect: bool) -> Value {
     json!({"format":{"values":if inspect { vec!["png"] } else { vec!["png","jpg"] }},"image":{"maxBytes":observation::MAX_ENCODED,"maxWidth":observation::MAX_DIMENSION,"maxHeight":observation::MAX_DIMENSION,"maxPixels":observation::MAX_PIXELS,"maxDecodedBytes":observation::MAX_ALLOCATION}})
 }
 
+// Query success does not prove grants. Inspect only recognized containers and explicit false grant fields.
+// The shared Node consumer uses the same depth and total-node bounds.
+pub fn permission_denied(value: &Value) -> bool {
+    fn walk(value: &Value, depth: usize, remaining: &mut usize) -> bool {
+        if depth > 8 || *remaining == 0 {
+            return false;
+        }
+        *remaining -= 1;
+        if let Some(items) = value.as_array() {
+            for item in items {
+                if *remaining == 0 {
+                    break;
+                }
+                if walk(item, depth + 1, remaining) {
+                    return true;
+                }
+            }
+        } else if let Some(object) = value.as_object() {
+            let name = object
+                .get("name")
+                .filter(|v| !v.is_null())
+                .or_else(|| object.get("permission"))
+                .and_then(Value::as_str);
+            if matches!(name, Some("Screen Recording" | "Accessibility"))
+                && object.get("isGranted").and_then(Value::as_bool) == Some(false)
+            {
+                return true;
+            }
+            for key in ["permissions", "data", "result"] {
+                if object
+                    .get(key)
+                    .is_some_and(|child| walk(child, depth + 1, remaining))
+                {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+    walk(value, 0, &mut 256)
+}
+
 fn macos_action(name: &str, facts: &Facts, action: &mut Value) {
     let state = if !facts.has("peekaboo") {
         "unsupported"

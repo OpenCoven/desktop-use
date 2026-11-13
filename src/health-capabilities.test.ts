@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFile } from "node:fs/promises";
+import { discoverCapabilityControls } from "./capabilities.js";
 import { createComputerUseTool } from "./plugin-tool.js";
 const fixture = async (name: string) => JSON.parse(await readFile(new URL(`../contracts/v1/fixtures/capabilities/${name}.json`, import.meta.url), "utf8")).report;
 
@@ -17,6 +18,7 @@ test("health interprets successful macOS permission queries as evidence, never a
   for (const [name, extra, denied] of [
     ["macos-permission-denied", {}, true],
     ["macos", { backend: "peekaboo", result: { success: true, data: { permissions: [{ name: "Screen Recording", isGranted: false }] } } }, true],
+    ["macos", { backend: "peekaboo", stdout: JSON.stringify({ success: true, data: { permissions: [{ name: "Accessibility", isGranted: false }] } }) }, true],
     ["macos-permission-granted", {}, false],
     ["macos", {}, false],
   ] as const) {
@@ -25,6 +27,11 @@ test("health interprets successful macOS permission queries as evidence, never a
     assert.equal(details.status, "success");
     assert.equal(JSON.stringify(details.repairHints).includes("Screen Recording"), denied);
     assert.equal(Boolean(details.permissionFlow), denied);
+    const report = details.capabilitiesV1 as any;
+    assert.equal(report.actions.click.evidence.find((e: any) => e.kind === "permission").status, denied ? "failed" : name === "macos-permission-granted" ? "passed" : "unknown");
+    assert.equal(report.actions.click.state, "unverified");
+    assert.equal(report.actions.click.evidence.find((e: any) => e.kind === "actual-action").status, "not-run");
+    assert.equal(discoverCapabilityControls(report).find(c => c.action === "click")!.reasonCodes.includes("PERMISSION_DENIED"), denied);
     assert.doesNotMatch(JSON.stringify(details.repairHints), /adapter.*not found/i);
   }
 });
@@ -88,4 +95,21 @@ test("host discovery treats fixed Mac plans as unknown inventory and explicit Li
   for(const action of ["clipboard-read","clipboard-write","browser-open","app-launch"] as const){const binary=report.actions[action].evidence.find(e=>e.kind==="binary")!;assert.equal(binary.status,"unknown");assert.equal(binary.observedAtMs,undefined);assert.equal(report.actions[action].state,"unverified");}
   const linux=discoverHostIntegrations("linux",{XDG_SESSION_TYPE:"wayland"},name=>name==="wl-copy"?"/fixture/wl-copy":undefined,1700000000001);
   assert.deepEqual(linux["clipboard-write"]?.binary,{status:"passed",observedAtMs:1700000000001});assert.equal(linux["clipboard-read"]?.binary?.status,"unknown");assert.equal(linux["clipboard-read"]?.state,"unsupported");
+});
+
+
+test("permission recognition ignores unknown shapes, arbitrary diagnostics and data beyond its bounded traversal", async () => {
+  const cases = JSON.parse(await readFile(new URL("../contracts/v1/fixtures/permission-queries.json", import.meta.url), "utf8"));
+  const denial = { name: "Accessibility", isGranted: false };
+  cases.push({ name: "bounded array", query: { success: true, permissions: [...Array(256).fill(null), denial] }, denied: false });
+  cases.push({ name: "bounded depth", query: Array.from({ length: 10 }).reduce(value => ({ data: value }), denial), denied: false });
+  for (const { name, query, denied } of cases) {
+    const cli = await fixture("macos");
+    const tool = createComputerUseTool({ runAdapter: async () => ({ ok: true, backend: "peekaboo", result: query, capabilitiesV1: cli }), appendAuditEvent: async () => {} });
+    const { details } = await tool.execute(name, { action: "health" });
+    const report = details.capabilitiesV1 as any;
+    assert.equal(report.actions.click.evidence.find((e: any) => e.kind === "permission").status, denied ? "failed" : "unknown", name);
+    assert.equal(Boolean(details.permissionFlow), denied, name);
+    assert.equal(cli.actions.click.evidence.find((e: any) => e.kind === "permission").status, "unknown", "source stays unchanged");
+  }
 });
