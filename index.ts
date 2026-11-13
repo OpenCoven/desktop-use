@@ -1,3 +1,4 @@
+import { createGatewayApprovalBridge, CONTINUATION_FIELD } from "./src/openclaw/approval.js";
 import { ACTION_PERMISSIONS_CONFIG_SCHEMA, ACTION_PROFILE_DENIED_REASON, isActionAllowed, resolveActionPermissions } from "./src/action-permissions.js";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { gatewayApprovalDisplay } from "./src/approval-display.js";
@@ -43,6 +44,7 @@ export default definePluginEntry({
   },
   register(api) {
     const actionPermissions = resolveActionPermissions(api.pluginConfig);
+    const approvalBridge = createGatewayApprovalBridge();
     const optionalApi = api as typeof api & OptionalComputerUseApi;
     // Hook contexts omit workspaceDir in this SDK. Retain the authenticated tool-factory context.
     const policyContexts = new Map<string, ComputerUsePolicyContext | undefined>();
@@ -57,8 +59,8 @@ export default definePluginEntry({
       if (policyContexts.size > 256) policyContexts.delete(policyContexts.keys().next().value!);
       return snapshot;
     };
-    api.registerTool((ctx) => createComputerUseTool({ ctx: remember(ctx), actionPermissions }), { name: COMPUTER_USE_TOOL_NAME });
-    api.registerTool((ctx) => createDesktopUseTool({ ctx: remember(ctx), actionPermissions }), {
+    api.registerTool((ctx) => createComputerUseTool({ ctx: remember(ctx), actionPermissions, approvalBridge }), { name: COMPUTER_USE_TOOL_NAME });
+    api.registerTool((ctx) => createDesktopUseTool({ ctx: remember(ctx), actionPermissions, approvalBridge }), {
       name: DESKTOP_USE_TOOL_NAME,
       optional: true,
     });
@@ -86,10 +88,10 @@ export default definePluginEntry({
         }
         let params: ComputerUseParams;
         try {
+          if (Object.hasOwn(event.params, CONTINUATION_FIELD)) throw new Error("Model continuation references are forbidden.");
           params = normalizeParams(event.params);
-          // Hook input is model-controlled. Only the gateway may apply confirm:true
-          // from our returned params after it resolves requireApproval.
-          params = { ...params, confirm: false };
+          // Compatibility confirmation is discarded; only onResolution grants authority.
+          delete params.confirm;
         } catch {
           return { block: true, blockReason: "Invalid computer-use parameters." };
         }
@@ -115,12 +117,14 @@ export default definePluginEntry({
         if (decision.status === "needsApproval" && decision.approvalPrompt) {
           const display = gatewayApprovalDisplay(params, decision);
           if (!display) return { block: true, blockReason: "Approval cannot display the complete target and input; shorten the request before retrying." };
+          const continuation = await approvalBridge.prepare(params, policyContext, actionPermissions);
           return {
-            params: { ...params, confirm: true },
+            params: continuation.params,
             requireApproval: {
               ...display,
               timeoutMs: 5 * 60 * 1000,
               timeoutBehavior: "deny",
+              onResolution: continuation.onResolution,
             },
           };
         }

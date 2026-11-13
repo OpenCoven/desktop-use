@@ -25,6 +25,7 @@ function harness(legacyTool = false, response: unknown = { ok: true }) {
   const calls: string[][] = [];
   const audits: ComputerUseAuditEvent[] = [];
   const tool = (legacyTool ? createDesktopUseTool : createComputerUseTool)({
+    approvalProvider: async challenge => ["type", "type-text", "press", "keypress"].includes(challenge.params.action) ? "allowed" : "unavailable",
     runAdapter: async args => { calls.push(args); return response; },
     appendAuditEvent: async event => { audits.push(event); },
   });

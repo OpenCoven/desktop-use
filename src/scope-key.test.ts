@@ -130,7 +130,7 @@ for (const toolName of [COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME]) {
       const result = await hook({ toolName, params }, ctx) as any;
       assert.ok(result.requireApproval, params.action);
       assert.equal(result.requireApproval.timeoutBehavior, "deny");
-      assert.equal(result.params?.confirm, true);
+      assert.equal(result.params?.confirm, undefined); result.requireApproval.onResolution("deny");
     }
   });
 }

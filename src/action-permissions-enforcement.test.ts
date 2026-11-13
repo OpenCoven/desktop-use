@@ -65,7 +65,7 @@ test("registration snapshot survives config mutation and both names retain ordin
     const result = await hook({ toolName: tool.name, params: { action: "shell", command: process.execPath, confirm: true } }, {});
     assert.equal(result.block, true);
     const approval = await hook({ toolName: tool.name, params: { action: "click", on: "B1", confirm: true } }, {});
-    assert.ok(approval.requireApproval); assert.equal(approval.params.confirm, true);
+    assert.ok(approval.requireApproval); assert.equal(approval.params.confirm, undefined); approval.requireApproval.onResolution("deny");
   }
   assert.throws(() => register({ actionProfile: "typo" }), /Invalid action permissions/);
 });

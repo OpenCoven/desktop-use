@@ -47,7 +47,7 @@ test("registers the canonical tool, its legacy alias, Control UI descriptor, and
     { toolName: COMPUTER_USE_TOOL_NAME, params: { action: "click", on: "B1" } },
     { agentId: "computer-use", sessionKey: "agent:computer-use:main" },
   ) as { params?: { confirm?: boolean }; requireApproval?: { title?: string } };
-  assert.equal(approval.params?.confirm, true);
+  assert.equal(approval.params?.confirm, undefined);
   assert.match(approval.requireApproval?.title ?? "", /Click/);
 
   for (const toolName of [COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME]) {

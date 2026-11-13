@@ -14,8 +14,9 @@ const fixture = async (kind = "png") => ({
 async function capture(kind = "png", mutate?: (path: string, receipt: any, bytes: Buffer) => Promise<unknown>) {
   const { bytes, receipt } = await fixture(kind);
   let owned = "";
+  let approval = false;
   const audits: unknown[] = [];
-  const tool = createComputerUseTool({ appendAuditEvent: async event => { audits.push(event); }, runAdapter: async (_args, params) => {
+  const tool = createComputerUseTool({ approvalProvider: async () => approval ? "allowed" : "unavailable", appendAuditEvent: async event => { audits.push(event); }, runAdapter: async (_args, params) => {
     owned = params.path!;
     assert.ok(owned, "caller supplies a private destination");
     assert.equal((await stat(dirname(owned))).mode & 0o777, 0o700);
@@ -24,7 +25,7 @@ async function capture(kind = "png", mutate?: (path: string, receipt: any, bytes
     const override = await mutate?.(owned, receipt, bytes);
     return override ?? { ok: true, supported: true, platform: "linux", backend: "scrot", exitCode: 0, stdoutRedacted: true, purpose: params.action, path: owned, observationV1: receipt };
   } });
-  return { tool, bytes, audits, owned: () => owned };
+  return { tool, bytes, audits, approve: () => { approval = true; }, owned: () => owned };
 }
 for (const kind of ["png", "jpg"]) test(`delivers exact validated ${kind} bytes without default-path approval and cleans private staging`, async () => {
   const c = await capture(kind);
@@ -50,7 +51,7 @@ test("explicit destinations require approval and publish the approved bytes atom
     const blocked = await c.tool.execute("unapproved", { action: "screenshot", mode: "screen", path });
     assert.equal(blocked.details.status, "needsApproval"); assert.equal(c.owned(), "");
     await writeFile(path, "old");
-    const result = await c.tool.execute("approved", { action: "screenshot", mode: "screen", path, confirm: true });
+    c.approve(); const result = await c.tool.execute("approved", { action: "screenshot", mode: "screen", path, confirm: true });
     assert.equal(result.details.status, "success"); assert.notEqual(c.owned(), path);
     assert.deepEqual(await readFile(path), c.bytes);
     assert.equal((result.details.outputPublication as any).status, "success");
@@ -85,7 +86,7 @@ for (const outcome of ["failed", "cancelled"]) test(`${outcome} capture never de
     const abort = new AbortController();
     const c = await capture("png", async () => { if (outcome === "cancelled") abort.abort(); return { ok: outcome === "cancelled", code: outcome === "failed" ? "BACKEND_ERROR" : undefined }; });
     const path = join(root, "output.png");
-    const result = await c.tool.execute("cancel", { action: "screenshot", mode: "screen", path, confirm: true }, abort.signal);
+    c.approve(); const result = await c.tool.execute("cancel", { action: "screenshot", mode: "screen", path, confirm: true }, abort.signal);
     assert.equal(result.content.some(block => block.type === "image"), false);
     assert.equal(result.details.status, outcome === "cancelled" ? "cancelled" : "error");
     await assert.rejects(access(path), { code: "ENOENT" });
@@ -95,7 +96,7 @@ for (const outcome of ["failed", "cancelled"]) test(`${outcome} capture never de
 test("accepts bounded signed i32 coordinates and passes a literal option value", async () => {
   for (const coords of ["-1920,-80", "-2147483648,2147483647", " 120,240 "]) {
     let argv: string[] = [];
-    const tool = createComputerUseTool({ appendAuditEvent: async () => {}, runAdapter: async args => { argv = args; return { ok: true }; } });
+    const tool = createComputerUseTool({ approvalProvider: async () => "allowed" as const, appendAuditEvent: async () => {}, runAdapter: async args => { argv = args; return { ok: true }; } });
     await tool.execute("negative", { action: "click", coords, confirm: true });
     assert.deepEqual(argv, ["click", "--confirm", "--coords", coords]);
   }
@@ -120,7 +121,7 @@ test("rechecks approved destination binding after capture", async () => {
     const parent = join(root, "approved"), other = join(root, "other");
     const { mkdir, rename } = await import("node:fs/promises"); await mkdir(parent); await mkdir(other);
     const c = await capture("png", async () => { await rename(parent, join(root, "old")); await symlink(other, parent); });
-    const result = await c.tool.execute("rebound", { action: "screenshot", mode: "screen", path: join(parent, "out.png"), confirm: true });
+    c.approve(); const result = await c.tool.execute("rebound", { action: "screenshot", mode: "screen", path: join(parent, "out.png"), confirm: true });
     assert.equal((result.details.outputPublication as any).status, "needsApproval");
     assert.equal((result.details.result as any).path, c.owned());
     assert.notEqual((result.details.result as any).path, join(parent, "out.png"));
@@ -134,7 +135,7 @@ test("reports an explicit publication failure separately from successful capture
     const path = join(root, "destination");
     const { mkdir } = await import("node:fs/promises"); await mkdir(path);
     const c = await capture();
-    const result = await c.tool.execute("publish-fail", { action: "screenshot", mode: "screen", path, confirm: true });
+    c.approve(); const result = await c.tool.execute("publish-fail", { action: "screenshot", mode: "screen", path, confirm: true });
     assert.equal(result.details.status, "success");
     assert.equal((result.details.outputPublication as any)?.status, "error");
     assert.equal((result.details.outputPublication as any)?.code, "OUTPUT_PUBLICATION_FAILED");
@@ -152,7 +153,7 @@ test("preserves completed explicit output if the shared deadline expires before 
   try {
     const c = await capture();
     Date.now = () => originalNow() + (existsSync(path) ? 2000 : 0);
-    const result = await c.tool.execute("late-timeout", { action: "screenshot", mode: "screen", path, confirm: true, timeoutMs: 1000 });
+    c.approve(); const result = await c.tool.execute("late-timeout", { action: "screenshot", mode: "screen", path, confirm: true, timeoutMs: 1000 });
     assert.equal(result.details.status, "success");
     assert.equal((result.details.outputPublication as any).status, "success");
     assert.equal((result.details.result as any).path, path);
@@ -184,7 +185,7 @@ for (const [code, status] of [["CANCELLED", "cancelled"], ["ETIMEDOUT", "timeout
       const c = await capture("png", async (_path, receipt) => nested
         ? { ok: true, backend: "peekaboo", result: { success: true, code }, observationV1: receipt }
         : { ok: true, code, observationV1: receipt });
-      const result = await c.tool.execute("code-outcome", { action: "screenshot", mode: "screen", path, confirm: true });
+      c.approve(); const result = await c.tool.execute("code-outcome", { action: "screenshot", mode: "screen", path, confirm: true });
       assert.equal(result.details.status, status);
       assert.equal(result.content.some(block => block.type === "image"), false);
       assert.equal(result.details.outputPublication, undefined);
@@ -212,7 +213,7 @@ for (const failedStages of [["file-write-staging"], ["observation-staging"], ["f
   });
   syncBuiltinESMExports();
   try {
-    const result = await c.tool.execute("cleanup-fault", { action: "screenshot", mode: "screen", path, confirm: true });
+    c.approve(); const result = await c.tool.execute("cleanup-fault", { action: "screenshot", mode: "screen", path, confirm: true });
     assert.equal(failures, failedStages.length);
     assert.equal(result.details.status, "success");
     assert.equal((result.details.outputPublication as any).status, "success");
@@ -237,7 +238,7 @@ test("canonical target I/O failure reports a separate failed publication", async
   try {
     const parent = join(root, "parent"); await fs.mkdir(parent);
     const c = await capture("png", async () => { await fs.rename(parent, join(root, "previous")); await writeFile(parent, "not a directory"); });
-    const result = await c.tool.execute("canonical-io", { action: "screenshot", mode: "screen", path: join(parent, "output.png"), confirm: true });
+    c.approve(); const result = await c.tool.execute("canonical-io", { action: "screenshot", mode: "screen", path: join(parent, "output.png"), confirm: true });
     assert.equal(result.details.status, "success");
     assert.equal((result.details.outputPublication as any)?.code, "OUTPUT_PUBLICATION_FAILED");
     assert.equal(result.content.some(block => block.type === "image"), false);
@@ -296,7 +297,7 @@ test("precommit cancellation and both cleanup failures preserve cancellation wit
   });
   syncBuiltinESMExports();
   try {
-    const result = await c.tool.execute("precommit-cancel-cleanup", { action: "screenshot", mode: "screen", path, confirm: true }, controller.signal);
+    c.approve(); const result = await c.tool.execute("precommit-cancel-cleanup", { action: "screenshot", mode: "screen", path, confirm: true }, controller.signal);
     assert.equal(result.details.status, "cancelled");
     assert.equal(result.details.code, "CANCELLED");
     assert.deepEqual((result.details.cleanup as any).stages, ["file-write-staging", "observation-staging"]);
@@ -358,7 +359,7 @@ for (const shape of ["screenshot_raw", "files"] as const) test(`published Peekab
         } },
       },
     }));
-    const result = await c.tool.execute("mac-published", { action: "inspect", mode: "screen", path, confirm: true });
+    c.approve(); const result = await c.tool.execute("mac-published", { action: "inspect", mode: "screen", path, confirm: true });
     assert.equal(result.details.status, "success");
     const adapter = (result.details.result as any).result;
     assert.equal(adapter.path, path);
@@ -382,7 +383,7 @@ test("published image does not relabel unrelated or ambiguous Peekaboo artifact 
     const c = await capture("png", async (owned, receipt) => ({ ok: true, backend: "peekaboo", path: owned, observationV1: receipt,
       result: { success: true, data: { screenshot_raw: "/untrusted/raw.png", files: [{ path: owned }, { path: "/untrusted/second.png" }] } },
     }));
-    const result = await c.tool.execute("mac-other", { action: "screenshot", mode: "screen", path, confirm: true });
+    c.approve(); const result = await c.tool.execute("mac-other", { action: "screenshot", mode: "screen", path, confirm: true });
     const data = (result.details.result as any).result.data;
     assert.equal((result.details.result as any).path, path);
     assert.equal(data.screenshot_raw, "/untrusted/raw.png");

@@ -25,7 +25,7 @@ The final local stack check passes 108 TypeScript tests, 49 Rust unit tests, and
 
 ## Acceptance limits retained
 
-No fixtures are treated as real graphical acceptance. The previous disposable macOS browser and native-app launch observations remain valid evidence for those host integrations. Peekaboo is absent and Linux graphical sessions are unavailable, so screenshot/input/compositor/layout/clipboard acceptance stays unverified. Windows desktop use stays unsupported. Runtime authenticity of confirm:true and atomic filesystem confinement against hostile concurrent directory replacement are host/OS boundaries; the adapter does not claim to replace them. Stop does not undo completed effects or interrupt a filesystem syscall already in progress. No code review finding is silently deferred.
+No fixtures are treated as real graphical acceptance. The previous disposable macOS browser and native-app launch observations remain valid evidence for those host integrations. Peekaboo is absent and Linux graphical sessions are unavailable, so screenshot/input/compositor/layout/clipboard acceptance stays unverified. Windows desktop use stays unsupported. Runtime approval now uses one-use private state unlocked by the public gateway resolution callback; confirm:true supplies no authority. Atomic filesystem confinement against hostile concurrent directory replacement remains an OS boundary; the adapter does not claim to replace it. Stop does not undo completed effects or interrupt a filesystem syscall already in progress. No code review finding is silently deferred.
 
 ## Additional Copilot conversations on #8 and #9
 

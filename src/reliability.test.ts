@@ -44,7 +44,7 @@ test("actual adapter envelopes control action status, retries, and durable audit
   const previous = process.env.COVEN_DESKTOP_USE_BIN;
   try {
     process.env.COVEN_DESKTOP_USE_BIN = executable;
-    const tool = createComputerUseTool({ ctx: { agentDir: join(dir, "agent") } });
+    const tool = createComputerUseTool({ approvalProvider: async () => "allowed" as const, ctx: { agentDir: join(dir, "agent") } });
     for (const [payload, action, expected, count] of [
       [{ ok: true }, "doctor", "success", 1],
       [{ ok: false, error: "backend failed" }, "doctor", "error", 1],
@@ -103,7 +103,7 @@ test("failed audit append preserves the completed file-write and exposes failure
   try {
     const auditRoot = join(dir, "not-a-directory");
     await writeFile(auditRoot, "block audit directory creation");
-    const tool = createComputerUseTool({ ctx: { workspaceDir: dir, agentDir: auditRoot } });
+    const tool = createComputerUseTool({ approvalProvider: async () => "allowed" as const, ctx: { workspaceDir: dir, agentDir: auditRoot } });
     const result = await tool.execute("write", { action: "file-write", path: "output", content: "private content", confirm: true });
     assert.equal(result.details.status, "success");
     assert.deepEqual(result.details.audit, { written: false, code: "AUDIT_WRITE_FAILED" });
@@ -115,7 +115,7 @@ test("failed audit append preserves the completed file-write and exposes failure
 test("adapter exceptions are audited without exposing typed text", async () => {
   const dir = await mkdtemp(join(tmpdir(), "desktop-use-thrown-"));
   try {
-    const tool = createComputerUseTool({
+    const tool = createComputerUseTool({ approvalProvider: async () => "allowed" as const,
       ctx: { agentDir: join(dir, "agent") },
       runAdapter: async () => { throw new Error("Command failed: type-text --text private input"); },
     });
@@ -130,7 +130,7 @@ test("adapter exceptions are audited without exposing typed text", async () => {
 
 test("valid UTF-8 limits and literal argv are preserved", async () => {
   const calls: string[][] = [];
-  const tool = createComputerUseTool({
+  const tool = createComputerUseTool({ approvalProvider: async () => "allowed" as const,
     runAdapter: async (args) => { calls.push(args); return { ok: true }; },
     appendAuditEvent: async () => undefined,
   });
@@ -153,7 +153,7 @@ test("failed adapter process does not echo typed text from process diagnostics",
   try {
     await writeFile(executable, '#!/usr/bin/env node\nconsole.error(process.argv.at(-1)); process.exit(1);\n', { mode: 0o700 });
     process.env.COVEN_DESKTOP_USE_BIN = executable;
-    const tool = createComputerUseTool({ ctx: { agentDir: join(dir, "agent") } });
+    const tool = createComputerUseTool({ approvalProvider: async () => "allowed" as const, ctx: { agentDir: join(dir, "agent") } });
     const result = await tool.execute("failed-input", { action: "type-text", text: "private typed input", confirm: true });
     assert.equal(result.details.status, "error");
     assert.doesNotMatch(JSON.stringify(result), /private typed input/);
@@ -192,7 +192,7 @@ test("exit-zero backend errors redact nested typed-input diagnostics", async () 
     const payload = { ok: false, backend: "peekaboo", stderr: "private typed input", stdout: "private typed input", error: "private typed input", steps: [{ stderr: "private typed input" }] };
     await writeFile(executable, `#!/usr/bin/env node\nconsole.log(${JSON.stringify(JSON.stringify(payload))}); console.error('private typed input');\n`, { mode: 0o700 });
     process.env.COVEN_DESKTOP_USE_BIN = executable;
-    const tool = createComputerUseTool({ ctx: { agentDir: join(dir, "agent") } });
+    const tool = createComputerUseTool({ approvalProvider: async () => "allowed" as const, ctx: { agentDir: join(dir, "agent") } });
     const result = await tool.execute("backend-error", { action: "type-text", text: "private typed input", confirm: true });
     assert.equal(result.details.status, "error");
     assert.doesNotMatch(JSON.stringify(result), /private typed input/);
@@ -215,7 +215,7 @@ for (const params of [
 ]) {
   test(`does not replay ${params.action} after a backend timeout`, async () => {
     let calls = 0;
-    const tool = createComputerUseTool({
+    const tool = createComputerUseTool({ approvalProvider: async () => "allowed" as const,
       runAdapter: async () => { calls++; return { ok: false, error: "ETIMEDOUT" }; },
       appendAuditEvent: async () => undefined,
     });

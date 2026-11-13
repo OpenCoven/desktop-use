@@ -20,7 +20,7 @@ test("failed shell processes never expose raw stdout, stderr or command diagnost
   t.after(() => rm(root, { recursive: true, force: true }));
   const file = join(root, "fixture");
   await writeFile(file, `#!${process.execPath}\nconsole.log('private-shell-diagnostic');console.error('private-shell-diagnostic');process.exit(1);`, { mode: 0o700 });
-  const result = await createComputerUseTool({ appendAuditEvent: noAudit }).execute("shell-error", { action: "shell", command: file, confirm: true });
+  const result = await createComputerUseTool({ approvalProvider: async () => "allowed" as const, appendAuditEvent: noAudit }).execute("shell-error", { action: "shell", command: file, confirm: true });
   assert.equal(result.details.status, "error");
   assert.ok(!JSON.stringify(result).includes("private-shell-diagnostic"));
 });
