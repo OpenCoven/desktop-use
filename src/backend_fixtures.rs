@@ -818,3 +818,55 @@ fn wayland_pointer_without_versioned_geometry_never_sends_input() {
     assert_eq!(result["code"], "POINTER_MAPPING_UNVERIFIED");
     assert!(f.log().is_empty());
 }
+
+// Removing the exact owned-primary rebind must leave these paths pointing at deleted staging.
+#[test]
+fn macos_primary_artifact_paths_follow_committed_capture_without_relabeling_other_files() {
+    for shape in ["raw", "files", "unrelated", "multiple", "missing", "scalar"] {
+        let f = Fixture::new();
+        f.tool("peekaboo", &format!(r#"previous=; for arg in "$@"; do if [ "$previous" = --path ]; then target="$arg"; fi; previous="$arg"; done
+/bin/cp "$FIXTURE_IMAGE" "$target"
+case {} in
+raw) printf '{{"success":true,"data":{{"screenshot_raw":"%s","screenshot_annotated":"%s","ui_map":"%s","analysis":{{"text":"%s"}}}}}}' "$target" "$target" "$target" "$target";;
+files) printf '{{"success":true,"data":{{"files":[{{"path":"%s","item_label":"Display 1 (Index 0)","mime_type":"image/png"}}],"observations":[],"snapshot_id":"fixture"}}}}' "$target";;
+unrelated) printf '{{"success":true,"data":{{"screenshot_raw":"/untrusted/raw.png","files":[{{"path":"/untrusted/other.png"}}]}}}}';;
+multiple) printf '{{"success":true,"data":{{"files":[{{"path":"%s"}},{{"path":"/untrusted/second.png"}}]}}}}' "$target";;
+missing) printf '{{"success":true}}';;
+scalar) printf '{{"success":true,"data":"unrelated data"}}';;
+esac"#, shape));
+        let path = f.root.join("published.png");
+        let result =
+            f.run(json!({"platform":"macos","args":["inspect","--mode","screen","--path",path]}));
+        assert_eq!(result["ok"], true, "{result}");
+        assert_eq!(result["path"], path.to_string_lossy().as_ref());
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            include_bytes!("../contracts/v1/fixtures/images/valid.png")
+        );
+        let data = &result["result"]["data"];
+        match shape {
+            "raw" => {
+                assert_eq!(data["screenshot_raw"], path.to_string_lossy().as_ref());
+                assert_eq!(data["screenshot_annotated"], data["ui_map"]);
+                assert_eq!(data["ui_map"], data["analysis"]["text"]);
+                assert_ne!(data["screenshot_annotated"], data["screenshot_raw"]);
+                assert!(!Path::new(data["screenshot_annotated"].as_str().unwrap()).exists());
+            }
+            "files" => {
+                assert_eq!(data["files"][0]["path"], path.to_string_lossy().as_ref());
+                assert_eq!(data["files"][0]["item_label"], "Display 1 (Index 0)");
+            }
+            "unrelated" => {
+                assert_eq!(data["screenshot_raw"], "/untrusted/raw.png");
+                assert_eq!(data["files"][0]["path"], "/untrusted/other.png");
+            }
+            "multiple" => {
+                assert_ne!(data["files"][0]["path"], path.to_string_lossy().as_ref());
+                assert_eq!(data["files"][1]["path"], "/untrusted/second.png");
+            }
+            "missing" => assert!(result["result"].get("data").is_none()),
+            "scalar" => assert_eq!(data, "unrelated data"),
+            _ => unreachable!(),
+        }
+    }
+}

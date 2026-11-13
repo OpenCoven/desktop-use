@@ -109,6 +109,27 @@ function withoutReceipt(value: unknown, depth = 0): unknown {
   return record;
 }
 
+// Only known primary metadata follows a committed publication. Exact matching
+// prevents unrelated artifacts/strings from being relabeled; no returned path is read.
+function withPublishedPrimaryPath(value: unknown, source: string, target: string, depth = 0): unknown {
+  if (depth > 8 || !value || typeof value !== "object" || Array.isArray(value)) return value;
+  const record = { ...value } as Record<string, any>;
+  if (record.path === source) record.path = target;
+  if (typeof record.adapter === "string") {
+    record.result = withPublishedPrimaryPath(record.result, source, target, depth + 1);
+  } else if (record.backend === "peekaboo" && record.result?.data && typeof record.result.data === "object" && !Array.isArray(record.result.data)) {
+    // Peekaboo 69764083: SeeResult.screenshot_raw and ImageCaptureResult.files.
+    // screenshot_annotated, ui_map and multi-image results are not this primary.
+    const data = { ...record.result.data };
+    if (data.screenshot_raw === source) data.screenshot_raw = target;
+    if (Array.isArray(data.files) && data.files.length === 1 && data.files[0]?.path === source) {
+      data.files = [{ ...data.files[0], path: target }];
+    }
+    record.result = { ...record.result, data };
+  }
+  return record;
+}
+
 /** Called only after validation and approval. Backend-returned paths are never authority. */
 export async function withOwnedObservation(request: ComputerUseParams, _ctx: ComputerUsePolicyContext,
   runAdapter: (request: ComputerUseParams) => Promise<unknown>, signal?: AbortSignal): Promise<OwnedObservation> {
@@ -118,7 +139,7 @@ export async function withOwnedObservation(request: ComputerUseParams, _ctx: Com
   const path = join(directory, "primary.image");
   const capture = async (): Promise<OwnedObservation> => {
     const captured = await runAdapter({ ...request, path, timeoutMs: Math.max(1, deadline - Date.now()) });
-    const raw = withoutReceipt(captured);
+    let raw = withoutReceipt(captured);
     if (!normalizeAdapterResult(captured, { evidence: {} }).success) return { raw };
     check(signal, deadline);
     let outputPublication: Record<string, unknown> | undefined;
@@ -156,6 +177,7 @@ export async function withOwnedObservation(request: ComputerUseParams, _ctx: Com
           } else {
             const written = await writeRegularFile(request.path, bytes, true, signal, deadline);
             outputPublication = { status: "success", success: true, path: request.path, bytes: bytes.length };
+            raw = withPublishedPrimaryPath(raw, path, request.path);
             cleanup = written.cleanup;
           }
         } catch (error) {

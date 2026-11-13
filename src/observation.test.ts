@@ -22,7 +22,7 @@ async function capture(kind = "png", mutate?: (path: string, receipt: any, bytes
     await writeFile(owned, bytes);
     receipt.capturedAtMs = Date.now();
     const override = await mutate?.(owned, receipt, bytes);
-    return override ?? { ok: true, path: "/untrusted/backend-path", observationV1: receipt };
+    return override ?? { ok: true, supported: true, platform: "linux", backend: "scrot", exitCode: 0, stdoutRedacted: true, purpose: params.action, path: owned, observationV1: receipt };
   } });
   return { tool, bytes, audits, owned: () => owned };
 }
@@ -35,6 +35,8 @@ for (const kind of ["png", "jpg"]) test(`delivers exact validated ${kind} bytes 
   assert.equal(image.mimeType, kind === "png" ? "image/png" : "image/jpeg");
   assert.deepEqual(Buffer.from(image.data, "base64"), c.bytes);
   assert.equal((result.details.observationV1 as any).geometry.state, "unavailable");
+  assert.equal((result.details.result as any).path, c.owned(), "default path describes temporary capture provenance only");
+  assert.equal(result.details.outputPublication, undefined);
   assert.equal(JSON.stringify(result.details).includes(image.data), false);
   assert.equal(JSON.stringify(c.audits).includes(image.data), false);
   assert.equal(JSON.stringify(c.audits).includes(c.owned()), false);
@@ -52,6 +54,7 @@ test("explicit destinations require approval and publish the approved bytes atom
     assert.equal(result.details.status, "success"); assert.notEqual(c.owned(), path);
     assert.deepEqual(await readFile(path), c.bytes);
     assert.equal((result.details.outputPublication as any).status, "success");
+    assert.equal((result.details.result as any).path, path);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -119,6 +122,8 @@ test("rechecks approved destination binding after capture", async () => {
     const c = await capture("png", async () => { await rename(parent, join(root, "old")); await symlink(other, parent); });
     const result = await c.tool.execute("rebound", { action: "screenshot", mode: "screen", path: join(parent, "out.png"), confirm: true });
     assert.equal((result.details.outputPublication as any).status, "needsApproval");
+    assert.equal((result.details.result as any).path, c.owned());
+    assert.notEqual((result.details.result as any).path, join(parent, "out.png"));
     await assert.rejects(access(join(other, "out.png")), { code: "ENOENT" });
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -133,6 +138,7 @@ test("reports an explicit publication failure separately from successful capture
     assert.equal(result.details.status, "success");
     assert.equal((result.details.outputPublication as any)?.status, "error");
     assert.equal((result.details.outputPublication as any)?.code, "OUTPUT_PUBLICATION_FAILED");
+    assert.equal((result.details.result as any).path, c.owned());
     assert.equal(result.content.some(block => block.type === "image"), false);
     assert.equal((await stat(path)).isDirectory(), true);
   } finally { await rm(root, { recursive: true, force: true }); }
@@ -149,6 +155,7 @@ test("preserves completed explicit output if the shared deadline expires before 
     const result = await c.tool.execute("late-timeout", { action: "screenshot", mode: "screen", path, confirm: true, timeoutMs: 1000 });
     assert.equal(result.details.status, "success");
     assert.equal((result.details.outputPublication as any).status, "success");
+    assert.equal((result.details.result as any).path, path);
     assert.ok(result.details.observationUnavailable);
     assert.equal(result.content.some(block => block.type === "image"), false);
     assert.deepEqual(await readFile(path), c.bytes);
@@ -209,6 +216,7 @@ for (const failedStages of [["file-write-staging"], ["observation-staging"], ["f
     assert.equal(failures, failedStages.length);
     assert.equal(result.details.status, "success");
     assert.equal((result.details.outputPublication as any).status, "success");
+    assert.equal((result.details.result as any).path, path);
     assert.deepEqual(await readFile(path), c.bytes);
     assert.equal((result.details.cleanup as any).code, "TEMPORARY_CLEANUP_FAILED");
     assert.deepEqual((result.details.cleanup as any).stages, failedStages);
@@ -294,6 +302,7 @@ test("precommit cancellation and both cleanup failures preserve cancellation wit
     assert.deepEqual((result.details.cleanup as any).stages, ["file-write-staging", "observation-staging"]);
     assert.equal(result.content.some(block => block.type === "image"), false);
     assert.equal(await readFile(path, "utf8"), "previous destination");
+    assert.equal(JSON.stringify(result.details).includes(path), false, "cancelled publication must not advertise the requested destination");
     assert.equal(JSON.stringify(result).includes("private cleanup diagnostics"), false);
   } finally {
     openFault.mock.restore(); cleanupFault.mock.restore(); syncBuiltinESMExports();
@@ -332,4 +341,52 @@ test("shared producer contracts retain large original extents and negative piece
     assert.deepEqual((result.details.observationV1 as any).geometry.regions, f.regions);
     assert.deepEqual((result.details.observationV1 as any).coordinateReference.sourceExtent, { x: 0, y: 0, width: f.raster[0], height: f.raster[1] });
   }
+});
+
+// A missing post-publication rebind must fail these consumer-visible path checks.
+for (const shape of ["screenshot_raw", "files"] as const) test(`published Peekaboo ${shape} primary follows the approved path without rewriting other artifacts`, async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "observation-mac-primary-")));
+  try {
+    const path = join(root, "published.png");
+    const c = await capture("png", async (owned, receipt) => ({
+      ok: true, adapter: "coven-desktop-use", result: {
+        ok: true, backend: "peekaboo", path: owned, observationV1: receipt,
+        result: { success: true, data: {
+          ...(shape === "screenshot_raw" ? { screenshot_raw: owned, screenshot_annotated: owned, ui_map: owned }
+            : { files: [{ path: owned, item_label: "Display 1 (Index 0)", mime_type: "image/png" }], observations: [], snapshot_id: "fixture" }),
+          path: owned, analysis: { text: owned },
+        } },
+      },
+    }));
+    const result = await c.tool.execute("mac-published", { action: "inspect", mode: "screen", path, confirm: true });
+    assert.equal(result.details.status, "success");
+    const adapter = (result.details.result as any).result;
+    assert.equal(adapter.path, path);
+    const data = adapter.result.data;
+    assert.equal(shape === "screenshot_raw" ? data.screenshot_raw : data.files[0].path, path);
+    assert.equal(data.path, c.owned());
+    assert.equal(data.analysis.text, c.owned());
+    if (shape === "screenshot_raw") {
+      assert.equal(data.screenshot_annotated, c.owned());
+      assert.equal(data.ui_map, c.owned());
+    } else assert.equal(data.files[0].item_label, "Display 1 (Index 0)");
+    assert.deepEqual(await readFile(path), c.bytes);
+    await assert.rejects(access(c.owned()), { code: "ENOENT" });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("published image does not relabel unrelated or ambiguous Peekaboo artifact paths", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "observation-mac-other-")));
+  try {
+    const path = join(root, "published.png");
+    const c = await capture("png", async (owned, receipt) => ({ ok: true, backend: "peekaboo", path: owned, observationV1: receipt,
+      result: { success: true, data: { screenshot_raw: "/untrusted/raw.png", files: [{ path: owned }, { path: "/untrusted/second.png" }] } },
+    }));
+    const result = await c.tool.execute("mac-other", { action: "screenshot", mode: "screen", path, confirm: true });
+    const data = (result.details.result as any).result.data;
+    assert.equal((result.details.result as any).path, path);
+    assert.equal(data.screenshot_raw, "/untrusted/raw.png");
+    assert.deepEqual(data.files, [{ path: c.owned() }, { path: "/untrusted/second.png" }]);
+    assert.deepEqual(await readFile(path), c.bytes);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

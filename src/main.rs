@@ -1029,9 +1029,41 @@ where
     }
     // Publication has completed. Do not turn this write into cancellation after
     // the fact: the caller needs the truthful completed outcome.
+    rebind_peekaboo_primary_path(&mut parsed, &image.to_string_lossy(), path);
     parsed["path"] = path.into();
     parsed["observationV1"] = receipt;
     parsed.to_string()
+}
+
+// Peekaboo 69764083 SeeResult.screenshot_raw / ImageCaptureResult.files identify
+// primary artifacts. Rebind only the exact helper-owned file after commit, never
+// annotations, maps, arbitrary strings or an ambiguous multi-image result.
+fn rebind_peekaboo_primary_path(result: &mut serde_json::Value, source: &str, target: &str) {
+    if result["backend"] != "peekaboo" {
+        return;
+    }
+    let Some(data) = result
+        .get_mut("result")
+        .and_then(|r| r.get_mut("data"))
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+    if data
+        .get("screenshot_raw")
+        .and_then(serde_json::Value::as_str)
+        == Some(source)
+    {
+        data.insert("screenshot_raw".into(), target.into());
+    }
+    if let Some(files) = data
+        .get_mut("files")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        if files.len() == 1 && files[0]["path"].as_str() == Some(source) {
+            files[0]["path"] = target.into();
+        }
+    }
 }
 
 fn x11_screenshot(
