@@ -1,4 +1,6 @@
 import path from "node:path";
+import { normalizeComputerUseAction, type CanonicalAction, type LegacyAction } from "./computer-use-actions.js";
+export { normalizeComputerUseAction } from "./computer-use-actions.js";
 
 const MAX_APPROVAL_INPUT_BYTES = 2_000;
 const SECRET_PATH_RE = /(^|\/|\\)(\.ssh|\.gnupg|keychain|secrets?|credentials?|id_rsa|id_ed25519|auth\.json|auth-profiles\.json|token)(\/|\\|$)/i;
@@ -14,30 +16,7 @@ export type ComputerUseRisk =
 
 export type ComputerUseDecisionStatus = "allow" | "needsApproval" | "blocked";
 
-export type ComputerUseAction =
-  | "health"
-  | "stop"
-  | "doctor"
-  | "inspect"
-  | "screenshot"
-  | "click"
-  | "type-text"
-  | "keypress"
-  | "scroll"
-  | "focus"
-  | "shell"
-  | "file-list"
-  | "file-read"
-  | "file-write"
-  | "clipboard-read"
-  | "clipboard-write"
-  | "browser-open"
-  | "app-launch"
-  | "permissions"
-  | "see"
-  | "capture"
-  | "type"
-  | "press";
+export type ComputerUseAction = CanonicalAction | LegacyAction;
 
 export type ComputerUseParams = {
   action: ComputerUseAction;
@@ -113,23 +92,6 @@ export type NormalizedAdapterResult = {
 const INTERACTIVE_ACTIONS = new Set(["click", "type-text", "keypress", "scroll", "focus"]);
 const OBSERVE_ACTIONS = new Set(["health", "stop", "doctor", "inspect", "screenshot"]);
 const FILE_READ_ACTIONS = new Set(["file-list", "file-read"]);
-
-export function normalizeComputerUseAction(action: ComputerUseParams["action"]): string {
-  switch (action) {
-    case "permissions":
-      return "doctor";
-    case "see":
-      return "inspect";
-    case "capture":
-      return "screenshot";
-    case "type":
-      return "type-text";
-    case "press":
-      return "keypress";
-    default:
-      return action;
-  }
-}
 
 export function classifyComputerUseRequest(
   params: ComputerUseParams,

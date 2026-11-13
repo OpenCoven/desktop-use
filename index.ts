@@ -1,3 +1,4 @@
+import { ACTION_PERMISSIONS_CONFIG_SCHEMA, ACTION_PROFILE_DENIED_REASON, isActionAllowed, resolveActionPermissions } from "./src/action-permissions.js";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { gatewayApprovalDisplay } from "./src/approval-display.js";
 import {
@@ -29,7 +30,19 @@ export default definePluginEntry({
   name: "OpenCoven Desktop Use",
   description:
     `Registers the dedicated ${COMPUTER_USE_TOOL_NAME} agent tool and delegates desktop automation to the external OpenCoven coven-desktop-use adapter.`,
+  configSchema: {
+    jsonSchema: ACTION_PERMISSIONS_CONFIG_SCHEMA,
+    safeParse(value) {
+      try {
+        resolveActionPermissions(value);
+        return { success: true as const, data: value };
+      } catch {
+        return { success: false as const, error: { issues: [{ path: [], message: "Invalid action permissions configuration." }] } };
+      }
+    },
+  },
   register(api) {
+    const actionPermissions = resolveActionPermissions(api.pluginConfig);
     const optionalApi = api as typeof api & OptionalComputerUseApi;
     // Hook contexts omit workspaceDir in this SDK. Retain the authenticated tool-factory context.
     const policyContexts = new Map<string, ComputerUsePolicyContext | undefined>();
@@ -44,8 +57,8 @@ export default definePluginEntry({
       if (policyContexts.size > 256) policyContexts.delete(policyContexts.keys().next().value!);
       return snapshot;
     };
-    api.registerTool((ctx) => createComputerUseTool({ ctx: remember(ctx) }), { name: COMPUTER_USE_TOOL_NAME });
-    api.registerTool((ctx) => createDesktopUseTool({ ctx: remember(ctx) }), {
+    api.registerTool((ctx) => createComputerUseTool({ ctx: remember(ctx), actionPermissions }), { name: COMPUTER_USE_TOOL_NAME });
+    api.registerTool((ctx) => createDesktopUseTool({ ctx: remember(ctx), actionPermissions }), {
       name: DESKTOP_USE_TOOL_NAME,
       optional: true,
     });
@@ -81,6 +94,7 @@ export default definePluginEntry({
           return { block: true, blockReason: "Invalid computer-use parameters." };
         }
         const action = normalizeComputerUseAction(params.action);
+        if (!isActionAllowed(actionPermissions, action)) return { block: true, blockReason: ACTION_PROFILE_DENIED_REASON };
         const known = policyContexts.get(scope(ctx));
         const policyContext = { ...known, agentId: ctx.agentId, sessionKey: ctx.sessionKey };
         const preliminary = classifyComputerUseRequest(params, policyContext);
