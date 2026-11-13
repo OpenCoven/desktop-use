@@ -15,6 +15,45 @@
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "properties": {}
+    "properties": {
+      "actionProfile": {
+        "type": "string",
+        "enum": [
+          "full",
+          "observation-only",
+          "desktop-only"
+        ],
+        "default": "full",
+        "description": "Trusted action eligibility preset; changes require plugin/gateway reload. Does not grant approval."
+      },
+      "allowedActions": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "enum": [
+            "health",
+            "stop",
+            "doctor",
+            "inspect",
+            "screenshot",
+            "click",
+            "type-text",
+            "keypress",
+            "scroll",
+            "focus",
+            "shell",
+            "file-list",
+            "file-read",
+            "file-write",
+            "clipboard-read",
+            "clipboard-write",
+            "browser-open",
+            "app-launch"
+          ]
+        },
+        "description": "Optional canonical action intersection with the preset. An empty list retains Stop only; Stop is always available."
+      }
+    }
   }
 }
