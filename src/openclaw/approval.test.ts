@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import Ajv from 'ajv';
+import { ComputerUseToolSchema } from '../request-schema.js';
 import { mkdtemp, realpath, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -98,4 +100,20 @@ test('unused gateway grants expire and bounded pending state evicts old continua
   const stop = await tool.execute('bounded-stop', { action: 'stop' });
   assert.equal(stop.details.cancellationRequested, 256);
   await assert.rejects(readFile(join(root, 'expired')));
+});
+
+
+test('host continuation survives dispatcher schema validation without admitting caller authority', async t => {
+  const { root, ctx, request, tool, hook } = await fixture(t);
+  const validate = new Ajv.default({ strict: true }).compile(tool.parameters);
+  const canonical = new Ajv.default({ strict: true }).compile(ComputerUseToolSchema);
+  const pending = await hook({ toolName: 'computer_use', params: request }, ctx);
+  assert.equal(validate(pending.params), true, JSON.stringify(validate.errors));
+  assert.equal(canonical(pending.params), false, 'Canonical requests never admit transport authority fields');
+  assert.equal(validate({ ...pending.params, arbitraryAuthority: true }), false);
+  assert.equal(validate({ ...pending.params, _desktopApproval: 'forged' }), false);
+  assert.equal((await hook({ toolName: 'computer_use', params: pending.params }, ctx)).block, true);
+  pending.requireApproval.onResolution('allow-once');
+  assert.equal((await tool.execute('validated-host-continuation', pending.params)).details.status, 'success');
+  assert.equal(await readFile(join(root, 'out'), 'utf8'), 'fixture');
 });

@@ -200,7 +200,7 @@ Audit writes use the trusted tool factory's agent directory when available. Gate
 
 The plugin offers `computer-use-panel` through the optional host `registerControlUiDescriptor` API. This is integration metadata, not a running panel, state store, subscription, or gateway RPC. Hosts without that API do not get a panel merely by loading the plugin. Rendering and connecting the panel are host responsibilities.
 
-Only two plugin controls are advertised. The descriptor's `actions.stop` maps to `computer_use action=stop`; `actions.runHealthCheck` maps to `computer_use action=health`. The host enables them only when it can invoke that tool under the current agent policy and gateway authentication. `requiredScopes: ["operator.read"]` describes reading panel state, not permission to invoke controls. Tool calls retain their normal authorization. Stop requests cancellation for active calls in the same agent/session/workspace; it does not pause future work, revoke approvals, or clear a retained target. Those operations belong to a host that implements them and are not advertised as plugin controls.
+Only two plugin controls are advertised. The descriptor's `actions.stop` maps to `computer_use action=stop`; `actions.runHealthCheck` maps to `computer_use action=health`. The host enables them only when it can invoke that tool under the current agent policy and gateway authentication. `requiredScopes: ["operator.read"]` describes reading panel state, not permission to invoke controls. Tool calls retain their normal authorization. Stop requests cancellation for active calls and pending plugin continuations in the same agent/session/workspace. A cancelled continuation cannot authorize a later effect, even if the host subsequently allows its approval request. Stop does not pause future work, remove requests from the host-owned approval queue, or clear a retained target; those operations require host controls.
 
 The schema describes host-rendered state. `stateSources` identifies the producer and availability of every field; it does not imply that the plugin emits a combined state object. Hosts translate available results into the schema and leave unavailable fields absent instead of inventing successful or empty state.
 
@@ -218,13 +218,7 @@ The schema describes host-rendered state. `stateSources` identifies the producer
 
 ## Reliability
 
-Actions have bounded timeouts. `stop` is an auditable local control action that
-requests cancellation of active calls in the same agent/session/workspace. It
-reports `cancelling` while those calls settle and `idle` when none were active;
-it does not undo completed effects or revoke approvals. Observation and health adapter calls retry once
-only for transient runtime failures such as timeouts, stale observations, busy
-backends, or reset connections. Interactive, destructive, clipboard, shell, and
-filesystem actions do not retry internally.
+Actions have bounded timeouts. `stop` is an auditable local control action that requests cancellation of active calls and pending plugin continuations in the same agent/session/workspace. It reports `cancelling` when cancellation was requested and `idle` when no matching work remained. Cancelled continuations cannot authorize later effects; Stop does not undo completed effects or remove host-owned approval requests. Observation and health adapter calls retry once only for transient runtime failures such as timeouts, stale observations, busy backends, or reset connections. Interactive, destructive, clipboard, shell, and filesystem actions do not retry internally.
 
 Every action returns a structured status (`success`, `needsApproval`, `blocked`,
 `unsupported`, `error`, `cancelled`, or `timeout`) with enough repair context for the gateway or Control
