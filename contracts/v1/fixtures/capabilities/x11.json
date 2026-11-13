@@ -107,7 +107,7 @@
               "name": "linux",
               "version": null
             },
-            "scope": "version-qualified-stable-geometry-required; see-image-geometry-contract",
+            "scope": "current-x11-root-extent-and-signed-16-bit-input-bounds; not-probed",
             "status": "not-run"
           },
           {

@@ -519,6 +519,23 @@ fn doctor_reports_share_one_observational_protocol_probe_without_desktop_input()
         result["capabilitiesV1"]["environment"],
         json!({"platform":"linux","session":"wayland"})
     );
+    let screen: Vec<_> = result["capabilitiesV1"]["actions"]["screenshot"]["variants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|v| v["mode"] == "screen")
+        .collect();
+    assert_eq!(screen.len(), 2);
+    assert_eq!(screen[0]["state"], "available");
+    assert_eq!(
+        screen[0]["limits"]["parameters"]["format"]["values"],
+        json!(["png"])
+    );
+    assert_eq!(screen[1]["state"], "unverified");
+    assert_eq!(
+        screen[1]["reasonCodes"],
+        json!(["ENCODING_SUPPORT_UNVERIFIED"])
+    );
     let schema: Value =
         serde_json::from_str(include_str!("../contracts/v1/capabilities.schema.json")).unwrap();
     assert!(jsonschema::is_valid(&schema, &result["capabilitiesV1"]));

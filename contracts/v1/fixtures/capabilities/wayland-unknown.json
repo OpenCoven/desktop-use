@@ -107,7 +107,7 @@
               "name": "linux",
               "version": null
             },
-            "scope": "version-qualified-stable-geometry-required; see-image-geometry-contract",
+            "scope": "ydotool-package-sway-endpoint-layout-input-registration-and-acceleration; not-probed",
             "status": "not-run"
           },
           {
@@ -994,6 +994,15 @@
             "status": "unknown"
           },
           {
+            "kind": "implementation",
+            "provider": {
+              "name": "grim",
+              "version": null
+            },
+            "scope": "grim-jpeg-encoding-build-support; not-implied-by-path-or-protocol",
+            "status": "unknown"
+          },
+          {
             "kind": "geometry",
             "provider": {
               "name": "linux",
@@ -1035,8 +1044,7 @@
               "parameters": {
                 "format": {
                   "values": [
-                    "png",
-                    "jpg"
+                    "png"
                   ]
                 },
                 "image": {
@@ -1068,8 +1076,7 @@
               "parameters": {
                 "format": {
                   "values": [
-                    "png",
-                    "jpg"
+                    "png"
                   ]
                 },
                 "image": {
@@ -1101,8 +1108,7 @@
               "parameters": {
                 "format": {
                   "values": [
-                    "png",
-                    "jpg"
+                    "png"
                   ]
                 },
                 "image": {
@@ -1121,6 +1127,111 @@
             },
             "reasonCodes": [
               "CAPTURE_MODE_UNSUPPORTED"
+            ],
+            "selectors": [],
+            "state": "unsupported"
+          },
+          {
+            "limits": {
+              "constraints": [
+                "DISPLAY_ACCESS_UNVERIFIED",
+                "COORDINATE_MAPPING_REQUIRES_GEOMETRY_RECEIPT",
+                "GRIM_JPEG_BUILD_SUPPORT_REQUIRED"
+              ],
+              "parameters": {
+                "format": {
+                  "knowledge": "unknown",
+                  "values": [
+                    "jpg"
+                  ]
+                },
+                "image": {
+                  "maxBytes": 8388608,
+                  "maxDecodedBytes": 268435456,
+                  "maxHeight": 16384,
+                  "maxPixels": 64000000,
+                  "maxWidth": 16384
+                }
+              }
+            },
+            "mode": "screen",
+            "provider": {
+              "name": "grim",
+              "version": null
+            },
+            "reasonCodes": [
+              "PROTOCOL_UNVERIFIED",
+              "ENCODING_SUPPORT_UNVERIFIED"
+            ],
+            "selectors": [],
+            "state": "unverified"
+          },
+          {
+            "limits": {
+              "constraints": [
+                "DISPLAY_ACCESS_UNVERIFIED",
+                "COORDINATE_MAPPING_REQUIRES_GEOMETRY_RECEIPT",
+                "GRIM_JPEG_BUILD_SUPPORT_REQUIRED"
+              ],
+              "parameters": {
+                "format": {
+                  "knowledge": "unknown",
+                  "values": [
+                    "jpg"
+                  ]
+                },
+                "image": {
+                  "maxBytes": 8388608,
+                  "maxDecodedBytes": 268435456,
+                  "maxHeight": 16384,
+                  "maxPixels": 64000000,
+                  "maxWidth": 16384
+                }
+              }
+            },
+            "mode": "window",
+            "provider": {
+              "name": "grim",
+              "version": null
+            },
+            "reasonCodes": [
+              "CAPTURE_MODE_UNSUPPORTED",
+              "ENCODING_SUPPORT_UNVERIFIED"
+            ],
+            "selectors": [],
+            "state": "unsupported"
+          },
+          {
+            "limits": {
+              "constraints": [
+                "DISPLAY_ACCESS_UNVERIFIED",
+                "COORDINATE_MAPPING_REQUIRES_GEOMETRY_RECEIPT",
+                "GRIM_JPEG_BUILD_SUPPORT_REQUIRED"
+              ],
+              "parameters": {
+                "format": {
+                  "knowledge": "unknown",
+                  "values": [
+                    "jpg"
+                  ]
+                },
+                "image": {
+                  "maxBytes": 8388608,
+                  "maxDecodedBytes": 268435456,
+                  "maxHeight": 16384,
+                  "maxPixels": 64000000,
+                  "maxWidth": 16384
+                }
+              }
+            },
+            "mode": "frontmost",
+            "provider": {
+              "name": "grim",
+              "version": null
+            },
+            "reasonCodes": [
+              "CAPTURE_MODE_UNSUPPORTED",
+              "ENCODING_SUPPORT_UNVERIFIED"
             ],
             "selectors": [],
             "state": "unsupported"

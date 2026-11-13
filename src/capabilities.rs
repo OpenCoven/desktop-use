@@ -9,6 +9,9 @@ pub struct Facts {
     pub session: Option<LinuxSession>,
     pub tools: Vec<String>,
     pub protocols: linux_capabilities::Protocols,
+    // An encoding-build fact, never inferred from PATH, protocol or version.
+    // Ordinary doctor/help discovery has no such qualification and leaves None.
+    pub grim_jpeg_support: Option<bool>,
     pub sway_socket: bool,
     pub permission: &'static str,
     pub observed_at_ms: Option<u64>,
@@ -243,7 +246,9 @@ fn linux_action(name: &str, facts: &Facts, action: &mut Value) {
             } else if wayland && facts.protocols.capture.is_none() {
                 reasons.push("PROTOCOL_UNVERIFIED");
             }
-            if !wayland && capture == "maim" && mode != "screen" {
+            // Lookup can only qualify an installed capture provider; it cannot
+            // recover a missing maim or append the same missing-helper reason.
+            if !wayland && capture == "maim" && facts.has("maim") && mode != "screen" {
                 constraints.push("SUCCESSFUL_NUMERIC_ACTIVE_WINDOW_LOOKUP_REQUIRED");
                 if !facts.has("xdotool") {
                     state = "unsupported";
@@ -266,8 +271,48 @@ fn linux_action(name: &str, facts: &Facts, action: &mut Value) {
                 state,
                 &reasons,
                 &constraints,
-                image_limits(name == "inspect"),
+                image_limits(name == "inspect" || wayland),
             ));
+        }
+        if wayland && name == "screenshot" {
+            // PNG support does not establish JPEG build support. Keep formats
+            // in separate variants so an available PNG path cannot advertise
+            // an unknown or disabled encoding to a consumer.
+            let jpeg: Vec<_> = variants
+                .iter()
+                .map(|png| {
+                    let mut v = png.clone();
+                    v["limits"]["parameters"]["format"] = json!({
+                        "values":["jpg"],
+                        "knowledge":if facts.grim_jpeg_support.is_some() {"known"} else {"unknown"}
+                    });
+                    v["limits"]["constraints"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(json!("GRIM_JPEG_BUILD_SUPPORT_REQUIRED"));
+                    match facts.grim_jpeg_support {
+                        Some(false) => {
+                            v["state"] = json!("unsupported");
+                            v["reasonCodes"]
+                                .as_array_mut()
+                                .unwrap()
+                                .push(json!("ENCODING_BUILD_DISABLED"));
+                        }
+                        None => {
+                            if v["state"] == "available" {
+                                v["state"] = json!("unverified");
+                            }
+                            v["reasonCodes"]
+                                .as_array_mut()
+                                .unwrap()
+                                .push(json!("ENCODING_SUPPORT_UNVERIFIED"));
+                        }
+                        Some(true) => (),
+                    }
+                    v
+                })
+                .collect();
+            variants.extend(jpeg);
         }
     } else if !wayland {
         if name == "focus" {
@@ -377,6 +422,13 @@ fn linux_action(name: &str, facts: &Facts, action: &mut Value) {
                     && facts.protocols.keyboard != Some(false)
                     && (facts.protocols.keyboard == Some(true) || !facts.has("ydotool"))
                     && (!fallback || !facts.has("ydotool"));
+                let mut wtype_reasons = Vec::new();
+                if facts.has("wtype") && facts.protocols.keyboard == Some(false) {
+                    wtype_reasons.push("PROTOCOL_UNAVAILABLE");
+                }
+                if !wtype_selected && facts.has("wtype") && facts.has("ydotool") {
+                    wtype_reasons.push("PROVIDER_NOT_SELECTED");
+                }
                 variants.push(variant(
                     None,
                     &[],
@@ -388,11 +440,7 @@ fn linux_action(name: &str, facts: &Facts, action: &mut Value) {
                     } else {
                         keyboard
                     },
-                    if !wtype_selected && facts.has("wtype") {
-                        &["PROVIDER_NOT_SELECTED"][..]
-                    } else {
-                        &[]
-                    },
+                    &wtype_reasons,
                     if fallback {
                         &[
                             "PAGE_ARROW_KEY_FALLBACK",
@@ -551,11 +599,34 @@ fn linux_action(name: &str, facts: &Facts, action: &mut Value) {
             facts.observed_at_ms,
         ));
     }
+    if wayland && name == "screenshot" {
+        evidence_items.push(evidence(
+            "implementation",
+            match facts.grim_jpeg_support {
+                Some(true) => "passed",
+                Some(false) => "failed",
+                None => "unknown",
+            },
+            "grim-jpeg-encoding-build-support; not-implied-by-path-or-protocol",
+            "grim",
+            if facts.grim_jpeg_support.is_some() {
+                facts.observed_at_ms
+            } else {
+                None
+            },
+        ));
+    }
     if name == "click" || matches!(name, "inspect" | "screenshot") {
         evidence_items.push(evidence(
             "geometry",
             "not-run",
-            "version-qualified-stable-geometry-required; see-image-geometry-contract",
+            if name == "click" && !wayland {
+                "current-x11-root-extent-and-signed-16-bit-input-bounds; not-probed"
+            } else if name == "click" {
+                "ydotool-package-sway-endpoint-layout-input-registration-and-acceleration; not-probed"
+            } else {
+                "version-qualified-stable-geometry-required; see-image-geometry-contract"
+            },
             "linux",
             None,
         ));
@@ -590,6 +661,7 @@ pub fn discover(platform: Platform) -> Facts {
         session,
         tools,
         protocols: linux_capabilities::Protocols::default(),
+        grim_jpeg_support: None,
         sway_socket: env::var_os("SWAYSOCK").is_some(),
         permission: "unknown",
         observed_at_ms: SystemTime::now()
