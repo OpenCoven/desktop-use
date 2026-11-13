@@ -82,3 +82,13 @@ test('candidate entry point refuses missing trusted policy rather than silently 
  const f=await setup(t);const code=`import {stageCandidateRelease} from ${JSON.stringify(new URL('./install-adapter.mjs',import.meta.url).href)};await stageCandidateRelease(${JSON.stringify({version:'0.1.3',root:join(f.root,'installed'),manifest:f.manifestPath,assets:f.root})});`;
  const result=spawnSync(process.execPath,['--input-type=module','-e',code],{env:f.env,encoding:'utf8'});assert.notEqual(result.status,0);assert.match(result.stderr,/RELEASE_CANDIDATE_POLICY_REQUIRED/);
 });
+test('bare environment overrides resolve through PATH before version and shadow diagnostics',async t=>{
+ const f=await setup(t);const {inspectBinarySelection}=await import('./install-adapter.mjs');const desired=join(f.root,'coven-desktop-use');const environment={...process.env,COVEN_DESKTOP_USE_BIN:'coven-desktop-use',PATH:f.root};
+ const launched=JSON.parse(execFileSync(environment.COVEN_DESKTOP_USE_BIN,['--version'],{env:environment,encoding:'utf8'}));assert.equal(launched.version,'0.1.3');
+ const result=await inspectBinarySelection(desired,{home:join(f.root,'unused-home'),environment});assert.equal(result.discovery.configuredPath,'coven-desktop-use');assert.equal(result.discovery.resolvedPath,await realpath(desired));assert.equal(result.discovery.version,launched.version);assert.equal(result.discovery.reason,'COVEN_DESKTOP_USE_BIN');assert.equal(result.discovery.shadowsSelectedPair,false);
+});
+test('dangling Cargo symlinks are skipped in favor of the executable on PATH',async t=>{
+ const f=await setup(t);const {inspectBinarySelection}=await import('./install-adapter.mjs');const home=join(f.root,'fixture-home');await mkdir(join(home,'.cargo','bin'),{recursive:true});const cargo=join(home,'.cargo','bin','coven-desktop-use');await symlink(join(f.root,'missing-cargo-binary'),cargo);const desired=join(f.root,'coven-desktop-use');
+ const {existsSync}=await import('node:fs');assert.equal(existsSync(cargo),false);const launched=JSON.parse(execFileSync('coven-desktop-use',['--version'],{env:{...process.env,PATH:f.root},encoding:'utf8'}));
+ const result=await inspectBinarySelection(desired,{home,environment:{PATH:f.root}});assert.equal(result.discovery.resolvedPath,await realpath(desired));assert.equal(result.discovery.version,launched.version);assert.equal(result.discovery.reason,'PATH');assert.equal(result.discovery.shadowsSelectedPair,false);
+});

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /** Explicit local paired installation. This module never mutates host configuration or installs helpers. */
-import { mkdir, mkdtemp, writeFile, readFile, lstat, rename, rm, chmod, readdir, realpath, access, open } from 'node:fs/promises';
-import { constants } from 'node:fs';
+import { mkdir, mkdtemp, writeFile, readFile, lstat, stat, rename, rm, chmod, readdir, realpath, access, open } from 'node:fs/promises';
+import { constants, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { homedir, release } from 'node:os';
 import { join, resolve, dirname, delimiter, isAbsolute } from 'node:path';
@@ -102,10 +102,34 @@ async function loadStaged(root,version,policy) {
   return {folder,m,receipt};
 }
 export async function inspectBinarySelection(adapterPath, {home=homedir(),environment=process.env}={}) {
-  const cargo=join(home,'.cargo','bin','coven-desktop-use');let selected=environment.COVEN_DESKTOP_USE_BIN;let reason='COVEN_DESKTOP_USE_BIN';
-  if(!selected){try{await lstat(cargo);selected=cargo;reason='cargo';}catch{reason='PATH';}}
-  if(!selected){for(const folder of (environment.PATH??'').split(delimiter)){const p=resolve(folder,'coven-desktop-use');try{await access(p,constants.X_OK);selected=p;break;}catch{}}}
-  let version=null,resolvedPath=null;if(selected){try{resolvedPath=await realpath(selected);version=json(run(selected,['--version'],5000)).version??null;}catch{}}
+  const cargo = join(home, '.cargo', 'bin', 'coven-desktop-use');
+  let selected = environment.COVEN_DESKTOP_USE_BIN;
+  let reason = 'COVEN_DESKTOP_USE_BIN';
+  if (!selected) {
+    const cargoExists = existsSync(cargo);
+    selected = cargoExists ? cargo : 'coven-desktop-use';
+    reason = cargoExists ? 'cargo' : 'PATH';
+  }
+  let executablePath = selected.includes('/') ? selected : null;
+  if (!executablePath) {
+    // The plugin passes bare names to execFile; match its Unix PATH lookup.
+    for (const folder of (environment.PATH ?? '/usr/bin:/bin').split(delimiter)) {
+      const candidate = resolve(folder, selected);
+      try {
+        await access(candidate, constants.X_OK);
+        if (!(await stat(candidate)).isFile()) continue;
+        executablePath = candidate;
+        break;
+      } catch {}
+    }
+  }
+  let version = null, resolvedPath = null;
+  if (executablePath) {
+    try {
+      resolvedPath = await realpath(executablePath);
+      version = json(run(executablePath, ['--version'], 5000)).version ?? null;
+    } catch {}
+  }
   const selectedPairPath=await realpath(adapterPath).catch(()=>adapterPath);
   const quote=p=>`'${p.replaceAll("'","'\\''")}'`;
   return {discovery:{configuredPath:selected??null,resolvedPath,version,reason,shadowsSelectedPair:resolvedPath!==selectedPairPath},configuration:{plugin:`COVEN_DESKTOP_USE_BIN=${quote(adapterPath)} openclaw gateway`,sdk:{adapterPath},mcp:{adapterPath}},configurationScope:'Current installer process account/environment only; inspect the actual gateway launcher separately.'};
