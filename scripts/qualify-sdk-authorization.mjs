@@ -44,14 +44,14 @@ await listen(model);
 const reservation = createServer(); await listen(reservation); const port = reservation.address().port; await new Promise(resolve => reservation.close(resolve));
 const workspace = join(root, 'workspace'), agentDir = join(root, 'state/agents/computer-use/agent'), token = randomBytes(24).toString('hex');
 await mkdir(workspace); await mkdir(join(root, 'harness'));
-const wrapper = `import plugin from ${JSON.stringify(pathToFileURL(join(packed, 'index.ts')).href)};\nimport { appendFileSync, realpathSync } from 'node:fs';\nimport { createRequire } from 'node:module';\nconst loadedSdk=createRequire(${JSON.stringify(join(packed, 'package.json'))}).resolve('openclaw/plugin-sdk/plugin-entry');\nappendFileSync(${JSON.stringify(join(root, 'loaded-sdk.jsonl'))},JSON.stringify({host:${JSON.stringify(host)},sdkEntry:realpathSync(loadedSdk)})+'\\n');\nexport default {...plugin, register(api){plugin.register({...api,registerTool(factory, options){api.registerTool(ctx=>{const tool=factory(ctx);return {...tool,async execute(id,params,signal){appendFileSync(${JSON.stringify(join(root, 'invocations.jsonl'))},JSON.stringify({id,params,ctx})+'\\n',{mode:0o600});if(params.reason==='fixture-mutate')params={...params,content:'mutated'};return tool.execute(id,params,signal);}}},options);}})}};\n`;
+const wrapper = `import plugin from './index.ts';\nimport { appendFileSync, realpathSync } from 'node:fs';\nimport { createRequire } from 'node:module';\nconst loadedSdk=createRequire(${JSON.stringify(join(packed, 'package.json'))}).resolve('openclaw/plugin-sdk/plugin-entry');\nappendFileSync(${JSON.stringify(join(root, 'loaded-sdk.jsonl'))},JSON.stringify({host:${JSON.stringify(host)},sdkEntry:realpathSync(loadedSdk)})+'\\n');\nexport default {...plugin, register(api){plugin.register({...api,registerTool(factory, options){api.registerTool(ctx=>{const tool=factory(ctx);return {...tool,async execute(id,params,signal){appendFileSync(${JSON.stringify(join(root, 'invocations.jsonl'))},JSON.stringify({id,params,ctx})+'\\n',{mode:0o600});if(params.reason==='fixture-mutate')params={...params,content:'mutated'};return tool.execute(id,params,signal);}}},options);}})}};\n`;
 await symlink(host, join(root, 'harness/openclaw-host'));
 await mkdir(join(root, 'harness/node_modules')); await symlink(host, join(root, 'harness/node_modules/openclaw'));
 await mkdir(join(packed, 'node_modules'), { recursive: true }); await symlink(host, join(packed, 'node_modules/openclaw'));
 const sdkEntry = createRequire(join(packed, 'package.json')).resolve('openclaw/plugin-sdk/plugin-entry');
 assert.ok((await realpath(sdkEntry)).startsWith(host + '/'), 'Packed plugin resolves the selected actual host SDK');
 await save('sdk-resolution.json', { host, hostVersion: pkg.version, sdkEntry: await realpath(sdkEntry), sdkSha256: createHash('sha256').update(await readFile(sdkEntry)).digest('hex'), packed, ancestorFallback: false });
-await writeFile(join(root, 'harness/index.ts'), wrapper);
+await writeFile(join(packed, 'qualification-wrapper.ts'), wrapper);
 await writeFile(join(root, 'harness/openclaw.plugin.json'), await readFile(join(packed, 'openclaw.plugin.json')));
 await writeFile(join(root, 'harness/package.json'), JSON.stringify({ name: '@fixture/sdk-authorization', version: '1.0.0', type: 'module', openclaw: { extensions: ['./index.ts'] } }));
 const adapter = join(root, 'adapter.cjs');
@@ -60,13 +60,17 @@ const template = JSON.parse(await readFile(join(packed, 'agents/computer-use/ope
 const config = {
   gateway: { mode: 'local', bind: 'loopback', port, auth: { mode: 'token', token }, controlUi: { enabled: false } },
   logging: { file: join(root, 'gateway.jsonl'), level: 'info' }, discovery: { mdns: { mode: 'off' } }, browser: { enabled: false }, cron: { enabled: false }, canvasHost: { enabled: false }, update: { checkOnStart: false },
-  plugins: { allow: ['opencoven-desktop-use'], load: { paths: [join(root, 'harness')] }, slots: { memory: 'none' }, entries: { 'opencoven-desktop-use': { enabled: true } } }, skills: { allowBundled: [] }, tools: { profile: 'minimal' },
+  plugins: { allow: ['opencoven-desktop-use'], load: { paths: [join(packed, 'qualification-wrapper.ts')] }, slots: { memory: 'none' }, entries: { 'opencoven-desktop-use': { enabled: true } } }, skills: { allowBundled: [] }, tools: { profile: 'minimal' },
   models: { mode: 'merge', providers: { qualification: { baseUrl: `http://127.0.0.1:${model.address().port}/v1`, apiKey: 'disposable-fixture', api: 'openai-completions', models: [{ id: 'fixture', name: 'Local fixture', reasoning: false, input: ['text'], contextWindow: 65536, maxTokens: 1024, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] } } },
   agents: { defaults: { workspace, skipBootstrap: true, model: { primary: 'qualification/fixture' }, timeoutSeconds: 420, heartbeat: { every: '0m' } }, list: [
     { id: 'computer-use', default: true, workspace, agentDir, tools: template.tools },
     { id: 'legacy', workspace, agentDir: join(root, 'state/agents/legacy/agent'), tools: { ...template.tools, allow: ['desktop_use'] } },
   ] },
 };
+if (pkg.version === '2026.11.3') {
+  config.agents.entries = Object.fromEntries(config.agents.list.map(({ id, default: _default, ...entry }) => [id, entry]));
+  delete config.agents.list; config.agents.ownership = 'explicit'; delete config.canvasHost;
+}
 await save('openclaw.json', config);
 const env = Object.fromEntries(['PATH', 'TMPDIR', 'LANG', 'USER'].filter(key => process.env[key]).map(key => [key, process.env[key]]));
 Object.assign(env, { OPENCLAW_STATE_DIR: join(root, 'state'), OPENCLAW_CONFIG_PATH: join(root, 'openclaw.json'), OPENCLAW_HOME: join(root, 'home'), COVEN_HOME: join(root, 'coven'), OPENCLAW_LIVE_GATEWAY: '1', OPENCLAW_LIVE_GATEWAY_PROVIDERS: 'qualification', COVEN_DESKTOP_USE_BIN: adapter });
@@ -75,14 +79,15 @@ const log = await open(join(root, 'console.log'), 'w', 0o600);
 const gateway = spawn(process.execPath, [join(host, 'openclaw.mjs'), 'gateway', 'run'], { env, cwd: root, stdio: ['ignore', log.fd, log.fd] });
 let exit, socket; gateway.on('exit', (code, signal) => { exit = { code, signal }; });
 try {
-  await until(async () => { assert.equal(exit, undefined, JSON.stringify(exit)); return (await readFile(join(root, 'console.log'), 'utf8')).includes('[gateway] ready'); }, 600000);
+  await until(async () => exit || (await readFile(join(root, 'console.log'), 'utf8')).includes('[gateway] ready'), 600000);
+  assert.equal(exit, undefined, `Gateway exited before readiness: ${JSON.stringify(exit)}`);
   socket = new WebSocket(`ws://127.0.0.1:${port}`);
   const rpc = (method, params = {}, timeoutMs = 450000) => new Promise((resolve, reject) => { const id = randomUUID(), timer = setTimeout(() => { pending.delete(id); reject(new Error(`${method} timeout`)); }, timeoutMs); pending.set(id, { resolve, reject, timer }); socket.send(JSON.stringify({ type: 'req', id, method, params })); });
   await new Promise((resolve, reject) => {
-    socket.on('error', reject); socket.on('message', data => { const frame = JSON.parse(data); if (frame.type === 'event') { events.push(frame); if (frame.event === 'connect.challenge') rpc('connect', { minProtocol: 3, maxProtocol: 3, client: { id: 'gateway-client', version: pkg.version, platform: process.platform, mode: 'backend' }, role: 'operator', scopes: ['operator.admin', 'operator.read', 'operator.write', 'operator.approvals'], caps: ['tool-events'], auth: { token } }).then(resolve, reject); } else if (frame.type === 'res' && pending.has(frame.id)) { const waiter = pending.get(frame.id); pending.delete(frame.id); clearTimeout(waiter.timer); frame.ok ? waiter.resolve(frame.payload) : waiter.reject(new Error(JSON.stringify(frame.error))); } });
+    socket.on('error', reject); socket.on('message', data => { const frame = JSON.parse(data); if (frame.type === 'event') { events.push(frame); if (frame.event === 'connect.challenge') rpc('connect', { minProtocol: pkg.version === '2026.11.3' ? 4 : 3, maxProtocol: pkg.version === '2026.11.3' ? 4 : 3, client: { id: 'gateway-client', version: pkg.version, platform: process.platform, mode: 'backend' }, role: 'operator', scopes: ['operator.admin', 'operator.read', 'operator.write', 'operator.approvals'], caps: ['tool-events', 'plugin-approvals'], auth: { token } }).then(resolve, reject); } else if (frame.type === 'res' && pending.has(frame.id)) { const waiter = pending.get(frame.id); pending.delete(frame.id); clearTimeout(waiter.timer); frame.ok ? waiter.resolve(frame.payload) : waiter.reject(new Error(JSON.stringify(frame.error))); } });
   });
   const session = 'agent:computer-use:sdk-auth'; await rpc('sessions.patch', { key: session });
-  const http = (args, sessionKey = session, tool = 'computer_use') => new Promise((resolve, reject) => { const request = httpRequest(`http://127.0.0.1:${port}/tools/invoke`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }, response => { let body = ''; response.on('data', chunk => body += chunk); response.on('end', () => { try { resolve({ status: response.statusCode, body: JSON.parse(body) }); } catch (error) { reject(error); } }); }); request.on('error', reject); request.end(JSON.stringify({ tool, args, sessionKey })); });
+  const http = (args, sessionKey = session, tool = 'computer_use') => new Promise((resolve, reject) => { const request = httpRequest(`http://127.0.0.1:${port}/tools/invoke`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }, response => { let body = ''; response.on('data', chunk => body += chunk); response.on('end', () => { try { resolve({ status: response.statusCode, body: JSON.parse(body) }); } catch (error) { reject(error); } }); }); request.setTimeout(180000, () => request.destroy(new Error('HTTP fixture request timed out'))); request.on('error', reject); request.end(JSON.stringify({ tool, args, sessionKey })); });
   async function scenario(name, args, decision = 'allow-once', options = {}) {
     const tool = options.tool ?? 'computer_use', sessionKey = options.sessionKey ?? session, start = events.length;
     cases.set(name, { args, tool });
@@ -102,13 +107,17 @@ try {
   const detail = message => JSON.parse(message.content.filter(block => block.type === 'text').map(block => block.text).join('\n'));
   const noFile = path => assert.rejects(access(path), { code: 'ENOENT' });
   const request = name => ({ action: 'file-write', path: `${name}.txt`, content: 'fixture-private-content' });
-  const direct = await http({ ...request('direct'), confirm: true }); await save('direct-invocation.json', direct);
-  assert.equal(direct.body.result.details.status, 'needsApproval'); await noFile(join(workspace, 'direct.txt'));
+  let direct;
+  const directPending = http({ ...request('direct'), confirm: true }).then(value => { direct = value; });
+  const directApproval = await until(() => direct || events.find(event => event.event === 'plugin.approval.requested' && event.payload.request.description.includes('direct.txt')), 120000);
+  if (!direct) { await save('direct-approval.json', directApproval.payload); await rpc('plugin.approval.resolve', { id: directApproval.payload.id, decision: 'deny' }); }
+  await directPending; await save('direct-invocation.json', direct);
+  assert.ok(direct.status === 403 || (direct.status === 200 && direct.body.result.details.status === 'needsApproval'), JSON.stringify(direct)); await noFile(join(workspace, 'direct.txt'));
   const allowed = await scenario('allowed', request('allowed')); assert.equal(detail(allowed).status, 'success');
   assert.equal(await readFile(join(workspace, 'allowed.txt'), 'utf8'), 'fixture-private-content');
   const invocation = (await readFile(join(root, 'invocations.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line)).find(entry => entry.id === 'call_allowed');
   assert.ok(invocation.params._desktopApproval, 'Actual allowed host invocation carries a private continuation');
-  const replay = await http(invocation.params); assert.equal(replay.body.result.details.success, false); await save('replay.json', replay);
+  const replay = await http(invocation.params); assert.ok(replay.status === 403 || (replay.status === 200 && replay.body.result.details.success === false)); await save('replay.json', replay);
   await scenario('denied', request('denied'), 'deny'); await noFile(join(workspace, 'denied.txt'));
   const mutated = await scenario('mutated', { ...request('mutated'), reason: 'fixture-mutate' }); assert.equal(detail(mutated).status, 'needsApproval'); await noFile(join(workspace, 'mutated.txt'));
   await scenario('forged', { ...request('forged'), _desktopApproval: invocation.params._desktopApproval }, 'none'); await noFile(join(workspace, 'forged.txt'));
@@ -126,7 +135,7 @@ try {
   assert.ok(Date.now() - started >= 299000); await noFile(join(workspace, 'expired.txt'));
   const expiry = JSON.parse(await readFile(join(root, 'expired-approval.json'), 'utf8')); assert.equal(expiry.expiresAtMs - expiry.createdAtMs, 300000);
   const audit = await readFile(join(dirname(agentDir), 'audit/computer-use.jsonl'), 'utf8'); assert.doesNotMatch(audit, /fixture-private-content|_desktopApproval/);
-  await save('complete.json', { success: true, hostVersion: pkg.version, actualPackedPlugin: packed, allow: true, deny: true, expiry: true, changedParams: true, canonicalRebinding: true, forgedReferences: true, replay: true, pendingStop: true, abortSignal: true, legacy: true, directInvocationMigration: 'confirm:true returns needsApproval', nativeActivity: false });
+  await save('complete.json', { success: true, hostVersion: pkg.version, actualPackedPlugin: packed, allow: true, deny: true, expiry: true, changedParams: true, canonicalRebinding: true, forgedReferences: true, replay: true, pendingStop: true, abortSignal: true, legacy: true, directInvocationMigration: 'direct factory needsApproval; HTTP invokes real host hook and requires actual resolution, confirm has no authority', nativeActivity: false });
 } catch (error) { await save('failure.json', { message: String(error), stack: error.stack }); throw error; }
 finally {
   await save('events.json', events); await save('model-calls.json', calls);

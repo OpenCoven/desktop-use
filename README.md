@@ -112,7 +112,7 @@ coven-desktop-use doctor
 
 `inspect` and `screenshot` should be used before interactive actions. Actions
 that click, type, press keys, scroll, or focus windows still require explicit
-confirmation via `--confirm` at the adapter layer and an actual allowed OpenClaw gateway approval resolution. Plugin input `confirm: true` is retained only as a deprecated compatibility field and never authorizes execution. Direct HTTP operator invocations also need a trusted approval continuation for gated work; see [the client and approval migration guide](docs/desktop-client.md).
+confirmation via `--confirm` at the adapter layer and an actual allowed OpenClaw gateway approval resolution. Plugin input `confirm: true` is retained only as a deprecated compatibility field and never authorizes execution. Direct factory invocations need a trusted approval provider or continuation, and HTTP calls follow the host's actual approval hook; see [the client and approval migration guide](docs/desktop-client.md).
 
 ## Build
 
