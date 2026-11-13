@@ -316,25 +316,7 @@ fn decode_jpeg(bytes: &[u8]) -> Result<(u32, u32), Failure> {
     let info = decoder.info().ok_or(Failure::Invalid)?;
     let (width, height) = (usize::from(info.width), usize::from(info.height));
     dimensions(width as u32, height as u32)?;
-    let size = width
-        .checked_mul(height)
-        .and_then(|n| n.checked_mul(info.pixel_format.pixel_bytes()))
-        .ok_or(Failure::Limit)?;
-    // jpeg-decoder has no allocator hook and its own output limit is checked
-    // late. Budget retained and queued i16 coefficient planes, u8 planes,
-    // output, padded MCUs, row scratch and 16 MiB fixed overhead before
-    // decode() allocates (0.3.2 decoder.rs/worker/{immediate,multithreaded}.rs).
-    let padded_width = (width as u64 + 31) & !31;
-    let padded_height = (height as u64 + 31) & !31;
-    let allocation = padded_width
-        .checked_mul(padded_height)
-        .and_then(|n| n.checked_mul(24))
-        .and_then(|n| n.checked_add(padded_width * 2048))
-        .and_then(|n| n.checked_add(size as u64 + 16 * 1024 * 1024))
-        .ok_or(Failure::Limit)?;
-    if allocation > MAX_ALLOCATION {
-        return Err(Failure::Limit);
-    }
+    let allocation = jpeg_allocation_budget(info)?;
     // Reserve the bounded budget before decoder-owned allocation; release it
     // before decode to avoid doubling memory. This is not an OS memory sandbox.
     let mut reservation = Vec::<u8>::new();
@@ -353,6 +335,87 @@ fn decode_jpeg(bytes: &[u8]) -> Result<(u32, u32), Failure> {
         return Err(Failure::Invalid);
     }
     Ok((width as u32, height as u32))
+}
+
+// Pure preflight: no decoded image or decoder allocation is performed here.
+fn jpeg_allocation_budget(info: jpeg_decoder::ImageInfo) -> Result<u64, Failure> {
+    let (width, height) = (usize::from(info.width), usize::from(info.height));
+    dimensions(width as u32, height as u32)?;
+    let workspace = 16 * 1024 * 1024;
+    let allocation = if info.coding_process == jpeg_decoder::CodingProcess::Lossless {
+        // ImageInfo does not expose lossless precision. Count components from
+        // its pixel format and budget the worst supported conversion (16 bit),
+        // including for 2..7-bit inputs whose upstream output is also u16.
+        let components = match info.pixel_format {
+            jpeg_decoder::PixelFormat::L8 | jpeg_decoder::PixelFormat::L16 => 1,
+            jpeg_decoder::PixelFormat::RGB24 => 3,
+            jpeg_decoder::PixelFormat::CMYK32 => 4,
+        };
+        jpeg_lossless_allocation(width as u64 * height as u64, components)?
+            .checked_add(workspace)
+            .ok_or(Failure::Limit)?
+    } else {
+        let size = width
+            .checked_mul(height)
+            .and_then(|n| n.checked_mul(info.pixel_format.pixel_bytes()))
+            .ok_or(Failure::Limit)?;
+        // DCT paths: retained/queued i16 coefficients, u8 planes, output,
+        // padded MCUs and row work (decoder.rs/worker/*.rs in pinned 0.3.2).
+        let padded_width = (width as u64 + 31) & !31;
+        let padded_height = (height as u64 + 31) & !31;
+        padded_width
+            .checked_mul(padded_height)
+            .and_then(|n| n.checked_mul(24))
+            .and_then(|n| n.checked_add(padded_width * 2048))
+            .and_then(|n| n.checked_add(size as u64 + workspace))
+            .ok_or(Failure::Limit)?
+    };
+    if allocation > MAX_ALLOCATION {
+        return Err(Failure::Limit);
+    }
+    Ok(allocation)
+}
+
+// Lossless allocations in pinned decoder/lossless.rs are unrelated to DCT MCU
+// buffers. This is a peak bound, not a whole-process RSS or allocator-size cap.
+fn jpeg_lossless_allocation(pixels: u64, components: u64) -> Result<u64, Failure> {
+    // vec![Vec::with_capacity(P); N] clones N-1 empty Vecs, losing their
+    // reservation. Those i32 planes grow to power-of-two capacities (minimum
+    // four elements); the last plane retains its exact P reservation.
+    let grown = pixels
+        .max(4)
+        .checked_next_power_of_two()
+        .ok_or(Failure::Limit)?;
+    let differences = grown
+        .checked_mul(components - 1)
+        .and_then(|n| n.checked_add(pixels))
+        .and_then(|n| n.checked_mul(4))
+        .ok_or(Failure::Limit)?;
+    // Retained planes from an earlier scan coexist with newly allocated u16
+    // result planes. During a Vec growth, conservatively also allow the old
+    // half-capacity i32 allocation to coexist with its new allocation.
+    let results = pixels
+        .checked_mul(components)
+        .and_then(|n| n.checked_mul(4))
+        .ok_or(Failure::Limit)?;
+    let growth_overlap = if components > 1 {
+        grown.checked_mul(2).ok_or(Failure::Limit)?
+    } else {
+        0
+    };
+    let scan_peak = results
+        .checked_add(differences)
+        .and_then(|n| n.checked_add(growth_overlap))
+        .ok_or(Failure::Limit)?;
+    // Non-8-bit conversion retains original planes, an interleaved u16 image,
+    // collected [u8; 2] values and their concatenated u8 output: 8*N*P bytes.
+    // Grayscale removes its sole source plane before conversion, so 6*P
+    // suffices. This also covers every lower-precision/8-bit conversion path.
+    let conversion_peak = pixels
+        .checked_mul(components)
+        .and_then(|n| n.checked_mul(if components == 1 { 6 } else { 8 }))
+        .ok_or(Failure::Limit)?;
+    Ok(scan_peak.max(conversion_peak))
 }
 
 #[cfg(test)]
@@ -488,5 +551,102 @@ mod limit_tests {
         let crc = crc32fast::hash(&bytes[idat..idat + 4 + len]);
         bytes[idat + 4 + len..idat + 8 + len].copy_from_slice(&crc.to_be_bytes());
         assert_eq!(decode_png(&bytes).err().unwrap().code(), "IMAGE_INVALID");
+    }
+}
+
+#[cfg(test)]
+mod lossless_budget_tests {
+    use super::*;
+    use jpeg_decoder::{CodingProcess, ImageInfo, PixelFormat};
+
+    fn lossless_frame(width: u16, height: u16, components: u8, precision: u8) -> Vec<u8> {
+        let mut bytes = vec![0xff, 0xd8, 0xff, 0xc3];
+        bytes.extend_from_slice(&(8 + 3 * u16::from(components)).to_be_bytes());
+        bytes.push(precision);
+        bytes.extend_from_slice(&height.to_be_bytes());
+        bytes.extend_from_slice(&width.to_be_bytes());
+        bytes.push(components);
+        for id in 1..=components {
+            bytes.extend_from_slice(&[id, 0x11, 0]);
+        }
+        bytes
+    }
+
+    fn constant_lossless(components: u8, precision: u8, scans: usize) -> Vec<u8> {
+        let mut bytes = lossless_frame(3, 3, components, precision);
+        // DC Huffman table 0: one one-bit code, symbol 0 (zero difference).
+        bytes.extend_from_slice(&[0xff, 0xc4, 0, 20, 0, 1]);
+        bytes.extend_from_slice(&[0; 15]);
+        bytes.push(0);
+        for _ in 0..scans {
+            bytes.extend_from_slice(&[0xff, 0xda]);
+            bytes.extend_from_slice(&(6 + 2 * u16::from(components)).to_be_bytes());
+            bytes.push(components);
+            for id in 1..=components {
+                bytes.extend_from_slice(&[id, 0]);
+            }
+            bytes.extend_from_slice(&[1, 0, 0]); // Ra predictor, point transform 0.
+            let bits = 9 * usize::from(components);
+            bytes.resize(bytes.len() + bits / 8, 0);
+            if bits % 8 != 0 {
+                bytes.push((1 << (8 - bits % 8)) - 1);
+            }
+        }
+        bytes.extend_from_slice(&[0xff, 0xd9]);
+        bytes
+    }
+
+    #[test]
+    fn small_lossless_all_supported_precisions_and_components_remain_valid() {
+        for components in [1, 3, 4] {
+            for precision in 2..=16 {
+                // Repeated scans exercise live prior planes while new planes
+                // are decoded, not just the single-scan minimum allocation.
+                for scans in [1, 2] {
+                    let bytes = constant_lossless(components, precision, scans);
+                    assert_eq!(decode_jpeg(&bytes).unwrap(), (3, 3));
+                    let mut decoder = JpegDecoder::new(Cursor::new(bytes));
+                    let output = decoder.decode().unwrap();
+                    let count = 9 * usize::from(components);
+                    if precision == 8 {
+                        assert_eq!(output, vec![128; count]);
+                    } else {
+                        let value = (1u16 << (precision - 1)).to_ne_bytes();
+                        assert_eq!(output, value.repeat(count));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn oversized_lossless_header_fails_preflight_without_a_scan_or_pixels() {
+        let mut bytes = lossless_frame(2900, 2900, 4, 16);
+        bytes.extend_from_slice(&[0xff, 0xd9]);
+        assert_eq!(decode_jpeg(&bytes).err().unwrap().code(), "IMAGE_LIMIT");
+    }
+
+    #[test]
+    fn lossless_four_component_2900_square_is_rejected_without_allocating_pixels() {
+        let info = ImageInfo {
+            width: 2900,
+            height: 2900,
+            pixel_format: PixelFormat::CMYK32,
+            coding_process: CodingProcess::Lossless,
+        };
+        assert_eq!(jpeg_lossless_allocation(8_410_000, 4).unwrap(), 403_081_024);
+        // The same dimensions remain safe for either grayscale output format;
+        // this rejects the oversized configuration, not lossless JPEG itself.
+        for pixel_format in [PixelFormat::L8, PixelFormat::L16] {
+            let grayscale = ImageInfo {
+                pixel_format,
+                ..info
+            };
+            assert_eq!(jpeg_allocation_budget(grayscale).unwrap(), 84_057_216);
+        }
+        assert_eq!(
+            jpeg_allocation_budget(info).err().unwrap().code(),
+            "IMAGE_LIMIT"
+        );
     }
 }
