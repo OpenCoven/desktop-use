@@ -12,6 +12,9 @@
     "index.ts",
     "src/**/*.ts",
     "contracts/v1/observation.schema.json",
+    "contracts/v1/capabilities.schema.json",
+    "contracts/v1/canonical-actions.json",
+    "contracts/v1/canonical-actions.schema.json",
     "agents/**/*",
     "docs/**/*.md",
     "scripts/check-plugin-runtime-imports.mjs",
@@ -23,12 +26,15 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test:ts": "tsx --test src/**/*.test.ts",
-    "check": "pnpm run typecheck && pnpm run test:ts && pnpm run test:gateway-fixture && pnpm run check:plugin-runtime-imports && cargo test",
+    "check": "pnpm run check:contracts && pnpm run typecheck && pnpm run test:ts && pnpm run test:gateway-fixture && pnpm run check:plugin-runtime-imports && cargo test",
+    "generate:contracts": "tsx scripts/generate-capabilities-contract.ts",
+    "check:contracts": "tsx scripts/generate-capabilities-contract.ts --check",
     "check:plugin-runtime-imports": "node scripts/check-plugin-runtime-imports.mjs",
     "test:gateway-fixture": "node --test scripts/gateway-image-fixture.test.mjs"
   },
   "devDependencies": {
     "@types/node": "25.6.0",
+    "ajv": "8.20.0",
     "jpeg-js": "0.4.4",
     "openclaw": "2026.4.26",
     "tsx": "4.21.0",

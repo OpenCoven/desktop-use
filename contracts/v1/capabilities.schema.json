@@ -1,0 +1,431 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://opencoven.org/contracts/v1/capabilities.schema.json",
+  "title": "CapabilityReportV1",
+  "description": "Implementation and observational prerequisites, not native desktop acceptance. Generated action keys come from src/computer-use-actions.ts.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "producer",
+    "environment",
+    "actions"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version",
+        "surface"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "surface": {
+          "$ref": "#/$defs/surface"
+        }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "platform",
+        "session"
+      ],
+      "properties": {
+        "platform": {
+          "enum": [
+            "macos",
+            "linux",
+            "windows",
+            "other"
+          ]
+        },
+        "session": {
+          "enum": [
+            "x11",
+            "wayland",
+            null
+          ]
+        }
+      }
+    },
+    "actions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "health",
+        "stop",
+        "doctor",
+        "inspect",
+        "screenshot",
+        "click",
+        "type-text",
+        "keypress",
+        "scroll",
+        "focus",
+        "shell",
+        "file-list",
+        "file-read",
+        "file-write",
+        "clipboard-read",
+        "clipboard-write",
+        "browser-open",
+        "app-launch"
+      ],
+      "properties": {
+        "health": {
+          "$ref": "#/$defs/action"
+        },
+        "stop": {
+          "$ref": "#/$defs/action"
+        },
+        "doctor": {
+          "$ref": "#/$defs/action"
+        },
+        "inspect": {
+          "$ref": "#/$defs/action"
+        },
+        "screenshot": {
+          "$ref": "#/$defs/action"
+        },
+        "click": {
+          "$ref": "#/$defs/action"
+        },
+        "type-text": {
+          "$ref": "#/$defs/action"
+        },
+        "keypress": {
+          "$ref": "#/$defs/action"
+        },
+        "scroll": {
+          "$ref": "#/$defs/action"
+        },
+        "focus": {
+          "$ref": "#/$defs/action"
+        },
+        "shell": {
+          "$ref": "#/$defs/action"
+        },
+        "file-list": {
+          "$ref": "#/$defs/action"
+        },
+        "file-read": {
+          "$ref": "#/$defs/action"
+        },
+        "file-write": {
+          "$ref": "#/$defs/action"
+        },
+        "clipboard-read": {
+          "$ref": "#/$defs/action"
+        },
+        "clipboard-write": {
+          "$ref": "#/$defs/action"
+        },
+        "browser-open": {
+          "$ref": "#/$defs/action"
+        },
+        "app-launch": {
+          "$ref": "#/$defs/action"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "surface": {
+      "enum": [
+        "cli",
+        "plugin",
+        "sdk",
+        "mcp"
+      ]
+    },
+    "state": {
+      "enum": [
+        "available",
+        "degraded",
+        "unsupported",
+        "unverified"
+      ]
+    },
+    "reasonCodes": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Z][A-Z0-9_]*$"
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "constraints",
+        "parameters"
+      ],
+      "properties": {
+        "constraints": {
+          "$ref": "#/$defs/reasonCodes"
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "values": {
+                "type": "array",
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "minItems": 1,
+                "uniqueItems": true
+              },
+              "minimum": {
+                "type": "number"
+              },
+              "maximum": {
+                "type": "number"
+              },
+              "maxBytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "maxWidth": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "maxHeight": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "maxPixels": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "maxDecodedBytes": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "units": {
+                "type": "string"
+              },
+              "encoding": {
+                "type": "string"
+              },
+              "knowledge": {
+                "enum": [
+                  "known",
+                  "unknown"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "status",
+        "scope"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "implementation",
+            "binary",
+            "protocol",
+            "permission",
+            "geometry",
+            "actual-action"
+          ]
+        },
+        "status": {
+          "enum": [
+            "passed",
+            "failed",
+            "unknown",
+            "not-run"
+          ]
+        },
+        "scope": {
+          "type": "string",
+          "minLength": 1
+        },
+        "observedAtMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "provider": {
+          "$ref": "#/$defs/provider"
+        }
+      }
+    },
+    "variant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "selectors",
+        "provider",
+        "limits",
+        "state",
+        "reasonCodes"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "screen",
+            "window",
+            "frontmost",
+            null
+          ]
+        },
+        "selectors": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "app",
+              "windowTitle",
+              "windowId",
+              "screenIndex",
+              "on",
+              "query",
+              "coords"
+            ]
+          }
+        },
+        "provider": {
+          "$ref": "#/$defs/provider"
+        },
+        "limits": {
+          "$ref": "#/$defs/limits"
+        },
+        "state": {
+          "$ref": "#/$defs/state"
+        },
+        "reasonCodes": {
+          "$ref": "#/$defs/reasonCodes"
+        }
+      }
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "surfaces",
+        "state",
+        "reasonCodes",
+        "variants",
+        "evidence",
+        "policy"
+      ],
+      "properties": {
+        "surfaces": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/surface"
+          }
+        },
+        "state": {
+          "$ref": "#/$defs/state"
+        },
+        "reasonCodes": {
+          "$ref": "#/$defs/reasonCodes"
+        },
+        "variants": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/variant"
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        },
+        "policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "profile",
+            "approval",
+            "gatewayPolicy"
+          ],
+          "properties": {
+            "profile": {
+              "enum": [
+                "allowed",
+                "denied",
+                "unknown"
+              ]
+            },
+            "approval": {
+              "enum": [
+                "none",
+                "required",
+                "request-dependent",
+                "unknown"
+              ]
+            },
+            "gatewayPolicy": {
+              "const": "not-reported"
+            }
+          }
+        }
+      }
+    }
+  }
+}

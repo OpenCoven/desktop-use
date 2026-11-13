@@ -2,6 +2,7 @@
 name = "coven-desktop-use"
 version = "0.1.2"
 edition = "2021"
+rust-version = "1.88"
 description = "OpenCoven desktop-use adapter for OpenClaw computer-use integrations"
 license = "MIT"
 repository = "https://github.com/OpenCoven/desktop-use"
@@ -19,3 +20,8 @@ sha2 = "=0.10.9"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[dev-dependencies]
+jsonschema = { version = "=0.33.0", default-features = false }
+# jsonschema's UUID format validator accepts this version; newer uuid requires Rust 1.89.
+uuid = { version = "=1.18.1", default-features = false }

@@ -1,0 +1,675 @@
+{
+  "report": {
+    "actions": {
+      "app-launch": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "plugin-dispatch-only",
+            "status": "passed"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "required",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [
+          "SURFACE_UNAVAILABLE"
+        ],
+        "state": "unsupported",
+        "surfaces": [
+          "plugin"
+        ],
+        "variants": []
+      },
+      "browser-open": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "plugin-dispatch-only",
+            "status": "passed"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "required",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [
+          "SURFACE_UNAVAILABLE"
+        ],
+        "state": "unsupported",
+        "surfaces": [
+          "plugin"
+        ],
+        "variants": []
+      },
+      "click": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "cli-and-plugin-dispatch",
+            "status": "passed"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "required",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [
+          "PLATFORM_UNSUPPORTED"
+        ],
+        "state": "unsupported",
+        "surfaces": [
+          "cli",
+          "plugin"
+        ],
+        "variants": []
+      },
+      "clipboard-read": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "plugin-dispatch-only",
+            "status": "passed"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "required",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [
+          "SURFACE_UNAVAILABLE"
+        ],
+        "state": "unsupported",
+        "surfaces": [
+          "plugin"
+        ],
+        "variants": []
+      },
+      "clipboard-write": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "plugin-dispatch-only",
+            "status": "passed"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "required",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [
+          "SURFACE_UNAVAILABLE"
+        ],
+        "state": "unsupported",
+        "surfaces": [
+          "plugin"
+        ],
+        "variants": []
+      },
+      "doctor": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "cli-and-plugin-dispatch",
+            "status": "passed"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "none",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [],
+        "state": "available",
+        "surfaces": [
+          "cli",
+          "plugin"
+        ],
+        "variants": [
+          {
+            "limits": {
+              "constraints": [
+                "OBSERVATIONAL_ONLY"
+              ],
+              "parameters": {
+                "timeoutMs": {
+                  "maximum": 120000,
+                  "minimum": 1000,
+                  "units": "milliseconds"
+                }
+              }
+            },
+            "mode": null,
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "reasonCodes": [],
+            "selectors": [],
+            "state": "available"
+          }
+        ]
+      },
+      "file-list": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "plugin-dispatch-only",
+            "status": "passed"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "request-dependent",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [
+          "SURFACE_UNAVAILABLE"
+        ],
+        "state": "unsupported",
+        "surfaces": [
+          "plugin"
+        ],
+        "variants": []
+      },
+      "file-read": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "plugin-dispatch-only",
+            "status": "passed"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "request-dependent",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [
+          "SURFACE_UNAVAILABLE"
+        ],
+        "state": "unsupported",
+        "surfaces": [
+          "plugin"
+        ],
+        "variants": []
+      },
+      "file-write": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "plugin-dispatch-only",
+            "status": "passed"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "required",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [
+          "SURFACE_UNAVAILABLE"
+        ],
+        "state": "unsupported",
+        "surfaces": [
+          "plugin"
+        ],
+        "variants": []
+      },
+      "focus": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "cli-and-plugin-dispatch",
+            "status": "passed"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "required",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [
+          "PLATFORM_UNSUPPORTED"
+        ],
+        "state": "unsupported",
+        "surfaces": [
+          "cli",
+          "plugin"
+        ],
+        "variants": []
+      },
+      "health": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "plugin-dispatch-only",
+            "status": "passed"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "none",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [
+          "SURFACE_UNAVAILABLE"
+        ],
+        "state": "unsupported",
+        "surfaces": [
+          "plugin"
+        ],
+        "variants": []
+      },
+      "inspect": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "cli-and-plugin-dispatch",
+            "status": "passed"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "request-dependent",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [
+          "PLATFORM_UNSUPPORTED"
+        ],
+        "state": "unsupported",
+        "surfaces": [
+          "cli",
+          "plugin"
+        ],
+        "variants": []
+      },
+      "keypress": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "cli-and-plugin-dispatch",
+            "status": "passed"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "required",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [
+          "PLATFORM_UNSUPPORTED"
+        ],
+        "state": "unsupported",
+        "surfaces": [
+          "cli",
+          "plugin"
+        ],
+        "variants": []
+      },
+      "screenshot": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "cli-and-plugin-dispatch",
+            "status": "passed"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "request-dependent",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [
+          "PLATFORM_UNSUPPORTED"
+        ],
+        "state": "unsupported",
+        "surfaces": [
+          "cli",
+          "plugin"
+        ],
+        "variants": []
+      },
+      "scroll": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "cli-and-plugin-dispatch",
+            "status": "passed"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "required",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [
+          "PLATFORM_UNSUPPORTED"
+        ],
+        "state": "unsupported",
+        "surfaces": [
+          "cli",
+          "plugin"
+        ],
+        "variants": []
+      },
+      "shell": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "plugin-dispatch-only",
+            "status": "passed"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "required",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [
+          "SURFACE_UNAVAILABLE"
+        ],
+        "state": "unsupported",
+        "surfaces": [
+          "plugin"
+        ],
+        "variants": []
+      },
+      "stop": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "plugin-dispatch-only",
+            "status": "passed"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "none",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [
+          "SURFACE_UNAVAILABLE"
+        ],
+        "state": "unsupported",
+        "surfaces": [
+          "plugin"
+        ],
+        "variants": []
+      },
+      "type-text": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "cli-and-plugin-dispatch",
+            "status": "passed"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.2"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "required",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [
+          "PLATFORM_UNSUPPORTED"
+        ],
+        "state": "unsupported",
+        "surfaces": [
+          "cli",
+          "plugin"
+        ],
+        "variants": []
+      }
+    },
+    "environment": {
+      "platform": "windows",
+      "session": null
+    },
+    "producer": {
+      "name": "coven-desktop-use",
+      "surface": "cli",
+      "version": "0.1.2"
+    },
+    "schemaVersion": 1
+  }
+}

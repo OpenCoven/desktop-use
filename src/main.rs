@@ -1,5 +1,6 @@
 #[cfg(all(test, unix))]
 mod backend_fixtures;
+mod capabilities;
 mod geometry;
 mod linux_capabilities;
 mod observation;
@@ -86,7 +87,8 @@ fn run(args: Vec<String>) -> String {
         }
     };
 
-    match detect_platform() {
+    let platform = detect_platform();
+    let result = match platform {
         Platform::Macos => run_macos(command, &args[1..]),
         Platform::LinuxX11 => run_linux(LinuxSession::X11, command, &args[1..]),
         Platform::LinuxWayland => run_linux(LinuxSession::Wayland, command, &args[1..]),
@@ -110,6 +112,11 @@ fn run(args: Vec<String>) -> String {
                 ),
             ),
         ]),
+    };
+    if command == "doctor" && matches!(platform, Platform::LinuxNoDisplay | Platform::Other) {
+        capabilities::attach(result, &capabilities::discover(platform))
+    } else {
+        result
     }
 }
 
@@ -170,7 +177,15 @@ fn detect_linux_session() -> Platform {
 
 fn run_macos(command: &'static str, args: &[String]) -> String {
     match command {
-        "doctor" => run_peekaboo(vec!["permissions".into()], false, true),
+        "doctor" => {
+            let result = run_peekaboo(vec!["permissions".into()], false, true);
+            let mut facts = capabilities::discover(Platform::Macos);
+            let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+            if parsed["code"] == "PERMISSION_ERROR" {
+                facts.permission = "failed";
+            }
+            capabilities::attach(result, &facts)
+        }
         "inspect" => macos_capture("inspect", args),
         "screenshot" => macos_capture("screenshot", args),
         "click" | "type-text" | "keypress" | "scroll" | "focus" if !has_flag(args, "--confirm") => {
@@ -666,27 +681,46 @@ fn is_executable_file(path: &Path) -> bool {
 
 fn linux_doctor(session: LinuxSession) -> String {
     let tools = linux_tool_inventory(session);
-    let capabilities = linux_capabilities::capabilities(session, &tools);
+    let protocols = if session == LinuxSession::Wayland {
+        linux_capabilities::protocols()
+    } else {
+        linux_capabilities::Protocols::default()
+    };
+    let capabilities = linux_capabilities::with_protocols(session, &tools, protocols);
+    let mut facts = capabilities::discover(if session == LinuxSession::X11 {
+        Platform::LinuxX11
+    } else {
+        Platform::LinuxWayland
+    });
+    facts.protocols = protocols;
+    facts.tools = tools
+        .iter()
+        .filter(|tool| tool.found)
+        .map(|tool| tool.name.to_owned())
+        .collect();
     if let Err(error) = process::check(deadline()) {
-        return process_failure_json("linux-doctor", &error);
+        return capabilities::attach(process_failure_json("linux-doctor", &error), &facts);
     }
     let ok = linux_minimum_tools_present(session, &tools)
         && capabilities["screenshot"]["state"] != "unsupported"
         && capabilities["typing"]["state"] != "unsupported";
-    json_obj(vec![
-        ("ok", bool_json(ok)),
-        ("supported", "true".to_string()),
-        ("platform", json_string(env::consts::OS)),
-        ("backend", json_string("linux")),
-        ("session", json_string(session.label())),
-        ("capabilities", capabilities.to_string()),
-        (
-            "readiness",
-            json_string("unverified; installed prerequisites do not prove desktop acceptance"),
-        ),
-        ("tools", linux_tool_inventory_json(&tools)),
-        ("setupGuide", linux_setup_guide_json(session, &tools)),
-    ])
+    capabilities::attach(
+        json_obj(vec![
+            ("ok", bool_json(ok)),
+            ("supported", "true".to_string()),
+            ("platform", json_string(env::consts::OS)),
+            ("backend", json_string("linux")),
+            ("session", json_string(session.label())),
+            ("capabilities", capabilities.to_string()),
+            (
+                "readiness",
+                json_string("unverified; installed prerequisites do not prove desktop acceptance"),
+            ),
+            ("tools", linux_tool_inventory_json(&tools)),
+            ("setupGuide", linux_setup_guide_json(session, &tools)),
+        ]),
+        &facts,
+    )
 }
 
 #[derive(Debug)]
@@ -2024,34 +2058,37 @@ fn unique_suffix() -> String {
 }
 
 fn help_json() -> String {
-    json_obj(vec![
-        ("ok", "true".to_string()),
-        ("name", json_string("coven-desktop-use")),
-        ("version", json_string(VERSION)),
-        (
-            "commands",
-            json_array_strings(&[
-                "doctor".into(),
-                "inspect".into(),
-                "screenshot".into(),
-                "click".into(),
-                "type-text".into(),
-                "keypress".into(),
-                "scroll".into(),
-                "focus".into(),
-            ]),
-        ),
-        (
-            "aliases",
-            json_obj(vec![
-                ("permissions", json_string("doctor")),
-                ("see", json_string("inspect")),
-                ("capture", json_string("screenshot")),
-                ("type", json_string("type-text")),
-                ("press", json_string("keypress")),
-            ]),
-        ),
-    ])
+    capabilities::attach(
+        json_obj(vec![
+            ("ok", "true".to_string()),
+            ("name", json_string("coven-desktop-use")),
+            ("version", json_string(VERSION)),
+            (
+                "commands",
+                json_array_strings(&[
+                    "doctor".into(),
+                    "inspect".into(),
+                    "screenshot".into(),
+                    "click".into(),
+                    "type-text".into(),
+                    "keypress".into(),
+                    "scroll".into(),
+                    "focus".into(),
+                ]),
+            ),
+            (
+                "aliases",
+                json_obj(vec![
+                    ("permissions", json_string("doctor")),
+                    ("see", json_string("inspect")),
+                    ("capture", json_string("screenshot")),
+                    ("type", json_string("type-text")),
+                    ("press", json_string("keypress")),
+                ]),
+            ),
+        ]),
+        &capabilities::discover(detect_platform()),
+    )
 }
 
 fn json_obj(fields: Vec<(&str, String)>) -> String {
@@ -2117,6 +2154,24 @@ mod tests {
         assert!(help.contains("screenshot"));
         assert!(help.contains("type-text"));
         assert!(help.contains("keypress"));
+    }
+
+    #[test]
+    fn help_reports_canonical_cli_surface_without_advertising_host_commands() {
+        let help: serde_json::Value = serde_json::from_str(&help_json()).unwrap();
+        let report = &help["capabilitiesV1"];
+        assert_eq!(report["schemaVersion"], 1);
+        assert_eq!(report["producer"]["surface"], "cli");
+        assert_eq!(report["actions"].as_object().unwrap().len(), 18);
+        assert_eq!(report["actions"]["file-read"]["state"], "unsupported");
+        assert_eq!(
+            report["actions"]["file-read"]["surfaces"],
+            serde_json::json!(["plugin"])
+        );
+        assert!(!help["commands"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("file-read")));
     }
 
     #[test]
