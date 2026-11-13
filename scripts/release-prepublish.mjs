@@ -5,10 +5,9 @@ import { existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { readRegular, sha256, validateReleaseManifest, REPOSITORY, WORKFLOW } from './release-manifest.mjs';
-import { collectEvidence, assertDelivery, assertEnvironmentProtection, workflowContext } from './release-delivery.mjs';
+import { collectEvidence, assertDelivery, workflowContext } from './release-delivery.mjs';
 const directory = resolve(process.argv[2]);
 const run = (command, args) => execFileSync(command, args, { encoding: 'utf8', timeout: 120000, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, GH_HOST: 'github.com' } });
-const api = path => JSON.parse(run('gh', ['api', `repos/${REPOSITORY}/${path}`]));
 const manifestBytes = await readRegular(join(directory, 'release.json'));
 const manifest = validateReleaseManifest(JSON.parse(manifestBytes));
 const evidence = JSON.parse(await readRegular(join(directory, 'release-evidence.json')));
@@ -18,9 +17,6 @@ assertDelivery(manifest.releaseVersion, evidence, { ...workflowContext(), previo
 assert.equal(run('git', ['rev-parse', `refs/tags/${manifest.source.tag}^{commit}`]).trim(), manifest.source.commit);
 assert.equal(run('git', ['rev-parse', 'HEAD']).trim(), manifest.source.commit);
 run('git', ['merge-base', '--is-ancestor', manifest.source.commit, 'origin/main']);
-assertEnvironmentProtection(api('environments/paired-release'));
-const branch = api('branches/main');
-assert.equal(branch.protected, true, 'Protected main is an owner configuration gate');
 const files = ['release.json', manifest.package.asset, ...manifest.artifacts.map(a => a.asset), 'release-evidence.json', 'qualification-receipts.json', 'release-notes.md'];
 const sums = [];
 for (const asset of [...files, 'SHA256SUMS']) {

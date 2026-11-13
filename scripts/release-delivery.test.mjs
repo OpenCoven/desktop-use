@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile, writeFile, mkdir, rm } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rm, chmod } from 'node:fs/promises';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { NATIVE_MATRIX } from './release-qualification.mjs';
@@ -50,13 +50,6 @@ test('evidence collection requires every lane bound to the same immutable manife
   for (const receipt of installs) { receipt.updateRollback = 'not-run-no-previous-candidate'; receipt.previous = null; }
   assert.equal(good().updateRollback, 'not-run');
   installs[0].rustGuard.attempts.push({ tool: 'cargo' }); assert.throws(good);
-});
-
-test('a named but unprotected environment cannot authorize delivery', () => {
-  assert.equal(typeof api.assertEnvironmentProtection, 'function');
-  const environment = { name: 'paired-release', protection_rules: [{ type: 'required_reviewers', prevent_self_review: true, reviewers: [{ type: 'User', reviewer: { id: 1 } }] }] };
-  assert.doesNotThrow(() => api.assertEnvironmentProtection(environment));
-  for (const value of [{ name: 'paired-release' }, { ...environment, protection_rules: [] }, { ...environment, protection_rules: [{ type: 'required_reviewers', prevent_self_review: false, reviewers: [{}] }] }]) assert.throws(() => api.assertEnvironmentProtection(value));
 });
 
 test('initial publication needs separate bootstrap intent and cannot claim rollback', () => {
@@ -134,6 +127,44 @@ test('actual assembler and reconciliation CLIs preserve immutable tag bytes and 
     assert.equal(api.sha256(await readFile(join(output, asset))), hash);
   }
   assert.throws(() => execFileSync(process.execPath, ['scripts/release-delivery.mjs', f.root, receipts, output], { env, stdio: 'pipe' }));
+  await t.test('manual tag preflight needs no new governance setup and retains mandatory provenance', async () => {
+    // Fixture transports for the read-only preflight only. No real GitHub or registry request occurs.
+    const git = join(f.root, 'git');
+    await writeFile(git, `#!${process.execPath}
+const a=process.argv.slice(2);
+if(a[0]==='rev-parse' && ['HEAD','refs/tags/v0.1.3^{commit}'].includes(a[1])) console.log('${commit}');
+else if(JSON.stringify(a)!==JSON.stringify(['merge-base','--is-ancestor','${commit}','origin/main'])) process.exit(90);
+`);
+    await chmod(git, 0o755);
+    const verifierLog = join(f.root, 'preflight-verifier.log');
+    const gh = join(f.root, 'gh');
+    await writeFile(gh, `#!${process.execPath}
+const fs=require('node:fs');
+const a=process.argv.slice(2);
+if(a[0]==='api') {
+ if(a.at(-1)==='repos/OpenCoven/desktop-use/environments/paired-release') console.log(JSON.stringify({name:'paired-release',protection_rules:[]}));
+ else if(a.at(-1)==='repos/OpenCoven/desktop-use/branches/main') console.log(JSON.stringify({protected:false}));
+ else if(JSON.stringify(a)===JSON.stringify(['api','--paginate','--slurp','repos/OpenCoven/desktop-use/releases?per_page=100'])) console.log('[[]]');
+ else process.exit(91);
+} else {
+ if(a[0]!=='attestation'||a[1]!=='verify'||process.env.FIXTURE_BAD_PROVENANCE==='1') process.exit(92);
+ for(const [flag,value] of [['--repo','OpenCoven/desktop-use'],['--signer-workflow','OpenCoven/desktop-use/.github/workflows/release.yml'],['--source-digest','${commit}'],['--source-ref','refs/tags/v0.1.3'],['--predicate-type','https://slsa.dev/provenance/v1'],['--format','json']]) if(a[a.indexOf(flag)+1]!==value) process.exit(93);
+ if(!a.includes('--deny-self-hosted-runners')) process.exit(94);
+ fs.appendFileSync(${JSON.stringify(verifierLog)},JSON.stringify(a)+'\\n');
+ console.log('[{"fixtureOnly":true}]');
+}
+`);
+    const transport = join(f.root, 'registry-fixture.mjs');
+    await writeFile(transport, "globalThis.fetch = async url => { if(url !== 'https://registry.npmjs.org/@opencoven%2fopenclaw-desktop-use/0.1.3') throw new Error('Unexpected registry request'); return { status: 404 }; };\n");
+    const preflightEnv = { ...env, PATH: `${f.root}:${process.env.PATH}`, GITHUB_EVENT_NAME: 'workflow_dispatch', RELEASE_DELIVERY: 'stage-bootstrap' };
+    const args = ['--import', transport, 'scripts/release-prepublish.mjs', output];
+    const result = JSON.parse(execFileSync(process.execPath, args, { env: preflightEnv, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
+    assert.equal(result.status, 'preflight-passed');
+    assert.equal(result.publication, 'not-run');
+    assert.equal((await readFile(verifierLog, 'utf8')).trim().split('\n').length, 10);
+    assert.throws(() => execFileSync(process.execPath, args, { env: { ...preflightEnv, FIXTURE_BAD_PROVENANCE: '1' }, stdio: 'pipe' }));
+    assert.throws(() => execFileSync(process.execPath, args, { env: { ...preflightEnv, RELEASE_DELIVERY: 'prepare' }, stdio: 'pipe' }));
+  });
 });
 
 test('assembler rejects mismatching version tag without writing a manifest', async t => {

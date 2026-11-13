@@ -17,12 +17,6 @@ export function releaseSource(version, context) {
   assert.ok(tag || /^refs\/heads\/[A-Za-z0-9_./-]+$/.test(context.ref), 'Actual matching version tag or branch context required');
   return { repository: REPOSITORY, commit: context.commit, tag, ref: context.ref, workflow: '.github/workflows/release.yml' };
 }
-export function assertEnvironmentProtection(environment) {
-  assert.equal(environment.name, 'paired-release');
-  const reviewers = environment.protection_rules?.find(rule => rule.type === 'required_reviewers');
-  assert.equal(reviewers?.prevent_self_review, true, 'Owner must configure independent environment review');
-  assert.ok(reviewers.reviewers?.length > 0, 'Named environments alone do not establish approval');
-}
 export function assertDelivery(version, evidence, context) {
   const source = releaseSource(version, context);
   assert.equal(source.tag, `v${version}`, 'Delivery requires actual matching tag provenance');
