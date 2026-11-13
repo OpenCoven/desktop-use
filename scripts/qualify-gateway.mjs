@@ -349,7 +349,7 @@ try {
         }
 
         assert.equal(report.adapter.configuredPath, capabilitiesFixture.adapter);
-        assert.equal(report.adapter.version, ["missing-adapter", "schema-unknown"].includes(name) ? null : "0.1.2");
+        assert.equal(report.adapter.version, ["missing-adapter", "schema-unknown"].includes(name) ? null : "0.1.3");
         assert.equal(JSON.stringify(details.repairHints).includes("Screen Recording"), name === "macos-permission-denied");
         assert.equal(JSON.stringify(details.repairHints).includes("COVEN_DESKTOP_USE_BIN"), name === "missing-adapter");
         if (name === "x11-empty") assert.match(JSON.stringify(details.permissionFlow), /sudo apt install scrot xdotool wmctrl/);

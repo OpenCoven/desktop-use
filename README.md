@@ -162,14 +162,15 @@ Legacy plugin inputs add a `deprecation` string to result details and the JSON t
 
 ### Installation
 
-Install the adapter binary from this repo:
+For the explicit paired release installer, provenance requirements, updates, rollback and Cargo shadow diagnostics, see [paired releases](docs/paired-releases.md). Version `0.1.3` is currently a preparation candidate; public installation requires actual tag-bound attestations.
+
+For source development, install the adapter binary from this repo:
 
 ```bash
 cargo install --git https://github.com/OpenCoven/desktop-use coven-desktop-use
 ```
 
-By default the plugin expects `coven-desktop-use` to be on `PATH`; for local
-development, point OpenClaw at a built adapter binary:
+The plugin first uses `COVEN_DESKTOP_USE_BIN`, then an existing `~/.cargo/bin/coven-desktop-use`, then PATH. An older Cargo install can shadow a newer PATH binary. For local development, point the actual OpenClaw launcher at an absolute built adapter path:
 
 ```bash
 COVEN_DESKTOP_USE_BIN=/path/to/coven-desktop-use
