@@ -1,5 +1,6 @@
 #[cfg(all(test, unix))]
 mod backend_fixtures;
+mod geometry;
 mod linux_capabilities;
 mod observation;
 mod process;
@@ -886,9 +887,9 @@ fn capture_screenshot(
         actual_mode,
         format,
         false,
-        |image_path| match session {
+        |image_path, scale| match session {
             LinuxSession::X11 => x11_screenshot(image_path, mode, format, extras),
-            LinuxSession::Wayland => wayland_screenshot(image_path, mode, format, extras),
+            LinuxSession::Wayland => wayland_screenshot(image_path, mode, format, extras, scale),
         },
     )
 }
@@ -918,7 +919,7 @@ fn macos_capture(command: &str, args: &[String]) -> String {
         None,
         &format,
         command == "inspect" && !has_flag(args, "--no-annotate"),
-        |image_path| {
+        |image_path, _scale| {
             let mut owned_args = strip_option(args, "--path");
             owned_args.extend(["--path".into(), image_path.into()]);
             let backend_args = if command == "inspect" {
@@ -968,7 +969,7 @@ fn capture_transaction<F>(
     capture: F,
 ) -> String
 where
-    F: FnOnce(&str) -> String,
+    F: FnOnce(&str, Option<f64>) -> String,
 {
     if let Err(error) = process::check(deadline()) {
         return process_failure_json("capture", &error);
@@ -1005,7 +1006,9 @@ where
     } else {
         "capture.png"
     });
-    let result = capture(&image.to_string_lossy());
+    let geometry_before = geometry::probe(requested_mode);
+    let scale = geometry_before.as_ref().and_then(|s| s.scale);
+    let result = capture(&image.to_string_lossy(), scale);
     let mut parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
     if parsed["ok"] != true {
         return result;
@@ -1015,7 +1018,9 @@ where
         Ok(validated) => validated,
         Err(error) => return capture_failure_json(&provider, &error),
     };
-    let receipt = validated.receipt(&provider, requested_mode, actual_mode, annotation_requested);
+    let mut receipt =
+        validated.receipt(&provider, requested_mode, actual_mode, annotation_requested);
+    geometry::attach(&mut receipt, geometry_before, requested_mode, &parsed);
     if let Err(error) = validated.check_identity(&image, deadline()) {
         return capture_failure_json(&provider, &error);
     }
@@ -1103,6 +1108,7 @@ fn wayland_screenshot(
     mode: &str,
     format: &str,
     extras: &[(&'static str, String)],
+    scale: Option<f64>,
 ) -> String {
     if matches!(mode, "window" | "frontmost") {
         return linux_capabilities::unsupported("Targeted Wayland capture is unsupported; request mode=screen explicitly. No screenshot was taken.");
@@ -1118,13 +1124,12 @@ fn wayland_screenshot(
         );
     }
     let encoding = if format == "jpg" { "jpeg" } else { "png" };
-    run_linux_command(
-        "grim",
-        vec!["-t".into(), encoding.into(), "--".into(), path.into()],
-        "grim",
-        false,
-        extras,
-    )
+    let mut capture_args: Vec<OsString> = vec!["-t".into(), encoding.into()];
+    if let Some(scale) = scale {
+        capture_args.extend(["-s".into(), scale.to_string().into()]);
+    }
+    capture_args.extend(["--".into(), path.into()]);
+    run_linux_command("grim", capture_args, "grim", false, extras)
 }
 
 fn linux_click(session: LinuxSession, args: &[String]) -> String {
@@ -1167,6 +1172,12 @@ fn x11_click(x: i32, y: i32, button: u32, times: u32) -> String {
             "x11-click",
         );
     }
+    if !geometry::x11_point_in_root(x, y) {
+        if let Err(error) = process::check(deadline()) {
+            return process_failure_json("xdotool", &error);
+        }
+        return json_obj(vec![("ok","false".into()),("supported","false".into()),("code",json_string("COORDINATES_OUT_OF_RANGE")),("error",json_string("X11 coordinates must be inside the verified root extent and signed 16-bit XTest range. No input was sent."))]);
+    }
     let cmd_args: Vec<OsString> = vec![
         "mousemove".into(),
         "--sync".into(),
@@ -1188,6 +1199,12 @@ fn wayland_click(x: i32, y: i32, button: u32, times: u32) -> String {
             "Install with: sudo apt install ydotool, then enable ydotoold (see setup guide).",
             "wayland-click",
         );
+    }
+    if !geometry::wayland_pointer_ready(x, y) {
+        if let Err(error) = process::check(deadline()) {
+            return process_failure_json("ydotool", &error);
+        }
+        return json_obj(vec![("ok","false".into()),("supported","false".into()),("code",json_string("POINTER_MAPPING_UNVERIFIED")),("error",json_string("Absolute pointer mapping is unverified for this helper version, compositor layout or input configuration. No input was sent."))]);
     }
     // ydotool button codes for press+release: left=0xC0, right=0xC1, middle=0xC2.
     let click_code = match button {

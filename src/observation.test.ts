@@ -90,7 +90,7 @@ for (const outcome of ["failed", "cancelled"]) test(`${outcome} capture never de
 });
 
 test("accepts bounded signed i32 coordinates and passes a literal option value", async () => {
-  for (const coords of ["-1920,-80", "-2147483648,2147483647"]) {
+  for (const coords of ["-1920,-80", "-2147483648,2147483647", " 120,240 "]) {
     let argv: string[] = [];
     const tool = createComputerUseTool({ appendAuditEvent: async () => {}, runAdapter: async args => { argv = args; return { ok: true }; } });
     await tool.execute("negative", { action: "click", coords, confirm: true });
@@ -299,5 +299,37 @@ test("precommit cancellation and both cleanup failures preserve cancellation wit
     openFault.mock.restore(); cleanupFault.mock.restore(); syncBuiltinESMExports();
     await originalRm(root, { recursive: true, force: true });
     if (c.owned()) await originalRm(dirname(c.owned()), { recursive: true, force: true });
+  }
+});
+
+for (const variant of ["overlap", "unknown-evidence-version", "stale-evidence", "overflow"]) test(`rejects ambiguous or unbound geometry: ${variant}`, async () => {
+  const c = await capture("png", async (_path, receipt) => {
+    const region = { imageRect: { x: 0, y: 0, width: 32, height: 24 }, desktopRect: { x: -800, y: 0, width: 16, height: 12 } };
+    receipt.geometry = { state: "available", coordinateUnits: "desktop-logical-pixels", regions: [region], evidence: { kind: "platform-probe", provider: { name: "sway", version: "1.7" }, capturedAtMs: receipt.capturedAtMs } };
+    if (variant === "overlap") receipt.geometry.regions.push(structuredClone(region));
+    if (variant === "unknown-evidence-version") receipt.geometry.evidence.provider.version = null;
+    if (variant === "stale-evidence") receipt.geometry.evidence.capturedAtMs = 0;
+    if (variant === "overflow") region.desktopRect.x = 2147483647;
+  });
+  const result = await c.tool.execute("geometry", { action: "screenshot", mode: "screen" });
+  assert.equal(result.content.some(c => c.type === "image"), false);
+  assert.equal((result.details.observationUnavailable as any).code, "OBSERVATION_VALIDATION_FAILED");
+});
+
+test("shared producer contracts retain large original extents and negative piecewise geometry", async () => {
+  const cases = JSON.parse(await readFile(new URL("../contracts/v1/fixtures/geometry/producers.json", import.meta.url), "utf8"));
+  for (const f of cases) {
+    const c = await capture("png", async (path, receipt) => {
+      const [width, height] = f.raster;
+      const bytes = await readFile(new URL(`../contracts/v1/fixtures/images/geometry-${width}x${height}.png`, import.meta.url));
+      await writeFile(path, bytes);
+      receipt.primaryImage = { ...receipt.primaryImage, byteLength: bytes.length, sha256: (await import("node:crypto")).createHash("sha256").update(bytes).digest("hex"), sourceDimensions: { width, height }, deliveredDimensions: { width, height } };
+      receipt.coordinateReference.sourceExtent = { x: 0, y: 0, width, height };
+      receipt.geometry = { state: "available", coordinateUnits: f.units, regions: f.regions, evidence: { kind: f.producer === "peekaboo-coordinate-context" ? "provider-receipt" : "platform-probe", provider: { name: f.producer, version: f.version }, capturedAtMs: receipt.capturedAtMs } };
+    });
+    const result = await c.tool.execute("large-geometry", { action: "screenshot", mode: "screen" });
+    assert.ok(result.content.some(c => c.type === "image"));
+    assert.deepEqual((result.details.observationV1 as any).geometry.regions, f.regions);
+    assert.deepEqual((result.details.observationV1 as any).coordinateReference.sourceExtent, { x: 0, y: 0, width: f.raster[0], height: f.raster[1] });
   }
 });

@@ -131,7 +131,23 @@ export async function withOwnedObservation(request: ComputerUseParams, _ctx: Com
       const source = primary.sourceDimensions; const delivered = primary.deliveredDimensions;
       if (primary.byteLength !== bytes.length || primary.sha256 !== createHash("sha256").update(bytes).digest("hex") || primary.mimeType !== dimensions.mimeType || source.width !== dimensions.width || source.height !== dimensions.height || delivered.width !== source.width || delivered.height !== source.height || source.width * source.height > 64000000 || source.width * source.height * 4 > 256 * 1024 * 1024 || receipt.coordinateReference.sourceExtent.width !== source.width || receipt.coordinateReference.sourceExtent.height !== source.height || primary.mimeType !== (request.action === "inspect" || request.action === "see" || request.format !== "jpg" ? "image/png" : "image/jpeg")) invalid();
       // Geometry is preserved only with the producer's evidence; never inferred from pixels.
-      if (receipt.geometry.state === "available" && receipt.geometry.regions.some((r: any) => r.imageRect.x < 0 || r.imageRect.y < 0 || r.imageRect.x + r.imageRect.width > source.width || r.imageRect.y + r.imageRect.height > source.height)) invalid();
+      if (receipt.geometry.state === "available") {
+        const { regions, evidence, coordinateUnits } = receipt.geometry;
+        const known = { "sway": ["1.7", "desktop-logical-pixels", "platform-probe"], "xwininfo-root": ["1.1.5", "desktop-physical-pixels", "platform-probe"], "xwininfo-window": ["1.1.5", "desktop-physical-pixels", "platform-probe"], "peekaboo-coordinate-context": ["1", "macos-points", "provider-receipt"] } as const;
+        const contract = known[evidence.provider.name as keyof typeof known];
+        if (!contract || evidence.provider.version !== contract[0] || coordinateUnits !== contract[1] || evidence.kind !== contract[2] || evidence.capturedAtMs !== receipt.capturedAtMs) invalid();
+        for (const [index, r] of regions.entries()) {
+          if (r.imageRect.x < 0 || r.imageRect.y < 0 || r.imageRect.x + r.imageRect.width > source.width || r.imageRect.y + r.imageRect.height > source.height) invalid();
+          const d = r.desktopRect;
+          if ([d.x, d.y, d.width, d.height, d.x + d.width, d.y + d.height].some(n => !Number.isFinite(n) || n < -2147483648 || n > 2147483647)) invalid();
+          for (const prior of regions.slice(0, index)) {
+            for (const kind of ["imageRect", "desktopRect"]) {
+              const a = r[kind], b = prior[kind];
+              if (a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height) invalid();
+            }
+          }
+        }
+      }
       if (request.path) {
         check(signal, deadline);
         try {

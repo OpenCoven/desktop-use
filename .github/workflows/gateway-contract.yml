@@ -43,6 +43,8 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Stage the pinned host image backend without install scripts
+        run: npm install --prefix "$RUNNER_TEMP/gateway-host" --ignore-scripts --no-audit --no-fund openclaw@2026.4.26 sharp@0.34.5
       - run: cargo build --locked
       - name: Pack the plugin and run the minimum supported gateway
         shell: bash
@@ -50,7 +52,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/gateway-package" "$RUNNER_TEMP/gateway-packed"
           pnpm pack --pack-destination "$RUNNER_TEMP/gateway-package"
           tar -xzf "$RUNNER_TEMP/gateway-package/"*.tgz -C "$RUNNER_TEMP/gateway-packed"
-          node scripts/qualify-gateway.mjs "$RUNNER_TEMP/gateway-receipts/${{ matrix.profile }}" "$PWD/node_modules/openclaw" "$RUNNER_TEMP/gateway-packed/package" "${{ matrix.profile }}"
+          node scripts/qualify-gateway.mjs "$RUNNER_TEMP/gateway-receipts/${{ matrix.profile }}" "$RUNNER_TEMP/gateway-host/node_modules/openclaw" "$RUNNER_TEMP/gateway-packed/package" "${{ matrix.profile }}"
       - name: Preserve contract evidence without gateway credentials or profiles
         if: always()
         uses: actions/upload-artifact@v4

@@ -146,7 +146,7 @@ const log = await open(join(root, "console.log"), "w", 0o600);
 const env = Object.fromEntries(["PATH", "TMPDIR", "LANG", "USER"].filter(k => process.env[k]).map(k => [k, process.env[k]]));
 const unavailableAdapter = join(root, "deliberately-unavailable-desktop-adapter");
 await assert.rejects(access(unavailableAdapter), { code: "ENOENT" });
-Object.assign(env, { OPENCLAW_STATE_DIR: join(root, "state"), OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_HOME: join(root, "home"), OPENCLAW_PLUGIN_LOAD_PROFILE: "1", OPENCLAW_LIVE_GATEWAY: "1", OPENCLAW_LIVE_GATEWAY_PROVIDERS: "qualification", COVEN_DESKTOP_USE_BIN: imageFixture.adapter });
+Object.assign(env, { OPENCLAW_IMAGE_BACKEND: process.env.OPENCLAW_IMAGE_BACKEND ?? "sharp", OPENCLAW_STATE_DIR: join(root, "state"), OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_HOME: join(root, "home"), OPENCLAW_PLUGIN_LOAD_PROFILE: "1", OPENCLAW_LIVE_GATEWAY: "1", OPENCLAW_LIVE_GATEWAY_PROVIDERS: "qualification", COVEN_DESKTOP_USE_BIN: imageFixture.adapter });
 await save("action-permissions.json", { profile, trustedConfig: permissionConfigs[profile], expectedActions: profileActions, expectedAliases: visibleAliases });
 await save("adapter-fixture.json", { mode: "synthetic-capture-only-when-harness-enabled", nativePlatform: process.platform, realRustBinary: imageFixture.binary, nonCaptureUnavailable: true, graphicalEffects: false, liveProvider: false });
 // Refuse to start a gateway if this package would escape the explicit state root.
@@ -272,8 +272,9 @@ try {
   if (profileActions.includes("screenshot")) {
     await writeFile(imageFixture.marker, "synthetic-only", { mode: 0o600 });
     try {
-      for (const kind of ["png", "jpg"]) {
-        const image = await runCase(`synthetic-image-${kind}`, { action: "screenshot", mode: "screen", format: kind }, "none", session, COMPUTER_USE_TOOL_NAME, { imageKind: kind });
+      for (const kind of ["png", "jpg", "large"]) {
+        await writeFile(imageFixture.marker, kind, { mode: 0o600 });
+        const image = await runCase(`synthetic-image-${kind}`, { action: "screenshot", mode: "screen", format: kind === "large" ? "png" : kind }, "none", session, COMPUTER_USE_TOOL_NAME, { imageKind: kind });
         assert.equal(toolResult(image.history).status, "success");
         assert.equal(image.events.some(e => e.event === "plugin.approval.requested"), false, "Default private staging adds no approval");
       }

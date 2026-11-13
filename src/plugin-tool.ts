@@ -538,7 +538,7 @@ export function normalizeParams(params: unknown): ComputerUseParams {
   if (Array.isArray(record.keys)) {
     assertMaxBytes(record.keys.join(","), "keys", MAX_ARG_BYTES);
   }
-  if (record.coords !== undefined && (!/^-?\d{1,10},-?\d{1,10}$/.test(record.coords as string) || (record.coords as string).split(",").some(n => Number(n) < -2147483648 || Number(n) > 2147483647))) {
+  if (record.coords !== undefined && (!/^-?\d{1,10},-?\d{1,10}$/.test((record.coords as string).trim()) || (record.coords as string).split(",").some(n => Number(n) < -2147483648 || Number(n) > 2147483647))) {
     throw new ToolInputError("coords must be in x,y form, for example 120,240.");
   }
   const normalized = record as ComputerUseParams;

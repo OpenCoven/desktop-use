@@ -796,14 +796,25 @@ fn undeclared_capture_modes_never_invoke_or_broaden_a_helper() {
 }
 
 #[test]
-fn x11_signed_coordinates_follow_explicit_option_boundary() {
+fn x11_coordinates_cannot_wrap_or_silently_clip_to_a_root_edge() {
+    for coords in ["-1920,-80", "32768,80", "1600,80"] {
+        let f = Fixture::new();
+        f.tool("xdotool", r#"if [ "$1" = getdisplaygeometry ]; then printf '1600 900'; else printf input > "$FIXTURE_LOG"; fi"#);
+        let result =
+            f.run(json!({"platform":"x11","args":["click","--coords",coords,"--confirm"]}));
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["code"], "COORDINATES_OUT_OF_RANGE");
+        assert!(f.log().is_empty());
+    }
+}
+
+#[test]
+fn wayland_pointer_without_versioned_geometry_never_sends_input() {
     let f = Fixture::new();
-    f.tool("xdotool", "printf '%s\\n' \"$@\" > \"$FIXTURE_LOG\"");
+    f.tool("ydotool", "printf input > \"$FIXTURE_LOG\"");
     let result =
-        f.run(json!({"platform":"x11","args":["click","--coords","-1920,-80","--confirm"]}));
-    assert_eq!(result["ok"], true);
-    assert_eq!(
-        f.log(),
-        "mousemove\n--sync\n--\n-1920\n-80\nclick\n--repeat\n1\n1\n"
-    );
+        f.run(json!({"platform":"wayland","args":["click","--coords","-720,60","--confirm"]}));
+    assert_eq!(result["ok"], false);
+    assert_eq!(result["code"], "POINTER_MAPPING_UNVERIFIED");
+    assert!(f.log().is_empty());
 }
