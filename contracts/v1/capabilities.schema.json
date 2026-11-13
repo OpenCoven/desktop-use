@@ -62,6 +62,82 @@
         }
       }
     },
+    "adapter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "configuredPath",
+        "resolvedPath",
+        "version"
+      ],
+      "properties": {
+        "configuredPath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "resolvedPath": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "actionPermissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile",
+        "allowedActions",
+        "snapshotId"
+      ],
+      "properties": {
+        "profile": {
+          "enum": [
+            "full",
+            "observation-only",
+            "desktop-only"
+          ]
+        },
+        "allowedActions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "health",
+              "stop",
+              "doctor",
+              "inspect",
+              "screenshot",
+              "click",
+              "type-text",
+              "keypress",
+              "scroll",
+              "focus",
+              "shell",
+              "file-list",
+              "file-read",
+              "file-write",
+              "clipboard-read",
+              "clipboard-write",
+              "browser-open",
+              "app-launch"
+            ]
+          }
+        },
+        "snapshotId": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
     "actions": {
       "type": "object",
       "additionalProperties": false,

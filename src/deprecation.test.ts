@@ -110,7 +110,8 @@ test("simultaneous legacy tool and action or clipboard names retain every notice
   assert.match(notice(clipboard), /text.*clipboardText/);
 });
 
-test("legacy names preserve approval decisions and redacted audit results", async () => {
+test("legacy names preserve approval decisions and redacted audit results", async t => {
+  t.mock.method(Date, "now", () => 1700000000000);
   for (const legacyTool of [false, true]) {
     for (const { legacy, canonical, extra } of aliases) {
       const old = harness(legacyTool);
@@ -141,7 +142,8 @@ test("legacy names preserve approval decisions and redacted audit results", asyn
 });
 
 for (const response of [{ ok: false, error: "backend failed" }, { ok: false, supported: false }, { ok: false, requiresConfirmation: true }]) {
-  test(`deprecation preserves backend outcome ${JSON.stringify(response)}`, async () => {
+  test(`deprecation preserves backend outcome ${JSON.stringify(response)}`, async t => {
+    t.mock.method(Date, "now", () => 1700000000000);
     const old = harness(true, response);
     const current = harness(false, response);
     const oldResult = await old.tool.execute("outcome", { action: "permissions" });

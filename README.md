@@ -222,6 +222,10 @@ The public OpenClaw tool context does not identify the selected model's image ca
 
 Default private capture staging adds no approval prompt. An explicit `path` retains canonical-target approval and publishes validated bytes by atomic replacement only after the last cancellation check. `outputPublication` reports its separate success, failure or changed-target approval requirement. After successful explicit publication, the legacy primary path fields name the approved destination, including if the deadline or cancellation later prevents image delivery. Failed or unperformed publication retains the temporary capture paths. Without an explicit destination, legacy primary paths describe private temporary capture provenance and are normally removed before return; consume the typed image block. Optional annotation/map paths keep their separate backend meaning and never authorize reads. Neither layer protects against a hostile concurrent writer running as the same OS user. Private staging and reads share the existing action deadline; no observation cache or automatic input replay is added.
 
+## Capability discovery
+
+CLI doctor/help and plugin doctor/health expose a versioned `capabilitiesV1` report with action and variant support, explicit unknown prerequisites, provider identity, selectors and limits. Plugin discovery overlays the trusted action profile and reports approval requirements separately from backend availability; gateway authorization remains host-owned. Successful health omits missing-adapter advice, and repair guidance follows the actual failure phase and platform evidence. See the [v1 contract and reference consumer](docs/capabilities-contract.md) for schema migration, provenance and acceptance limits.
+
 ## Trusted action permissions
 
 The plugin defaults to `actionProfile: "full"`, retaining all 18 canonical actions and five deprecated action aliases in 0.1.x. Set a trusted plugin configuration to narrow eligibility for both `computer_use` and `desktop_use`:

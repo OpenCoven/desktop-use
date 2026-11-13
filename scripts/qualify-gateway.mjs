@@ -1,3 +1,4 @@
+import { createCapabilitiesFixture } from "./gateway-capabilities-fixture.mjs";
 import { createImageFixture, inspectProviderImage } from "./gateway-image-fixture.mjs";
 import { COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME } from "../src/tool-names.ts";
 // Real pinned gateway + local deterministic model transport; no live provider or desktop input.
@@ -13,6 +14,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const pluginRoot = resolve(process.argv[4] ?? repo);
 const profile = process.argv[5] ?? "full";
+const lane = process.argv[6] ?? "complete";
+assert.ok(["complete", "capabilities"].includes(lane));
 const permissionConfigs = {
   full: { actionProfile: "full" },
   "observation-only": { actionProfile: "observation-only" },
@@ -49,6 +52,7 @@ const requests = [];
 const modelErrors = [];
 const modelSchemas = {};
 const imageFixture = await createImageFixture(repo, root);
+const capabilitiesFixture = await createCapabilitiesFixture(repo, root, imageFixture.adapter);
 const canonicalActions = ["health", "stop", "doctor", "inspect", "screenshot", "click", "type-text", "keypress", "scroll", "focus", "shell", "file-list", "file-read", "file-write", "clipboard-read", "clipboard-write", "browser-open", "app-launch"];
 const legacyActions = { permissions: "doctor", see: "inspect", capture: "screenshot", type: "type-text", press: "keypress" };
 const profileActions = {
@@ -155,13 +159,13 @@ const log = await open(join(root, "console.log"), "w", 0o600);
 const env = Object.fromEntries(["PATH", "TMPDIR", "LANG", "USER"].filter(k => process.env[k]).map(k => [k, process.env[k]]));
 const unavailableAdapter = join(root, "deliberately-unavailable-desktop-adapter");
 await assert.rejects(access(unavailableAdapter), { code: "ENOENT" });
-Object.assign(env, { OPENCLAW_IMAGE_BACKEND: process.env.OPENCLAW_IMAGE_BACKEND ?? "sharp", OPENCLAW_STATE_DIR: join(root, "state"), OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_HOME: join(root, "home"), OPENCLAW_PLUGIN_LOAD_PROFILE: "1", OPENCLAW_LIVE_GATEWAY: "1", OPENCLAW_LIVE_GATEWAY_PROVIDERS: "qualification", COVEN_DESKTOP_USE_BIN: imageFixture.adapter });
+Object.assign(env, { OPENCLAW_IMAGE_BACKEND: process.env.OPENCLAW_IMAGE_BACKEND ?? "sharp", OPENCLAW_STATE_DIR: join(root, "state"), OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_HOME: join(root, "home"), OPENCLAW_PLUGIN_LOAD_PROFILE: "1", OPENCLAW_LIVE_GATEWAY: "1", OPENCLAW_LIVE_GATEWAY_PROVIDERS: "qualification", COVEN_DESKTOP_USE_BIN: capabilitiesFixture.adapter, COVEN_HOME: join(root, "coven-home") });
 await save("action-permissions.json", { profile, trustedConfig: permissionConfigs[profile], expectedActions: profileActions, expectedAliases: visibleAliases });
 await save("adapter-fixture.json", { mode: "synthetic-capture-only-when-harness-enabled", nativePlatform: process.platform, realRustBinary: imageFixture.binary, nonCaptureUnavailable: true, graphicalEffects: false, liveProvider: false });
 // Refuse to start a gateway if this package would escape the explicit state root.
 // Verify byte-identical source, then use the checkout's installed SDK peer for a
 // dry resolver call with no audit write or gateway/profile initialization.
-for (const file of ["index.ts", "openclaw.plugin.json", "src/computer-use-audit.ts", "src/computer-use-agent.ts", "src/tool-names.ts", "src/action-permissions.ts", "src/computer-use-actions.ts", "src/computer-use-policy.ts", "src/plugin-tool.ts", "src/observation.ts", "src/file-actions.ts", "contracts/v1/observation.schema.json"]) {
+for (const file of ["index.ts", "openclaw.plugin.json", "src/computer-use-audit.ts", "src/computer-use-agent.ts", "src/tool-names.ts", "src/action-permissions.ts", "src/computer-use-actions.ts", "src/computer-use-policy.ts", "src/plugin-tool.ts", "src/capabilities.ts", "src/host-actions.ts", "src/observation.ts", "src/file-actions.ts", "contracts/v1/observation.schema.json", "contracts/v1/capabilities.schema.json", "contracts/v1/canonical-actions.json", "contracts/v1/canonical-actions.schema.json", "package.json"]) {
   assert.deepEqual(await readFile(join(repo, file)), await readFile(join(pluginRoot, file)), `Packed source differs: ${file}`);
 }
 const auditProbe = spawnSync(process.execPath, ["--import", createRequire(join(repo, "package.json")).resolve("tsx"), "--input-type=module", "-e",
@@ -278,6 +282,68 @@ try {
     return JSON.parse(text);
   };
   const noFile = async path => assert.rejects(access(path), { code: "ENOENT" });
+  // Dedicated capabilities lane retains the complete lane's image, approval,
+  // canonical-path, cancellation, legacy and audit assertions below unchanged.
+  if (lane === "capabilities") {
+    const receipts = [];
+    for (const name of ["x11", "macos-permission-granted", "macos-permission-denied", "x11-empty", "missing-helper", "wayland-unknown", "wayland-unavailable", "windows", "schema-unknown", "missing-adapter"]) {
+      await capabilitiesFixture.select(name);
+      try {
+        for (const action of ["health", "doctor"]) {
+        const response = await httpInvoke(COMPUTER_USE_TOOL_NAME, { action });
+        await save(`capability-${action}-${name}.json`, response);
+        if (profile === "stop-only") { assert.equal(response.status, 403); receipts.push({ name, action, status: 403, profileDenied: true }); continue; }
+        assert.equal(response.status, 200);
+        const details = response.body.result.details;
+        const report = details.capabilitiesV1;
+        assert.equal(report.schemaVersion, 1);
+        assert.equal(report.producer.surface, "plugin");
+        assert.deepEqual(report.actionPermissions.allowedActions, profileActions);
+        assert.equal(report.actions.stop.policy.profile, "allowed");
+        assert.equal(report.actions.stop.state, "available");
+        assert.equal(report.actions["file-read"].state, "available");
+        assert.equal(report.actions["file-read"].policy.profile, profile === "desktop-only" ? "denied" : "allowed");
+        assert.ok(Object.values(report.actions).every(action => action.policy.gatewayPolicy === "not-reported"));
+        assert.equal(report.adapter.configuredPath, capabilitiesFixture.adapter);
+        assert.equal(report.adapter.version, ["missing-adapter", "schema-unknown"].includes(name) ? null : "0.1.2");
+        assert.equal(JSON.stringify(details.repairHints).includes("Screen Recording"), name === "macos-permission-denied");
+        assert.equal(JSON.stringify(details.repairHints).includes("COVEN_DESKTOP_USE_BIN"), name === "missing-adapter");
+        if (name === "x11-empty") assert.match(JSON.stringify(details.permissionFlow), /sudo apt install scrot xdotool wmctrl/);
+        if (name === "missing-helper") assert.match(JSON.stringify(details.repairHints), /Peekaboo/);
+        if (name === "schema-unknown") { assert.equal(details.code, "CAPABILITY_SCHEMA_UNSUPPORTED"); assert.equal(details.status, "error"); }
+        else assert.equal(details.status, ["missing-adapter", "missing-helper"].includes(name) ? "error" : "success");
+        assert.equal(Object.values(report.actions).some(action => action.evidence.some(e => e.kind === "actual-action" && e.status === "passed")), false);
+        receipts.push({ name, action, status: details.status, phase: details.adapterInvocation.phase, version: report.adapter.version });
+        }
+      } finally { await capabilitiesFixture.restore(); }
+    }
+    // Actual provider-visible profile schema plus executor result for this lane.
+    await capabilitiesFixture.select("x11");
+    try {
+      const result = await runCase("capability-model-profile", { action: profile === "stop-only" ? "stop" : "health" }, "none");
+      assert.equal(toolResult(result.history).status, "success");
+      assert.equal(result.events.some(event => event.event === "plugin.approval.requested"), false);
+    } finally { await capabilitiesFixture.restore(); }
+    const legacySession = "agent:legacy-qualification:capability";
+    await rpc("sessions.patch", { key: legacySession });
+    const legacy = await httpInvoke(DESKTOP_USE_TOOL_NAME, { action: "stop" }, legacySession);
+    assert.equal(legacy.status, 200); assert.equal(legacy.body.result.details.status, "success");
+    assert.ok(legacy.body.result.details.deprecation);
+    await save("capability-legacy-stop.json", legacy);
+    if (profile !== "full") {
+      const action = profile === "desktop-only" ? "file-write" : "shell";
+      const denied = await httpInvoke(COMPUTER_USE_TOOL_NAME, { action, path: "forbidden.txt", content: "qualification-private", command: process.execPath, confirm: true });
+      assert.equal(denied.status, 403);
+      await save("capability-profile-denied.json", denied);
+      await noFile(join(workspace, "forbidden.txt"));
+    }
+    const records = (await readFile(join(dirname(agentDir), "audit/computer-use.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    assert.ok(records.every(record => profileActions.includes(record.action)));
+    assert.ok(!JSON.stringify(records).includes("qualification-private"));
+    await save("capability-summary.json", { lane, profile, pluginRoot, host, openclawVersion: pkg.version, synthetic: true, desktopEffects: false, liveProvider: false, receipts, modelSchema: true, legacyStop: true, audit: { records: records.length, privateContentAbsent: true } });
+    console.log(`Gateway capabilities ${profile} checkpoint: ${root}`);
+  } else {
+
   if (profileActions.includes("screenshot")) {
     await writeFile(imageFixture.marker, "synthetic-only", { mode: 0o600 });
     try {
@@ -483,7 +549,9 @@ try {
   await save("events.json", events);
   console.log(`Gateway qualification checkpoint: ${root}`);
   }
+  }
 } finally {
+  await capabilitiesFixture.restore();
   await save("events.json", events);
   for (const waiter of pending.values()) clearTimeout(waiter.timer);
   socket?.terminate(); model.closeAllConnections(); await new Promise(r => model.close(r));

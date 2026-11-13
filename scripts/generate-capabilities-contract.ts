@@ -5,6 +5,7 @@ import { CANONICAL_ACTIONS } from "../src/computer-use-actions.js";
 const root = new URL("../contracts/v1/", import.meta.url);
 const schema = JSON.parse(await readFile(new URL("capabilities.schema.source.json", root), "utf8"));
 schema.properties.actions.required = [...CANONICAL_ACTIONS];
+schema.properties.actionPermissions.properties.allowedActions.items.enum = [...CANONICAL_ACTIONS];
 schema.properties.actions.properties = Object.fromEntries(CANONICAL_ACTIONS.map(action => [action, { $ref: "#/$defs/action" }]));
 const assets = {
   "canonical-actions.json": [...CANONICAL_ACTIONS],
