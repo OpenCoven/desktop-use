@@ -116,3 +116,17 @@ test('otherwise authentic request with invalid UTF-8 never reaches the approval 
   socket.on('connect', () => socket.write(malformed)); await response; socket.destroy();
   assert.equal(prompts, 0); await assert.rejects(readFile(join(f.root, 'invalid-utf8')));
 });
+
+for (const direction of ['request', 'response'] as const) test(`shared parser rejects BOM bytes on an otherwise authentic ${direction} frame`, async () => {
+  const { PassThrough } = await import('node:stream');
+  const { mac, authentic, frame, readRequest, readFrame } = await import('./broker-protocol.js');
+  const secret = randomBytes(32);
+  const body = direction === 'request' ? { v: 1, nonce: 'n', body: { callId: 'signed' } } : { v: 1, nonce: 'n', digest: 'd', decision: 'allowed' };
+  const signed = { ...body, mac: mac(secret, direction, body) };
+  assert.equal(authentic(mac(secret, direction, body), signed.mac), true);
+  const reader = direction === 'request' ? readRequest : readFrame;
+  const valid = new PassThrough(); const accepted = reader(valid as any); valid.end(frame(signed));
+  assert.deepEqual(await accepted, signed);
+  const bom = new PassThrough(); const rejected = reader(bom as any); bom.end(Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(frame(signed))]));
+  await assert.rejects(rejected, /APPROVAL_UNAVAILABLE/);
+});

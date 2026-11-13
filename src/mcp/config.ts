@@ -7,7 +7,7 @@ import { privateDirectory } from './broker-protocol.js';
 
 export async function readStartupConfig(path: string): Promise<DesktopClientOptions & { close(): Promise<void> }> {
   if (!isAbsolute(path)) throw new Error('STARTUP_INVALID');
-  const configFile = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const configFile = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
   let config: any;
   try {
     const stat = await configFile.stat();
@@ -19,7 +19,7 @@ export async function readStartupConfig(path: string): Promise<DesktopClientOpti
   if (typeof config.workspaceDir !== 'string' || !isAbsolute(config.workspaceDir) || typeof config.stateDir !== 'string' || typeof config.principalId !== 'string' || !config.principalId || (config.sessionId !== undefined && typeof config.sessionId !== 'string') || typeof config.adapterPath !== 'string' || !isAbsolute(config.adapterPath)) throw new Error('STARTUP_INVALID');
   if (config.actionProfile !== undefined && !['full', 'observation-only'].includes(config.actionProfile)) throw new Error('STARTUP_INVALID');
   await privateDirectory(config.stateDir);
-  const audit = await open(join(config.stateDir, 'audit.jsonl'), constants.O_CREAT | constants.O_APPEND | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
+  const audit = await open(join(config.stateDir, 'audit.jsonl'), constants.O_CREAT | constants.O_APPEND | constants.O_WRONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW, 0o600);
   const stat = await audit.stat();
   if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.nlink !== 1) { await audit.close(); throw new Error('AUDIT_UNAVAILABLE'); }
   return { workspaceDir: config.workspaceDir, scope: { principalId: config.principalId, sessionId: config.sessionId }, adapterPath: config.adapterPath, actionPermissions: resolveActionPermissions({ actionProfile: config.actionProfile ?? 'observation-only' }), approvalTimeoutMs: config.approvalTimeoutMs, auditSink: async event => { await audit.appendFile(JSON.stringify(event) + '\n'); }, close: () => audit.close() };

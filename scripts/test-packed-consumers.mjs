@@ -19,7 +19,9 @@ function run(command, args, cwd = root) {
 try {
   let tarball = process.argv[2] && resolve(process.argv[2]);
   if (!tarball) {
-    const packed = JSON.parse(run('npm', ['pack', '--json', '--pack-destination', root], repo))[0]; tarball = join(root, packed.filename);
+    // Build explicitly, then reserve pack stdout for JSON on all supported npm versions.
+    run('npm', ['run', 'build'], repo);
+    const packed = JSON.parse(run('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', root], repo))[0]; tarball = join(root, packed.filename);
   }
   const sdk = join(root, 'sdk'); await mkdir(sdk);
   await writeFile(join(sdk, 'package.json'), JSON.stringify({ private: true, type: 'module' }));

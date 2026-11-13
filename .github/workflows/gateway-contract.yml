@@ -5,6 +5,8 @@ on:
     paths:
       - '.github/workflows/gateway-contract.yml'
       - 'scripts/qualify-gateway.mjs'
+      - 'scripts/packed-metadata.mjs'
+      - 'scripts/packed-metadata.test.mjs'
       - 'scripts/gateway-image-fixture.mjs'
       - 'contracts/**'
       - 'Cargo.toml'

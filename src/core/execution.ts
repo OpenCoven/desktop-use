@@ -83,7 +83,7 @@ export function createExecution(options: ExecutionOptions) {
   const ctx = Object.freeze({ ...options.ctx });
   const actionPermissions = options.actionPermissions === undefined ? resolveActionPermissions() : validateActionPermissions(options.actionPermissions);
   const adapterPath = options.adapterPath ?? resolveAdapterBin();
-  const runAdapter = options.runAdapter ?? ((args, params, signal) => runAdapterBinary(args, params, signal, adapterPath));
+  const runAdapter = options.runAdapter ?? ((args, params, signal) => runAdapterBinary(args, params, signal, adapterPath, options.surface));
   const appendAuditEvent = options.appendAuditEvent;
 
   return {
@@ -193,7 +193,7 @@ async function executeAllowedAction(
     return {
       ...normalized,
       action,
-      permissionFlow: permissionFlowForResult(safe, action),
+      permissionFlow: permissionFlowForResult(safe, action, discovery),
       ...(observation ? { observationV1: observation.observationV1, observationUnavailable: observation.observationUnavailable, outputPublication: observation.outputPublication, cleanup: observation.cleanup, modelImageSupport: observation.modelImageSupport } : {}),
     };
   }
@@ -268,7 +268,7 @@ async function discoveryResult(adapterResult: unknown, ctx: ComputerUsePolicyCon
   return { ...normalized, ...(compatibilityError ? { status: "error", success: false, code: compatibilityError, error: "Adapter capability response is incompatible; raw diagnostics withheld." } : {}),
     action, ...(action === "health" ? { agent: COMPUTER_USE_AGENT, healthCheck: COMPUTER_USE_HEALTH_CHECK, auditLog: discovery.auditLogPath } : {}), capabilitiesV1,
     adapterInvocation: { ...hostEvidence.adapter, version: capabilitiesV1.adapter?.version ?? null, phase: outcome.phase, ...(outcome.processStarted === undefined ? {} : { processStarted: outcome.processStarted }), ...(outcome.code ? { code: outcome.code } : {}) },
-    repairHints, permissionFlow: outcome.phase === "adapter" ? permissionFlowForResult(adapterResult, "doctor", repairHints.some(hint => hint.includes("macOS permissions"))) : undefined,
+    repairHints, permissionFlow: outcome.phase === "adapter" ? permissionFlowForResult(adapterResult, "doctor", discovery, repairHints.some(hint => hint.includes("macOS permissions"))) : undefined,
   };
 }
 
@@ -485,7 +485,7 @@ function processOutcome(error: ProcessFailure): CapabilityOutcome {
   return { phase: error.lifecycle === "not-started" ? "before-start" : error.lifecycle === "spawn-failed" ? "spawn" : "process", ...(error.lifecycle === "unknown" ? {} : { processStarted: error.lifecycle === "started" }), code: error.code };
 }
 
-async function runAdapterBinary(args: string[], params: ComputerUseParams, signal?: AbortSignal, adapterBin = resolveAdapterBin()): Promise<unknown> {
+async function runAdapterBinary(args: string[], params: ComputerUseParams, signal?: AbortSignal, adapterBin = resolveAdapterBin(), surface: ExecutionOptions["surface"] = "plugin"): Promise<unknown> {
   const timeout = params.timeoutMs ?? (params.action === "inspect" || params.action === "screenshot" ? CAPTURE_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
   try {
     const { stdout } = await runProcess(adapterBin, [...args, "--timeout-ms", String(Math.max(1000, Math.floor(timeout - 100)))], {
@@ -503,7 +503,7 @@ async function runAdapterBinary(args: string[], params: ComputerUseParams, signa
     const code = error instanceof ProcessFailure || error instanceof FileActionError ? error.code : "BACKEND_ERROR";
     const failure = { ok: false, code, error: "Adapter execution failed; raw diagnostics withheld.",
       ...(["ETIMEDOUT", "CANCELLED"].includes(code) ? error instanceof ProcessFailure && error.progress ? error.progress : { progressUnknown: true } : {}),
-      ...(code === "ENOENT" ? { hint: missingAdapterHint(adapterBin), adapterSetup: adapterSetupGuide(adapterBin) } : {}) };
+      ...(code === "ENOENT" ? { hint: missingAdapterHint(adapterBin, surface), adapterSetup: adapterSetupGuide(adapterBin, surface) } : {}) };
     adapterOutcomes.set(failure, error instanceof ProcessFailure ? processOutcome(error) : { phase: "process", code });
     return failure;
   }
@@ -641,7 +641,7 @@ function addCommonTargetArgs(args: string[], params: ComputerUseParams): void {
 }
 
 
-function permissionFlowForResult(result: unknown, action: string, reportDenial = false): unknown | undefined {
+function permissionFlowForResult(result: unknown, action: string, discovery: DiscoveryOptions, reportDenial = false): unknown | undefined {
   const platform = readStringField(result, "platform");
   if (platform === "linux") {
     const guide = readObjectField(result, "setupGuide");
@@ -666,15 +666,15 @@ function permissionFlowForResult(result: unknown, action: string, reportDenial =
         uri: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
       },
     ],
-    primaryBinariesToAdd: primaryPermissionBinaries(),
+    primaryBinariesToAdd: primaryPermissionBinaries(discovery.adapterPath),
     grantTargets: [
-      ...primaryPermissionBinaries(),
-      "the terminal app or service that launched OpenClaw",
-      "node",
-      "openclaw",
+      ...primaryPermissionBinaries(discovery.adapterPath),
+      ...(discovery.surface === "sdk" || discovery.surface === "mcp" ? ["the terminal app or service that launched this client", "node"] : ["the terminal app or service that launched OpenClaw", "node", "openclaw"]),
     ],
     afterGrant:
-      `Quit/restart the granted app or restart the OpenClaw Gateway, then rerun ${COMPUTER_USE_TOOL_NAME} action=doctor.`,
+      discovery.surface === "sdk" || discovery.surface === "mcp"
+        ? `Quit/restart the granted launcher of this ${discovery.surface.toUpperCase()} client, then rerun ${COMPUTER_USE_TOOL_NAME} action=doctor.`
+        : `Quit/restart the granted app or restart the OpenClaw Gateway, then rerun ${COMPUTER_USE_TOOL_NAME} action=doctor.`,
     verification: { tool: COMPUTER_USE_TOOL_NAME, args: { action: "doctor" } },
   };
 }
@@ -744,8 +744,7 @@ function collectSessionNotes(
   return notes;
 }
 
-function primaryPermissionBinaries(): string[] {
-  const adapter = resolveAdapterBin();
+function primaryPermissionBinaries(adapter = resolveAdapterBin()): string[] {
   const peekaboo = resolvePathBinary("peekaboo") ?? "peekaboo";
   return Array.from(new Set([adapter, peekaboo]));
 }
@@ -760,20 +759,20 @@ function resolvePathBinary(name: string): string | undefined {
   return undefined;
 }
 
-function missingAdapterHint(adapterBin: string): string {
+function missingAdapterHint(adapterBin: string, surface: ExecutionOptions["surface"]): string {
+  if (surface === "sdk" || surface === "mcp") return `Adapter binary not found or not executable at ${adapterBin}. Correct the ${surface === "sdk" ? "trusted SDK adapterPath option" : "trusted MCP configuration adapterPath"}, then restart the actual client launcher.`;
   if (adapterBin === DEFAULT_ADAPTER_BIN) {
     return `Adapter binary not found on PATH. Install the OpenCoven adapter or set COVEN_DESKTOP_USE_BIN to an absolute path. Expected binary: ${DEFAULT_ADAPTER_BIN}`;
   }
   return `Adapter binary not found or not executable at COVEN_DESKTOP_USE_BIN=${adapterBin}. Set COVEN_DESKTOP_USE_BIN to the coven-desktop-use binary path and restart the OpenClaw Gateway.`;
 }
 
-function adapterSetupGuide(adapterBin: string): unknown {
+function adapterSetupGuide(adapterBin: string, surface: ExecutionOptions["surface"]): unknown {
   return {
     expectedBinary: DEFAULT_ADAPTER_BIN,
     configuredBinary: adapterBin,
-    envVar: "COVEN_DESKTOP_USE_BIN",
+    ...(surface === "sdk" || surface === "mcp" ? { configuration: surface === "sdk" ? "trusted SDK adapterPath option" : "trusted MCP configuration adapterPath", restartLauncher: true } : { envVar: "COVEN_DESKTOP_USE_BIN", restartAfterChangingEnv: true }),
     installCommand: "cargo install --git https://github.com/OpenCoven/desktop-use coven-desktop-use",
-    restartAfterChangingEnv: true,
   };
 }
 

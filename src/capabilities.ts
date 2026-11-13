@@ -192,7 +192,11 @@ export function buildPluginCapabilities(adapterEnvelope: unknown, hostEvidence: 
 export function repairHintsForCapabilities(report: CapabilityReportV1, outcome: CapabilityOutcome): string[] {
   if (outcome.phase === "before-start") return ["The adapter request ended before a process started. No adapter execution was observed."];
   if (outcome.phase === "process") return ["The adapter process did not complete. Inspect its fixed outcome code and any partial progress before deciding whether to retry."];
+  const standalone = report.producer.surface === "sdk" || report.producer.surface === "mcp";
+  const configuration = report.producer.surface === "sdk" ? "trusted SDK adapterPath option" : "trusted MCP configuration adapterPath";
   if (outcome.phase === "spawn") {
+    if (standalone && outcome.code === "ENOENT") return [`The selected adapter could not be started. Install coven-desktop-use or correct the ${configuration}, then restart the actual client launcher and rerun ${COMPUTER_USE_TOOL_NAME} action=health.`];
+    if (standalone && ["EACCES", "EPERM"].includes(outcome.code ?? "")) return [`The selected adapter could not be executed. Check executable access for the ${configuration} and the client launcher account, then rerun ${COMPUTER_USE_TOOL_NAME} action=health.`];
     if (outcome.code === "ENOENT") return [`The selected adapter could not be started. Install coven-desktop-use or correct COVEN_DESKTOP_USE_BIN, then restart the OpenClaw Gateway and rerun ${COMPUTER_USE_TOOL_NAME} action=health.`];
     if (["EACCES", "EPERM"].includes(outcome.code ?? "")) return [`The selected adapter could not be executed. Check its executable access and the gateway service account, then rerun ${COMPUTER_USE_TOOL_NAME} action=health.`];
     return [`The adapter process did not complete. Inspect its fixed outcome code before retrying ${COMPUTER_USE_TOOL_NAME} action=health.`];

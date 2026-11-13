@@ -1,4 +1,5 @@
 import { createCapabilitiesFixture, discoveryCallsForPlan, inspectDiscoveryTransport, correlateDiscoveryReplay, inspectDiscoveryHistory, QUALIFICATION_CONTEXT_TOKENS, DISCOVERY_TRUNCATION_MARKER } from "./gateway-capabilities-fixture.mjs";
+import { assertPackedMetadata } from "./packed-metadata.mjs";
 import { createImageFixture, inspectProviderImage } from "./gateway-image-fixture.mjs";
 import { COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME } from "../src/tool-names.ts";
 // Real pinned gateway + local deterministic model transport; no live provider or desktop input.
@@ -185,8 +186,8 @@ for (const file of ["index.js", "openclaw.plugin.json", "src/computer-use-audit.
   const runtimeFile = file === "openclaw.plugin.json" ? file : "dist/" + file.replace(/\.ts$/, ".js");
   assert.deepEqual(await readFile(join(repo, runtimeFile)), await readFile(join(pluginRoot, runtimeFile)), `Packed runtime differs: ${runtimeFile}`);
 }
-// pnpm pack reorders manifest keys; compare its complete JSON value.
-assert.deepEqual(JSON.parse(await readFile(join(repo, "package.json"), "utf8")), JSON.parse(await readFile(join(pluginRoot, "package.json"), "utf8")), "Packed package metadata differs");
+// Compare complete metadata, allowing only pnpm pack's known prepack removal.
+assertPackedMetadata(JSON.parse(await readFile(join(repo, "package.json"), "utf8")), JSON.parse(await readFile(join(pluginRoot, "package.json"), "utf8")));
 const auditProbe = spawnSync(process.execPath, ["--import", createRequire(join(repo, "package.json")).resolve("tsx"), "--input-type=module", "-e",
   "const audit = await import(process.argv[1]); console.log(JSON.stringify(['computer-use','legacy-qualification'].map(agentId => audit.resolveComputerUseAuditLogPath({agentId}))));",
   pathToFileURL(join(repo, "src/computer-use-audit.ts")).href,
