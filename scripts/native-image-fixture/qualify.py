@@ -100,12 +100,12 @@ def main():
         assert r['geometry']['state'] == ('available' if expect_geometry else 'unavailable'), r['geometry']
         if mode=='screen':
             regions = r['geometry']['regions']
-            region = next(region for region in regions if region['desktopRect']['x'] <= origin[0]+30 < region['desktopRect']['x']+region['desktopRect']['width'] and region['desktopRect']['y'] <= origin[1]+30 < region['desktopRect']['y']+region['desktopRect']['height'])
+            region = next(region for region in regions if region['desktopRect']['x'] <= origin[0]+60 < region['desktopRect']['x']+region['desktopRect']['width'] and region['desktopRect']['y'] <= origin[1]+60 < region['desktopRect']['y']+region['desktopRect']['height'])
             d, i = region['desktopRect'], region['imageRect']
-            x = round(i['x']+(origin[0]+30-d['x'])*i['width']/d['width'])
-            y = round(i['y']+(origin[1]+30-d['y'])*i['height']/d['height'])
+            x = round(i['x']+(origin[0]+60-d['x'])*i['width']/d['width'])
+            y = round(i['y']+(origin[1]+60-d['y'])*i['height']/d['height'])
         else:
-            x, y = 30, 30
+            x, y = 60, 60
         actual = pixel(path,x,y)
         assert all(abs(actual[i]-expected[i]) <= (8 if kind=='jpg' else 0) for i in range(3)), (actual,expected,label,x,y)
         receipts['captures'].append({'label':label,'receipt':r,'referencePixel':{'point':[x,y],'expected':expected,'actual':actual},'actualVisibleContent':True})
@@ -132,6 +132,9 @@ def main():
         if a.session=='x11':
             capture('screen-jpeg','jpg')
             capture('frontmost-png','png','frontmost')
+            capture('frontmost-jpeg','jpg','frontmost')
+            capture('window-png','png','window')
+            capture('window-jpeg','jpg','window')
             tools = root/'maim-tools'
             tools.mkdir()
             for name in ['maim','xwininfo','xdotool']:
@@ -140,6 +143,9 @@ def main():
             capture('maim-screen-png','png',call_env=menv)
             capture('maim-screen-jpeg','jpg',call_env=menv)
             capture('maim-frontmost-png','png','frontmost',call_env=menv)
+            capture('maim-frontmost-jpeg','jpg','frontmost',call_env=menv)
+            capture('maim-window-png','png','window',call_env=menv)
+            capture('maim-window-jpeg','jpg','window',call_env=menv)
         else:
             unsupported = call('unsupported-frontmost',['screenshot','--mode','frontmost','--path',str(root/'unsupported.png')])
             assert not unsupported['ok'] and not (root/'unsupported.png').exists()
