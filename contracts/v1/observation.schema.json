@@ -1,0 +1,462 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://opencoven.org/desktop-use/contracts/v1/observation.schema.json",
+  "title": "Validated primary image observation v1",
+  "description": "Additive observationV1 receipt. No image bytes or trusted filesystem path. Cross-field consumers must also enforce equal source extents, <=64 million source pixels, hash and exact caller-owned destination. Normalized coordinates use the delivered image; sourceExtent retains the original pixel extent. An unavailable desktop mapping must not be treated as identity. A provider explicit argument is implementation evidence of scope, not native acceptance. Provider version null means unknown.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "observationId",
+    "capturedAtMs",
+    "producer",
+    "provider",
+    "requestedScope",
+    "actualScope",
+    "primaryImage",
+    "coordinateReference",
+    "geometry"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "observationId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "capturedAtMs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version"
+      ],
+      "properties": {
+        "name": {
+          "const": "coven-desktop-use"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        }
+      }
+    },
+    "requestedScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "annotationRequested"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "auto",
+            "screen",
+            "window",
+            "frontmost"
+          ]
+        },
+        "annotationRequested": {
+          "type": "boolean"
+        }
+      }
+    },
+    "actualScope": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "mode",
+            "evidence"
+          ],
+          "properties": {
+            "state": {
+              "const": "available"
+            },
+            "mode": {
+              "enum": [
+                "screen",
+                "frontmost",
+                "window"
+              ]
+            },
+            "evidence": {
+              "const": "PROVIDER_EXPLICIT_ARGUMENT"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "reasonCode"
+          ],
+          "properties": {
+            "state": {
+              "const": "unavailable"
+            },
+            "reasonCode": {
+              "const": "PROVIDER_SCOPE_UNVERIFIED"
+            }
+          }
+        }
+      ]
+    },
+    "primaryImage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mimeType",
+        "byteLength",
+        "sha256",
+        "sourceDimensions",
+        "deliveredDimensions",
+        "annotationKind"
+      ],
+      "properties": {
+        "mimeType": {
+          "enum": [
+            "image/png",
+            "image/jpeg"
+          ]
+        },
+        "byteLength": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8388608
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "sourceDimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "width",
+            "height"
+          ],
+          "properties": {
+            "width": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 16384
+            },
+            "height": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 16384
+            }
+          }
+        },
+        "deliveredDimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "width",
+            "height"
+          ],
+          "properties": {
+            "width": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 16384
+            },
+            "height": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 16384
+            }
+          }
+        },
+        "annotationKind": {
+          "enum": [
+            "raw",
+            "annotated",
+            "unverified"
+          ]
+        },
+        "annotationReasonCode": {
+          "const": "PROVIDER_ANNOTATION_UNVERIFIED"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "annotationKind": {
+                "const": "unverified"
+              }
+            },
+            "required": [
+              "annotationKind"
+            ]
+          },
+          "then": {
+            "required": [
+              "annotationReasonCode"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "annotationReasonCode"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "coordinateReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "units",
+        "extent",
+        "sourceExtent"
+      ],
+      "properties": {
+        "units": {
+          "const": "normalized"
+        },
+        "extent": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "x",
+            "y",
+            "width",
+            "height"
+          ],
+          "properties": {
+            "x": {
+              "const": 0
+            },
+            "y": {
+              "const": 0
+            },
+            "width": {
+              "const": 1
+            },
+            "height": {
+              "const": 1
+            }
+          }
+        },
+        "sourceExtent": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "x",
+            "y",
+            "width",
+            "height"
+          ],
+          "properties": {
+            "x": {
+              "const": 0
+            },
+            "y": {
+              "const": 0
+            },
+            "width": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 16384
+            },
+            "height": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 16384
+            }
+          }
+        }
+      }
+    },
+    "geometry": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "coordinateUnits",
+            "regions",
+            "evidence"
+          ],
+          "properties": {
+            "state": {
+              "const": "available"
+            },
+            "coordinateUnits": {
+              "enum": [
+                "desktop-logical-pixels",
+                "desktop-physical-pixels",
+                "macos-points"
+              ]
+            },
+            "regions": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 32,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "imageRect",
+                  "desktopRect"
+                ],
+                "properties": {
+                  "imageRect": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "x",
+                      "y",
+                      "width",
+                      "height"
+                    ],
+                    "properties": {
+                      "x": {
+                        "type": "number"
+                      },
+                      "y": {
+                        "type": "number"
+                      },
+                      "width": {
+                        "type": "number",
+                        "exclusiveMinimum": 0
+                      },
+                      "height": {
+                        "type": "number",
+                        "exclusiveMinimum": 0
+                      }
+                    }
+                  },
+                  "desktopRect": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "x",
+                      "y",
+                      "width",
+                      "height"
+                    ],
+                    "properties": {
+                      "x": {
+                        "type": "number"
+                      },
+                      "y": {
+                        "type": "number"
+                      },
+                      "width": {
+                        "type": "number",
+                        "exclusiveMinimum": 0
+                      },
+                      "height": {
+                        "type": "number",
+                        "exclusiveMinimum": 0
+                      }
+                    }
+                  },
+                  "displayId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            },
+            "evidence": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "provider",
+                "capturedAtMs"
+              ],
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "provider-receipt",
+                    "platform-probe"
+                  ]
+                },
+                "provider": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "name",
+                    "version"
+                  ],
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "version": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "minLength": 1
+                    }
+                  }
+                },
+                "capturedAtMs": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "reasonCode"
+          ],
+          "properties": {
+            "state": {
+              "const": "unavailable"
+            },
+            "reasonCode": {
+              "const": "PROVIDER_GEOMETRY_UNVERIFIED"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,6 +1,7 @@
 #[cfg(all(test, unix))]
 mod backend_fixtures;
 mod linux_capabilities;
+mod observation;
 mod process;
 use std::cell::Cell;
 use std::env;
@@ -169,8 +170,8 @@ fn detect_linux_session() -> Platform {
 fn run_macos(command: &'static str, args: &[String]) -> String {
     match command {
         "doctor" => run_peekaboo(vec!["permissions".into()], false, true),
-        "inspect" => run_peekaboo(build_inspect_args(args), false, false),
-        "screenshot" => run_peekaboo(build_screenshot_args(args), false, false),
+        "inspect" => macos_capture("inspect", args),
+        "screenshot" => macos_capture("screenshot", args),
         "click" | "type-text" | "keypress" | "scroll" | "focus" if !has_flag(args, "--confirm") => {
             confirmation_required(command)
         }
@@ -874,8 +875,114 @@ fn capture_screenshot(
     format: &str,
     extras: &[(&'static str, String)],
 ) -> String {
+    let actual_mode = match mode {
+        "screen" => Some("screen"),
+        "window" | "frontmost" => Some("frontmost"),
+        _ => None,
+    };
+    capture_transaction(
+        path,
+        mode,
+        actual_mode,
+        format,
+        false,
+        |image_path| match session {
+            LinuxSession::X11 => x11_screenshot(image_path, mode, format, extras),
+            LinuxSession::Wayland => wayland_screenshot(image_path, mode, format, extras),
+        },
+    )
+}
+
+fn macos_capture(command: &str, args: &[String]) -> String {
+    let format = if command == "inspect" {
+        "png".to_string()
+    } else {
+        value(args, "--format").unwrap_or_else(|| "png".into())
+    };
+    if !["png", "jpg"].contains(&format.as_str()) {
+        return capture_failure_json("peekaboo", &observation::Failure::Encoding);
+    }
+    let path = output_path(value(args, "--path"), command, &format);
+    let mode = value(args, "--mode").unwrap_or_else(|| {
+        if command == "inspect" {
+            "auto".into()
+        } else {
+            "frontmost".into()
+        }
+    });
+    // No installed/version-qualified Peekaboo scope/geometry receipt producer is
+    // available. In particular, auto must never assert an actual screen extent.
+    capture_transaction(
+        &path,
+        &mode,
+        None,
+        &format,
+        command == "inspect" && !has_flag(args, "--no-annotate"),
+        |image_path| {
+            let mut owned_args = strip_option(args, "--path");
+            owned_args.extend(["--path".into(), image_path.into()]);
+            let backend_args = if command == "inspect" {
+                build_inspect_args(&owned_args)
+            } else {
+                build_screenshot_args(&owned_args)
+            };
+            run_peekaboo(backend_args, false, false)
+        },
+    )
+}
+
+fn strip_option(args: &[String], option: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        if args[index] == option {
+            index += 2;
+        } else {
+            result.push(args[index].clone());
+            if takes_value(&args[index]) {
+                index += 1;
+                if let Some(value) = args.get(index) {
+                    result.push(value.clone());
+                }
+            }
+            index += 1;
+        }
+    }
+    result
+}
+
+fn capture_failure_json(backend: &str, error: &observation::Failure) -> String {
+    if let observation::Failure::Process(failure) = error {
+        return process_failure_json(backend, failure);
+    }
+    json_obj(vec![("ok", "false".into()), ("supported", "true".into()), ("backend", json_string(backend)),
+        ("code", json_string(error.code())), ("error", json_string("Capture did not produce a valid bounded owned image. The destination was not changed; image diagnostics were withheld."))])
+}
+
+fn capture_transaction<F>(
+    path: &str,
+    requested_mode: &str,
+    actual_mode: Option<&str>,
+    format: &str,
+    annotation_requested: bool,
+    capture: F,
+) -> String
+where
+    F: FnOnce(&str) -> String,
+{
     if let Err(error) = process::check(deadline()) {
-        return process_failure_json("linux-capture", &error);
+        return process_failure_json("capture", &error);
+    }
+    if !["auto", "screen", "window", "frontmost"].contains(&requested_mode) {
+        return json_obj(vec![
+            ("ok", "false".into()),
+            ("supported", "false".into()),
+            ("code", json_string("CAPTURE_SCOPE_UNSUPPORTED")),
+            (
+                "error",
+                json_string("The requested capture mode is unsupported. No helper was invoked."),
+            ),
+        ]);
     }
     let target = Path::new(path);
     let parent = target
@@ -890,40 +997,44 @@ fn capture_screenshot(
         builder.mode(0o700);
     }
     if builder.create(&directory).is_err() {
-        return linux_error_json(
-            "Cannot create a private capture staging directory in the destination directory.",
-            None,
-        );
+        return capture_failure_json("capture", &observation::Failure::Missing);
     }
     let staging = CaptureStaging(directory);
-    let extension = if format == "jpg" { "jpg" } else { "png" };
-    let image = staging.0.join(format!("capture.{extension}"));
-    let image_path = image.to_string_lossy();
-    let result = match session {
-        LinuxSession::X11 => x11_screenshot(&image_path, mode, extras),
-        LinuxSession::Wayland => wayland_screenshot(&image_path, mode, format, extras),
-    };
-    let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+    let image = staging.0.join(if format == "jpg" {
+        "capture.jpg"
+    } else {
+        "capture.png"
+    });
+    let result = capture(&image.to_string_lossy());
+    let mut parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
     if parsed["ok"] != true {
         return result;
     }
-    if !std::fs::symlink_metadata(&image).is_ok_and(|m| m.file_type().is_file() && m.len() > 0) {
-        return json_obj(vec![("ok", "false".into()), ("supported", "true".into()), ("backend", json_string("linux")),
-            ("code", json_string("CAPTURE_MISSING")), ("error", json_string("Capture helper did not produce a new nonempty regular image artifact. The destination was not changed."))]);
-    }
-    if let Err(error) = process::check(deadline()) {
-        return process_failure_json("linux-capture", &error);
+    let provider = parsed["backend"].as_str().unwrap_or("unknown").to_owned();
+    let validated = match observation::validate_capture(&image, format, deadline()) {
+        Ok(validated) => validated,
+        Err(error) => return capture_failure_json(&provider, &error),
+    };
+    let receipt = validated.receipt(&provider, requested_mode, actual_mode, annotation_requested);
+    if let Err(error) = validated.check_identity(&image, deadline()) {
+        return capture_failure_json(&provider, &error);
     }
     if std::fs::rename(&image, target).is_err() {
-        return linux_error_json(
-            "Captured artifact could not be atomically published to the destination.",
-            None,
-        );
+        return capture_failure_json(&provider, &observation::Failure::Missing);
     }
-    result
+    // Publication has completed. Do not turn this write into cancellation after
+    // the fact: the caller needs the truthful completed outcome.
+    parsed["path"] = path.into();
+    parsed["observationV1"] = receipt;
+    parsed.to_string()
 }
 
-fn x11_screenshot(path: &str, mode: &str, extras: &[(&'static str, String)]) -> String {
+fn x11_screenshot(
+    path: &str,
+    mode: &str,
+    format: &str,
+    extras: &[(&'static str, String)],
+) -> String {
     if resolve_path_binary("scrot").is_some() {
         let mut a: Vec<OsString> = vec!["--overwrite".into()];
         if matches!(mode, "window" | "frontmost") {
@@ -956,7 +1067,14 @@ fn x11_screenshot(path: &str, mode: &str, extras: &[(&'static str, String)]) -> 
             }
             return run_linux_command(
                 "maim",
-                vec!["-i".into(), id.into(), "--".into(), path.into()],
+                vec![
+                    "-f".into(),
+                    format.into(),
+                    "-i".into(),
+                    id.into(),
+                    "--".into(),
+                    path.into(),
+                ],
                 "maim",
                 false,
                 extras,
@@ -970,7 +1088,7 @@ fn x11_screenshot(path: &str, mode: &str, extras: &[(&'static str, String)]) -> 
             );
         }
 
-        let a: Vec<OsString> = vec!["--".into(), path.into()];
+        let a: Vec<OsString> = vec!["-f".into(), format.into(), "--".into(), path.into()];
         return run_linux_command("maim", a, "maim", false, extras);
     }
     missing_tool_json(
