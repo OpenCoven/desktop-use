@@ -27,6 +27,9 @@ const discoveryActions = new Set(["health", "doctor", "permissions"]);
 export function selectEligibleDiscoveryCalls(calls, { allowedActions, canonicalAliases }) {
   return calls.filter(call => discoveryActions.has(call.action) && allowedActions.includes(canonicalAliases[call.action] ?? call.action));
 }
+export function discoveryCallsForPlan(plan, { currentCase, batchCallId, allowedActions, canonicalAliases, legacyToolName, canonicalToolName }) {
+  return selectEligibleDiscoveryCalls((plan.calls ?? [{ name: currentCase, args: plan.args }]).map(call => ({ action: call.args?.action, toolCallId: plan.calls ? batchCallId(call.name) : `call_${currentCase}`, notices: [...(call.args?.action === "permissions" ? ["permissions is deprecated; use doctor instead."] : []), ...(plan.tool === legacyToolName ? [`${legacyToolName} is deprecated; use ${canonicalToolName} instead.`] : [])] })), { allowedActions, canonicalAliases });
+}
 const normalizedCallId = value => typeof value === "string" ? value.replace(/[^a-zA-Z0-9]/g, "") : "";
 export function inspectDiscoveryTransport(body, { currentCase, calls, contextWindowTokens = QUALIFICATION_CONTEXT_TOKENS }) {
   assert.ok(Number.isSafeInteger(contextWindowTokens) && contextWindowTokens > 0, "Unknown provider context budget");

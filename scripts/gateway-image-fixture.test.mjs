@@ -256,3 +256,40 @@ test("eligible discovery still rejects malformed permitted JSON and response tex
   const denied = capabilitiesFixture.selectEligibleDiscoveryCalls([call], { allowedActions: ["stop"], canonicalAliases });
   assert.deepEqual(capabilitiesFixture.inspectDiscoveryTransport(discoveryBody('{"status":"success","action":"doctor","allowedActions":["doctor"]}'), { currentCase: "current", calls: denied }), []);
 });
+
+
+const discoveryPlanOptions = {
+  currentCase: "current", allowedActions: ["health", "doctor", "stop"], canonicalAliases: { permissions: "doctor" },
+  batchCallId: name => ({ legacy: "calllegacy", health: "callhealth" })[name],
+  legacyToolName: "desktop_use", canonicalToolName: "computer_use",
+};
+
+test("caller discovery metadata safely excludes argument-free image replay and non-discovery plans", () => {
+  const replayPlan = { args: undefined, imageKind: "large", replaySourceCase: "synthetic-image-large" };
+  assert.deepEqual(capabilitiesFixture.discoveryCallsForPlan(replayPlan, discoveryPlanOptions), []);
+  for (const args of [undefined, null, {}, { action: "screenshot" }, { action: "stop" }]) {
+    assert.deepEqual(capabilitiesFixture.discoveryCallsForPlan({ args }, discoveryPlanOptions), []);
+  }
+  assert.deepEqual(capabilitiesFixture.discoveryCallsForPlan({ calls: [
+    { name: "no-args" }, { name: "empty", args: {} }, { name: "image", args: { action: "screenshot" } },
+  ] }, discoveryPlanOptions), []);
+});
+
+test("caller discovery metadata retains trusted eligibility, call IDs and canonical and legacy notices", () => {
+  const build = capabilitiesFixture.discoveryCallsForPlan;
+  assert.deepEqual(build({ args: { action: "health" }, tool: "computer_use" }, discoveryPlanOptions), [
+    { action: "health", toolCallId: "call_current", notices: [] },
+  ]);
+  assert.deepEqual(build({ args: { action: "permissions" }, tool: "desktop_use" }, discoveryPlanOptions), [
+    { action: "permissions", toolCallId: "call_current", notices: ["permissions is deprecated; use doctor instead.", "desktop_use is deprecated; use computer_use instead."] },
+  ]);
+  const batch = { tool: "desktop_use", calls: [
+    { name: "no-args" }, { name: "legacy", args: { action: "permissions" } }, { name: "health", args: { action: "health" } },
+  ] };
+  assert.deepEqual(build(batch, discoveryPlanOptions), [
+    { action: "permissions", toolCallId: "calllegacy", notices: ["permissions is deprecated; use doctor instead.", "desktop_use is deprecated; use computer_use instead."] },
+    { action: "health", toolCallId: "callhealth", notices: ["desktop_use is deprecated; use computer_use instead."] },
+  ]);
+  assert.deepEqual(build(batch, { ...discoveryPlanOptions, allowedActions: ["stop"] }), []);
+  assert.deepEqual(build({ args: { action: "permissions" } }, { ...discoveryPlanOptions, allowedActions: ["permissions"] }), []);
+});
