@@ -14,9 +14,9 @@ async function launch(t: any, decision: string, extra: Record<string, unknown> =
   const root = await realpath(await mkdtemp(join(tmpdir(), 'second-host24-'))); t.after(() => rm(root, { recursive: true, force: true }));
   const workspace = join(root, 'workspace'); const state = join(root, 'state'); await mkdir(workspace, { mode: 0o700 }); await mkdir(state, { mode: 0o700 });
   const config = join(root, 'config.json'); await writeFile(config, JSON.stringify({ workspaceDir: workspace, stateDir: state, principalId: 'second-host-fixture', sessionId: root, adapterPath: '/missing/fixture-adapter', actionProfile: 'full', approvalTimeoutMs: 3000, ...extra }), { mode: 0o600 });
-  const host = fileURLToPath(new URL('../../examples/approval-host/main.ts', import.meta.url));
+  const host = fileURLToPath(new URL('../../dist/examples/approval-host/main.js', import.meta.url));
   await assert.doesNotReject(readFile(host), 'separate executable reference host must exist');
-  const nodeArgs = [process.execPath, '--import', 'tsx', host, '--config', config];
+  const nodeArgs = [process.execPath, host, '--config', config];
   const command = 'python3';
   const args = [fileURLToPath(new URL('./fixtures/pty-host.py', import.meta.url)), terminal ? decision : 'no-tty', ...nodeArgs];
   const child = raw ? spawn(command, args, { stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: process.env.PATH ?? '', TMPDIR: root } }) : undefined;

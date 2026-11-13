@@ -14,8 +14,8 @@ try {
   const secret = randomBytes(32); const terminal = terminalPrompt();
   cleanup = async () => { terminal.close(); secret.fill(0); await rm(directory, { force: true, recursive: true }); };
   const host = await startApprovalHost({ directory, secret, prompt: terminal.prompt });
-  const entry = fileURLToPath(new URL('../../src/mcp/main.ts', import.meta.url));
-  const child = spawn(process.execPath, ['--import', 'tsx', entry, '--config', process.argv[3], '--approval-socket', host.socketPath, '--approval-secret-fd', '3'], { stdio: ['pipe', 'inherit', 'inherit', 'pipe'] });
+  const entry = fileURLToPath(new URL('../../src/mcp/main.js', import.meta.url));
+  const child = spawn(process.execPath, [entry, '--config', process.argv[3], '--approval-socket', host.socketPath, '--approval-secret-fd', '3'], { stdio: ['pipe', 'inherit', 'inherit', 'pipe'] });
   let closing = false;
   cleanup = async () => { if (closing) return; closing = true; await host.close(); terminal.close(); secret.fill(0); await rm(directory, { force: true, recursive: true }); };
   child.stdio[3]!.on('error', () => {});

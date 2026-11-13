@@ -62,7 +62,7 @@ export function readRequest(socket: Socket): Promise<any> {
 }
 
 function parseFrame(bytes: Buffer): unknown {
-  const text = bytes.toString('utf8'); const value: unknown = JSON.parse(text);
+  const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); const value: unknown = JSON.parse(text);
   // The private protocol is canonical JSON plus LF: reject duplicate keys, invalid UTF-8 and extra frames.
   if (text !== frame(value)) throw new Error('APPROVAL_UNAVAILABLE');
   return value;

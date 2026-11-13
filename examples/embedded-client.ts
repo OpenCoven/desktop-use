@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createDesktopClient } from '../src/core/client.js';
+import { createDesktopClient } from '../src/sdk.js';
 import { readStartupConfig } from '../src/mcp/config.js';
 import { terminalPrompt } from './approval-host/terminal.js';
 

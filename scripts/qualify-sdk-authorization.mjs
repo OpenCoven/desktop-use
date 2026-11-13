@@ -50,23 +50,25 @@ await listen(model);
 const reservation = createServer(); await listen(reservation); const port = reservation.address().port; await new Promise(resolve => reservation.close(resolve));
 const workspace = join(root, 'workspace'), agentDir = join(root, 'state/agents/computer-use/agent'), token = randomBytes(24).toString('hex');
 await mkdir(workspace); await mkdir(join(root, 'harness'));
-const wrapper = `import plugin from './index.ts';\nimport { appendFileSync, realpathSync } from 'node:fs';\nimport { createRequire } from 'node:module';\nconst loadedSdk=createRequire(${JSON.stringify(join(packed, 'package.json'))}).resolve('openclaw/plugin-sdk/plugin-entry');\nappendFileSync(${JSON.stringify(join(root, 'loaded-sdk.jsonl'))},JSON.stringify({host:${JSON.stringify(host)},sdkEntry:realpathSync(loadedSdk)})+'\\n');\nexport default {...plugin, register(api){plugin.register({...api,registerTool(factory, options){api.registerTool(ctx=>{appendFileSync(${JSON.stringify(join(root, 'factory-scopes.jsonl'))},JSON.stringify({agentId:ctx.agentId,sessionKey:ctx.sessionKey,workspaceDir:ctx.workspaceDir,keys:Object.keys(ctx)})+'\\n',{mode:0o600});const tool=factory(ctx);return {...tool,async execute(id,params,signal){appendFileSync(${JSON.stringify(join(root, 'invocations.jsonl'))},JSON.stringify({id,params,ctx})+'\\n',{mode:0o600});if(params.reason==='fixture-mutate')params={...params,content:'mutated'};return tool.execute(id,params,signal);}}},options);}})}};\n`;
+const pluginEntry = join(packed, 'dist/index.js');
+await access(pluginEntry);
+const wrapper = `import plugin from './dist/index.js';\nimport { appendFileSync, realpathSync } from 'node:fs';\nimport { createRequire } from 'node:module';\nconst loadedSdk=createRequire(${JSON.stringify(join(packed, 'package.json'))}).resolve('openclaw/plugin-sdk/plugin-entry');\nappendFileSync(${JSON.stringify(join(root, 'loaded-sdk.jsonl'))},JSON.stringify({host:${JSON.stringify(host)},sdkEntry:realpathSync(loadedSdk)})+'\\n');\nexport default {...plugin, register(api){plugin.register({...api,registerTool(factory, options){api.registerTool(ctx=>{appendFileSync(${JSON.stringify(join(root, 'factory-scopes.jsonl'))},JSON.stringify({agentId:ctx.agentId,sessionKey:ctx.sessionKey,workspaceDir:ctx.workspaceDir,keys:Object.keys(ctx)})+'\\n',{mode:0o600});const tool=factory(ctx);return {...tool,async execute(id,params,signal){appendFileSync(${JSON.stringify(join(root, 'invocations.jsonl'))},JSON.stringify({id,params,ctx})+'\\n',{mode:0o600});if(params.reason==='fixture-mutate')params={...params,content:'mutated'};return tool.execute(id,params,signal);}}},options);}})}};\n`;
 await symlink(host, join(root, 'harness/openclaw-host'));
 await mkdir(join(root, 'harness/node_modules')); await symlink(host, join(root, 'harness/node_modules/openclaw'));
 await mkdir(join(packed, 'node_modules'), { recursive: true }); await symlink(host, join(packed, 'node_modules/openclaw'));
 const sdkEntry = createRequire(join(packed, 'package.json')).resolve('openclaw/plugin-sdk/plugin-entry');
 assert.ok((await realpath(sdkEntry)).startsWith(host + '/'), 'Packed plugin resolves the selected actual host SDK');
-await save('sdk-resolution.json', { host, hostVersion: pkg.version, sdkEntry: await realpath(sdkEntry), sdkSha256: createHash('sha256').update(await readFile(sdkEntry)).digest('hex'), packed, ancestorFallback: false });
-await writeFile(join(packed, 'qualification-wrapper.ts'), wrapper);
+await save('sdk-resolution.json', { host, hostVersion: pkg.version, sdkEntry: await realpath(sdkEntry), sdkSha256: createHash('sha256').update(await readFile(sdkEntry)).digest('hex'), packed, pluginEntry, pluginSha256: createHash('sha256').update(await readFile(pluginEntry)).digest('hex'), ancestorFallback: false });
+await writeFile(join(packed, 'qualification-wrapper.js'), wrapper);
 await writeFile(join(root, 'harness/openclaw.plugin.json'), await readFile(join(packed, 'openclaw.plugin.json')));
-await writeFile(join(root, 'harness/package.json'), JSON.stringify({ name: '@fixture/sdk-authorization', version: '1.0.0', type: 'module', openclaw: { extensions: ['./index.ts'] } }));
+await writeFile(join(root, 'harness/package.json'), JSON.stringify({ name: '@fixture/sdk-authorization', version: '1.0.0', type: 'module', openclaw: { extensions: ['./index.js'] } }));
 const adapter = join(root, 'adapter.cjs');
 await writeFile(adapter, `#!${process.execPath}\nrequire('fs').appendFileSync(${JSON.stringify(join(root, 'adapter-calls.jsonl'))},JSON.stringify(process.argv.slice(2))+'\\n');console.log(JSON.stringify({ok:true}));\n`, { mode: 0o700 });
 const template = JSON.parse(await readFile(join(packed, 'agents/computer-use/openclaw-agent.json'), 'utf8'));
 const config = {
   gateway: { mode: 'local', bind: 'loopback', port, auth: { mode: 'token', token }, controlUi: { enabled: false } },
   logging: { file: join(root, 'gateway.jsonl'), level: 'info' }, discovery: { mdns: { mode: 'off' } }, browser: { enabled: false }, cron: { enabled: false }, canvasHost: { enabled: false }, update: { checkOnStart: false },
-  plugins: { allow: ['opencoven-desktop-use'], load: { paths: [join(packed, 'qualification-wrapper.ts')] }, slots: { memory: 'none' }, entries: { 'opencoven-desktop-use': { enabled: true } } }, skills: { allowBundled: [] }, tools: { profile: 'minimal' },
+  plugins: { allow: ['opencoven-desktop-use'], load: { paths: [join(packed, 'qualification-wrapper.js')] }, slots: { memory: 'none' }, entries: { 'opencoven-desktop-use': { enabled: true } } }, skills: { allowBundled: [] }, tools: { profile: 'minimal' },
   models: { mode: 'merge', providers: { qualification: { baseUrl: `http://127.0.0.1:${model.address().port}/v1`, apiKey: 'disposable-fixture', api: 'openai-completions', models: [{ id: 'fixture', name: 'Local fixture', reasoning: false, input: ['text'], contextWindow: 65536, maxTokens: 1024, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] } } },
   agents: { defaults: { workspace, skipBootstrap: true, model: { primary: 'qualification/fixture' }, timeoutSeconds: 420, heartbeat: { every: '0m' } }, list: [
     { id: 'computer-use', default: true, workspace, agentDir, tools: template.tools },
@@ -80,7 +82,7 @@ if (pkg.version === '2026.11.3') {
 await save('openclaw.json', config);
 const env = Object.fromEntries(['PATH', 'TMPDIR', 'LANG', 'USER'].filter(key => process.env[key]).map(key => [key, process.env[key]]));
 Object.assign(env, { OPENCLAW_STATE_DIR: join(root, 'state'), OPENCLAW_CONFIG_PATH: join(root, 'openclaw.json'), OPENCLAW_HOME: join(root, 'home'), COVEN_HOME: join(root, 'coven'), OPENCLAW_LIVE_GATEWAY: '1', OPENCLAW_LIVE_GATEWAY_PROVIDERS: 'qualification', COVEN_DESKTOP_USE_BIN: adapter });
-await save('identity.json', { qualifierSha256: createHash('sha256').update(await readFile(new URL(import.meta.url))).digest('hex'), host, hostVersion: pkg.version, packed, node: process.version, wrapperSha256: createHash('sha256').update(wrapper).digest('hex'), nativeActivity: false, provider: 'local deterministic transport', expiryMs: 300000 });
+await save('identity.json', { qualifierSha256: createHash('sha256').update(await readFile(new URL(import.meta.url))).digest('hex'), host, hostVersion: pkg.version, packed, node: process.version, pluginEntry, pluginSha256: createHash('sha256').update(await readFile(pluginEntry)).digest('hex'), compiled: true, wrapperSha256: createHash('sha256').update(wrapper).digest('hex'), nativeActivity: false, provider: 'local deterministic transport', expiryMs: 300000 });
 const log = await open(join(root, 'console.log'), 'w', 0o600);
 const gateway = spawn(process.execPath, [join(host, 'openclaw.mjs'), 'gateway', 'run'], { env, cwd: workspace, stdio: ['ignore', log.fd, log.fd] });
 let exit, socket; gateway.on('exit', (code, signal) => { exit = { code, signal }; });

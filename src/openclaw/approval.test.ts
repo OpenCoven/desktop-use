@@ -55,8 +55,10 @@ test('gateway denial, cancellation, timeout, changed params and foreign scopes c
   const approved = await hook({ toolName: 'computer_use', params: request }, ctx);
   approved.requireApproval.onResolution('allow-always');
   assert.equal((await tool.execute('changed', { ...approved.params, content: 'changed' })).details.success, false);
+  const fresh = await hook({ toolName: 'computer_use', params: request }, ctx);
+  fresh.requireApproval.onResolution('allow-once');
   const foreign = factories.computer_use({ ...ctx, sessionKey: 'other' });
-  assert.equal((await foreign.execute('foreign', approved.params)).details.success, false);
+  assert.equal((await foreign.execute('foreign', fresh.params)).details.success, false);
   await assert.rejects(readFile(join(root, 'out')));
 });
 

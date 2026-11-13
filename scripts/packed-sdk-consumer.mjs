@@ -1,0 +1,17 @@
+import assert from 'node:assert/strict';
+import { createDesktopClient, resolveActionPermissions } from '@opencoven/openclaw-desktop-use/sdk';
+import { CANONICAL_ACTIONS, observationSchemaV1, capabilitiesSchemaV1, canonicalActionsSchemaV1 } from '@opencoven/openclaw-desktop-use/contracts';
+import { access, readFile } from 'node:fs/promises';
+assert.equal(CANONICAL_ACTIONS.length, 18);
+for (const schema of [observationSchemaV1, capabilitiesSchemaV1, canonicalActionsSchemaV1]) assert.ok(schema.$schema);
+const audits = [];
+const options = { workspaceDir: process.cwd(), scope: { principalId: 'packed-consumer' }, adapterPath: '/missing/fixture-adapter', auditSink: async event => { audits.push(event); } };
+const client = createDesktopClient(options);
+const denied = await client.execute({ action: 'file-write', path: 'denied', content: 'private-content' }, { callId: 'denied' });
+assert.equal(denied.details.success, false); await assert.rejects(access('denied'));
+const full = createDesktopClient({ ...options, actionPermissions: resolveActionPermissions(), approvalProvider: () => 'allowed' });
+const written = await full.execute({ action: 'file-write', path: 'approved', content: 'private-content' }, { callId: 'allowed' });
+assert.equal(written.details.success, true); assert.equal(await readFile('approved', 'utf8'), 'private-content');
+assert.doesNotMatch(JSON.stringify(audits), /private-content/);
+await assert.rejects(full.execute({ action: 'file-write', path: 'forged', content: 'none', confirm: true }, { callId: 'forged' }));
+console.log('Compiled SDK/contracts: 18 actions, default denial, explicit approval, effect, private audit and request authority checked.');

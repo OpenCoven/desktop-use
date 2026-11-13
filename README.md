@@ -80,7 +80,6 @@ Linux browser-open uses installed xdg-open for absolute HTTP(S) URLs without emb
 
 Clipboard writers and launchers deliberately hand ownership to a clipboard selection server or launched app on success. Those processes can outlive the action and are not killed by a later stop. A timeout, cancellation, or failed handoff still terminates the owned launcher group. All integrations use the documented helper bounds and output limits. No system helpers are installed automatically.
 
-
 ## macOS onboarding
 
 Desktop inspection and interaction require two macOS privacy grants because the
@@ -196,6 +195,7 @@ openclaw plugins install @opencoven/openclaw-desktop-use
 Local development install:
 
 ```bash
+pnpm run build
 openclaw plugins install . --force
 ```
 
@@ -290,3 +290,7 @@ Screenshot encoding follows --format independently of the destination suffix. A 
 ## Local MCP and embedding
 
 The host-neutral desktop client also has a local stdio MCP connector and a separately launched terminal approval reference host. See [trusted configuration, protocol compatibility and approval examples](docs/mcp.md). Standalone startup defaults to observation-only eligibility; model requests never carry approval authority.
+
+## Standalone SDK and local MCP candidate
+
+The local unpublished candidate adds compiled JavaScript and TypeScript declarations at `@opencoven/openclaw-desktop-use/sdk` and `/contracts`, plus the `coven-desktop-use-mcp` executable and compiled approval-host/embedding examples. Standalone consumers require Node `>=22.14.0` and need neither OpenClaw nor tsx. Install the exact locally packed tarball using [the client guide](docs/desktop-client.md#local-candidate-consumption); existing public npm `0.1.2` does not establish these exports. See [the MCP guide](docs/mcp.md) for local stdio, the explicit terminal review UI and the two tested protocol revisions. Native desktop, release and publication acceptance remain separate.

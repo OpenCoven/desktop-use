@@ -18,11 +18,11 @@ Create an absolute workspace and a separate, existing state directory owned by t
 
 Omitting `actionProfile` chooses `observation-only`. A trusted host can explicitly set `"actionProfile": "full"`; this broadens eligibility and still requires separate approval for gated effects. `approvalTimeoutMs` is a trusted integer from 1 through 300000, defaults to 300000, and is separate from the action timeout.
 
-During source development, run `node --import tsx src/mcp/main.ts --config /absolute/config.json`. The production `coven-desktop-use-mcp` bin/export/declaration packaging belongs to the following packaging task; this source invocation requires development dependencies. With no broker, observations remain usable and gated operations return an explicit `needsApproval` result with no effect. Stdout contains only MCP messages; sanitized diagnostics use stderr.
+Install the exact local candidate tarball as described in [the client guide](desktop-client.md#local-candidate-consumption), then run `./node_modules/.bin/coven-desktop-use-mcp --config /absolute/config.json`. Run `./node_modules/.bin/coven-desktop-use-mcp --help` for startup syntax; help uses stderr so stdout remains protocol-only. This candidate is unpublished; existing public npm `0.1.2` is not evidence of these exports. With no broker, observations remain usable and gated operations return an explicit `needsApproval` result with no effect. Stdout contains only MCP messages; sanitized diagnostics use stderr.
 
 ## Separate reference host
 
-Run `node --import tsx examples/approval-host/main.ts --config /absolute/config.json` as the stdio server command in a local MCP client. This separately launched application creates a short private `/tmp/cdu-*` directory (avoiding Unix socket pathname limits), starts its Unix socket broker, generates an ephemeral secret, and launches the MCP child with that secret through inherited descriptor 3. The secret is never placed in arguments, environment variables, model-visible messages or logs. The host removes its owned socket/directory when the child exits. It does not open a TCP listener.
+Run `node node_modules/@opencoven/openclaw-desktop-use/dist/examples/approval-host/main.js --config /absolute/config.json` as the stdio server command in a local MCP client. This separately launched application creates a short private `/tmp/cdu-*` directory (avoiding Unix socket pathname limits), starts its Unix socket broker, generates an ephemeral secret, and launches the MCP child with that secret through inherited descriptor 3. The secret is never placed in arguments, environment variables, model-visible messages or logs. The host removes its owned socket/directory when the child exits. It does not open a TCP listener.
 
 The reference host opens its controlling terminal independently of MCP stdin/stdout. Each prompt displays the entire canonical target, every effect parameter, policy, scope, workspace and expiry. Text is JSON-escaped, including non-ASCII characters, so terminal controls and directional formatting cannot obscure the reviewed operation. Enter `allow REVIEWCODE`, `deny REVIEWCODE` or `cancel REVIEWCODE`, using the fresh visible code in that prompt. A delayed decision from a previous review cannot approve another operation. The code is an operator correlation aid, not an approval credential. Private broker challenge identifiers are never displayed.
 
@@ -41,18 +41,17 @@ The official stdio transport bounds inbound MCP messages to 2 MiB. Shared reques
 | Wire revision | Official 2.4.0 API | Verified behavior |
 | --- | --- | --- |
 | `2026-07-28` | `serveStdio` and client `versionNegotiation: { mode: { pin: '2026-07-28' } }` | Real discovery/list/call, canonical schema, capabilities, structured content, typed PNG, cancellation and actual separate approval host |
-| `2025-11-25` | Same `serveStdio` factory with `legacy: 'serve'`; client `supportedProtocolVersions: ['2025-11-25']` | Real initialize/list/call, canonical schema, capabilities, structured content and typed PNG |
+| `2025-11-25` | Same `serveStdio` factory with `legacy: 'serve'`; client `supportedProtocolVersions: ['2025-11-25']` | Real initialize/list/call, canonical schema, capabilities, structured content, typed PNG and compiled separate approval host |
 | Unsupported modern revision | Official bridge rejection | Explicit unsupported-version error; no invented latest constant or fallback claim |
 
 The SDK's legacy `LATEST_PROTOCOL_VERSION` and `DEFAULT_NEGOTIATED_PROTOCOL_VERSION` names are not used to infer modern support. The bridge selects the era from the opening exchange. Both `@modelcontextprotocol/server` (runtime) and `@modelcontextprotocol/client` (development conformance client) are pinned to `2.4.0`. AJV compiles the shared bundled schemas at the MCP boundary; MCP dependencies do not enter the OpenClaw or core import graph.
 
 ## Embedding without MCP
 
-An application can construct `DesktopClient` directly. It must supply its own trusted identity, workspace and audit sink and own the operator UI. The provider callback is trusted application code, never a model tool. Run the executable source example with `node --import tsx examples/embedded-client.ts --config /absolute/config.json`; it proposes one `reviewed-example.txt` workspace write and waits for the same explicit terminal decision. This source example uses the same terminal UI as the separately launched host:
+An application can construct `DesktopClient` directly. It must supply its own trusted identity, workspace and audit sink and own the operator UI. The provider callback is trusted application code, never a model tool. Run the compiled example with `node node_modules/@opencoven/openclaw-desktop-use/dist/examples/embedded-client.js --config /absolute/config.json`; it proposes one `reviewed-example.txt` workspace write and waits for the same explicit terminal decision. This compiled example uses the same terminal UI as the separately launched host:
 
 ```ts
-import { createDesktopClient } from '../src/core/client.js';
-import { resolveActionPermissions } from '../src/action-permissions.js';
+import { createDesktopClient, resolveActionPermissions } from '@opencoven/openclaw-desktop-use/sdk';
 import { terminalPrompt } from './approval-host/terminal.js';
 
 const terminal = terminalPrompt();

@@ -100,3 +100,19 @@ test('reference broker rejects a repeated authenticated request before a second 
   }
   assert.equal(prompts, 1); await assert.rejects(readFile(join(f.root, 'not-written')));
 });
+
+test('otherwise authentic request with invalid UTF-8 never reaches the approval UI', async t => {
+  const f = await fixture(t); let request: any; let prompts = 0;
+  const capture = createDesktopClient({ workspaceDir: f.root, scope: { principalId: 'fixture' }, adapterPath: '/missing/fixture-adapter', actionPermissions: resolveActionPermissions(), auditSink: async () => {}, approvalProvider: challenge => { const { signal: _signal, ...body } = challenge; request = { v: 1, nonce: randomBytes(32).toString('hex'), body }; return 'denied'; } });
+  await capture.execute({ action: 'file-write', path: 'invalid-utf8', content: '\ufffd' }, { callId: 'capture' });
+  const h = await f.host(async () => { prompts++; return 'allowed'; });
+  const { mac, frame, readFrame } = await import('./broker-protocol.js'); const { connect } = await import('node:net');
+  const encoded = Buffer.from(frame({ ...request, mac: mac(f.secret, 'request', request) }));
+  const index = encoded.indexOf(Buffer.from('\ufffd')); assert.ok(index > 0);
+  const malformed = Buffer.concat([encoded.subarray(0, index), Buffer.from([0xff]), encoded.subarray(index + 3)]);
+  // Nonfatal decoding reconstructs exactly the signed canonical value: this must fail on bytes, not HMAC.
+  assert.deepEqual(JSON.parse(malformed.toString('utf8')), JSON.parse(encoded.toString('utf8')));
+  const socket = connect({ path: h.socketPath, allowHalfOpen: true }); const response = readFrame(socket).catch(() => undefined);
+  socket.on('connect', () => socket.write(malformed)); await response; socket.destroy();
+  assert.equal(prompts, 0); await assert.rejects(readFile(join(f.root, 'invalid-utf8')));
+});
