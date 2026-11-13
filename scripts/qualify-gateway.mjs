@@ -1,4 +1,4 @@
-import { createCapabilitiesFixture, inspectDiscoveryTransport, correlateDiscoveryReplay, inspectDiscoveryHistory, QUALIFICATION_CONTEXT_TOKENS, DISCOVERY_TRUNCATION_MARKER } from "./gateway-capabilities-fixture.mjs";
+import { createCapabilitiesFixture, selectEligibleDiscoveryCalls, inspectDiscoveryTransport, correlateDiscoveryReplay, inspectDiscoveryHistory, QUALIFICATION_CONTEXT_TOKENS, DISCOVERY_TRUNCATION_MARKER } from "./gateway-capabilities-fixture.mjs";
 import { createImageFixture, inspectProviderImage } from "./gateway-image-fixture.mjs";
 import { COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME } from "../src/tool-names.ts";
 // Real pinned gateway + local deterministic model transport; no live provider or desktop input.
@@ -89,7 +89,7 @@ const model = createServer(async (req, res) => {
     }
     if (finished && plan.imageKind) await save(`provider-image-${plan.replaySourceCase ? "large-replay" : plan.imageKind}.json`, await inspectProviderImage(body, imageFixture.fixtures[plan.imageKind], { currentCase: marker, ...(plan.replaySourceCase ? { stage: "history-replay", sourceCase: plan.replaySourceCase } : {}) }));
     if (finished) {
-      const calls = (plan.calls ?? [{ name: marker, args: plan.args }]).filter(call => ["health", "doctor", "permissions"].includes(call.args?.action)).map(call => ({ action: call.args.action, toolCallId: plan.calls ? batchCallId(call.name) : `call_${marker}`, notices: [...(call.args.action === "permissions" ? ["permissions is deprecated; use doctor instead."] : []), ...(plan.tool === DESKTOP_USE_TOOL_NAME ? [`${DESKTOP_USE_TOOL_NAME} is deprecated; use ${COMPUTER_USE_TOOL_NAME} instead.`] : [])] }));
+      const calls = selectEligibleDiscoveryCalls((plan.calls ?? [{ name: marker, args: plan.args }]).map(call => ({ action: call.args?.action, toolCallId: plan.calls ? batchCallId(call.name) : `call_${marker}`, notices: [...(call.args.action === "permissions" ? ["permissions is deprecated; use doctor instead."] : []), ...(plan.tool === DESKTOP_USE_TOOL_NAME ? [`${DESKTOP_USE_TOOL_NAME} is deprecated; use ${COMPUTER_USE_TOOL_NAME} instead.`] : [])] })), { allowedActions: profileActions, canonicalAliases: legacyActions });
       const receipts = calls.length ? inspectDiscoveryTransport(body, { currentCase: marker, calls, contextWindowTokens: QUALIFICATION_CONTEXT_TOKENS }) : [];
       if (receipts.length) await save(`${marker}-discovery-provider-transport.json`, receipts);
       if (marker === "capability-model-profile") {

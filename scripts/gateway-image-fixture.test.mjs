@@ -213,3 +213,46 @@ test("provider discovery budget is derived from the actual fixture context rathe
   assert.throws(()=>capabilitiesFixture.inspectDiscoveryTransport(discoveryBody(text),{...discoveryOptions,contextWindowTokens:32768}),/limit/);
   assert.throws(()=>capabilitiesFixture.inspectDiscoveryTransport(discoveryBody(text),{...discoveryOptions,contextWindowTokens:NaN}),/budget/);
 });
+
+
+test("Stop-only discovery selection excludes host-denied health, doctor and permissions before JSON inspection", () => {
+  const calls = ["health", "doctor", "permissions"].map(action => ({ action, toolCallId: `call_denied_${action}` }));
+  const body = { messages: [
+    { role: "user", content: "QUALIFICATION_CASE:current" },
+    ...calls.map(call => ({ role: "tool", tool_call_id: call.toolCallId, content: `Validation failed for tool computer_use: action ${call.action} is disabled by the trusted action permissions` })),
+    { role: "tool", tool_call_id: "call_stop", content: '{"status":"success","action":"stop"}' },
+  ] };
+  // The old all-discovery selection reproduces the actual restricted-matrix failure.
+  assert.throws(() => capabilitiesFixture.inspectDiscoveryTransport(body, { currentCase: "current", calls }), /Malformed untruncated discovery JSON/);
+  const selected = capabilitiesFixture.selectEligibleDiscoveryCalls(calls, { allowedActions: ["stop"], canonicalAliases: { permissions: "doctor" } });
+  assert.deepEqual(selected, []);
+  assert.deepEqual(capabilitiesFixture.inspectDiscoveryTransport(body, { currentCase: "current", calls: selected }), []);
+  assert.equal(JSON.parse(body.messages.at(-1).content).status, "success");
+  for (const message of body.messages.slice(1, -1)) assert.match(message.content, /Validation failed.*disabled by the trusted/);
+});
+
+test("trusted discovery selection preserves full, observation and desktop call identities and notices", () => {
+  const calls = ["health", "doctor", "permissions", "stop", "file-read", "see"].map(action => ({ action, toolCallId: `call_${action}`, notices: action === "permissions" ? ["permissions is deprecated; use doctor instead."] : [] }));
+  const canonicalAliases = { permissions: "doctor", see: "inspect" };
+  const profiles = {
+    full: ["health", "stop", "doctor", "inspect", "screenshot", "click", "type-text", "keypress", "scroll", "focus", "shell", "file-list", "file-read", "file-write", "clipboard-read", "clipboard-write", "browser-open", "app-launch"],
+    "observation-only": ["health", "stop", "doctor", "inspect", "screenshot", "file-list", "file-read"],
+    "desktop-only": ["health", "stop", "doctor", "inspect", "screenshot", "click", "type-text", "keypress", "scroll", "focus", "clipboard-read", "clipboard-write", "browser-open", "app-launch"],
+  };
+  for (const allowedActions of Object.values(profiles)) {
+    const selected = capabilitiesFixture.selectEligibleDiscoveryCalls(calls, { allowedActions, canonicalAliases });
+    assert.deepEqual(selected, calls.slice(0, 3));
+    for (let index = 0; index < 3; index++) assert.equal(selected[index], calls[index]);
+  }
+  assert.deepEqual(capabilitiesFixture.selectEligibleDiscoveryCalls(calls, { allowedActions: ["health", "permissions"], canonicalAliases }), [calls[0]]);
+});
+
+test("eligible discovery still rejects malformed permitted JSON and response text cannot grant eligibility", () => {
+  const call = { action: "permissions", toolCallId: "call_current" };
+  const canonicalAliases = { permissions: "doctor" };
+  const selected = capabilitiesFixture.selectEligibleDiscoveryCalls([call], { allowedActions: ["doctor"], canonicalAliases });
+  assert.deepEqual(selected, [call]);
+  assert.throws(() => capabilitiesFixture.inspectDiscoveryTransport(discoveryBody("Validation failed for tool computer_use"), { currentCase: "current", calls: selected }), /Malformed untruncated discovery JSON/);
+  const denied = capabilitiesFixture.selectEligibleDiscoveryCalls([call], { allowedActions: ["stop"], canonicalAliases });
+  assert.deepEqual(capabilitiesFixture.inspectDiscoveryTransport(discoveryBody('{"status":"success","action":"doctor","allowedActions":["doctor"]}'), { currentCase: "current", calls: denied }), []);
+});

@@ -24,6 +24,9 @@ export const QUALIFICATION_CONTEXT_TOKENS = 65536;
 const contextTail = text => /\[\.\.\. [1-9]\d* more characters truncated\]$/.test(text);
 const textContent = content => typeof content === "string" ? content : Array.isArray(content) ? content.filter(block => block.type === "text").map(block => block.text).join("\n") : "";
 const discoveryActions = new Set(["health", "doctor", "permissions"]);
+export function selectEligibleDiscoveryCalls(calls, { allowedActions, canonicalAliases }) {
+  return calls.filter(call => discoveryActions.has(call.action) && allowedActions.includes(canonicalAliases[call.action] ?? call.action));
+}
 const normalizedCallId = value => typeof value === "string" ? value.replace(/[^a-zA-Z0-9]/g, "") : "";
 export function inspectDiscoveryTransport(body, { currentCase, calls, contextWindowTokens = QUALIFICATION_CONTEXT_TOKENS }) {
   assert.ok(Number.isSafeInteger(contextWindowTokens) && contextWindowTokens > 0, "Unknown provider context budget");
