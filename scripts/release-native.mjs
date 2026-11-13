@@ -9,6 +9,44 @@ import { fileURLToPath } from 'node:url';
 import { assertRunner } from './release-qualification.mjs';
 import { assertIdentity, inspectPair, sha256, readRegular, describeArchive } from './release-manifest.mjs';
 const run = (command, args, options = {}) => execFileSync(command, args, { encoding: 'utf8', timeout: 120000, maxBuffer: 8 * 1024 * 1024, ...options });
+/** Only an explicit, completed inspection establishes a known unsigned/ad-hoc state. */
+export function classifyCodesignResult(signing) {
+  const details = (signing.stderr ?? '') + (signing.stdout ?? '');
+  const result = {
+    exit: signing.status ?? null,
+    signal: signing.signal ?? null,
+    error: signing.error
+      ? {
+          name: signing.error.name,
+          message: signing.error.message,
+          code: signing.error.code ?? null
+        }
+      : null,
+    state: 'unknown',
+    details
+  };
+  if (result.error || result.signal) {
+    result.state = 'failed';
+  } else if (/^Authority=/m.test(details)) {
+    // This workflow must neither claim nor consume an identity-signed artifact.
+    result.state = 'identity-signed';
+  } else if (
+    signing.status === 0 &&
+    /^Signature=adhoc$/m.test(details) &&
+    !/code object is not signed at all/.test(details)
+  ) {
+    result.state = 'ad-hoc';
+  } else if (
+    signing.status === 1 &&
+    signing.stdout === '' &&
+    /^[^\r\n]+: code object is not signed at all\n?$/.test(signing.stderr)
+  ) {
+    result.state = 'unsigned';
+  } else if (signing.status !== 0) {
+    result.state = 'failed';
+  }
+  return result;
+}
 export async function verifyNativePair(assets, manifest) {
   const artifact = manifest.artifacts[0];
   const packageBytes = await readRegular(join(assets, manifest.package.asset));
@@ -63,9 +101,11 @@ async function main() {
       receipt.linkage = run('ldd', [binary]);
     } else {
       const signing = spawnSync('/usr/bin/codesign', ['--display', '--verbose=4', binary], { encoding: 'utf8' });
-      const output = signing.stderr + signing.stdout;
-      assert.doesNotMatch(output, /^Authority=/m, 'This unsigned candidate workflow must not claim or consume a signing identity');
-      receipt.machOSigning = { exit: signing.status, state: /Signature=adhoc/.test(output) ? 'ad-hoc' : 'unsigned', details: output };
+      receipt.machOSigning = classifyCodesignResult(signing);
+      assert.ok(
+        ['unsigned', 'ad-hoc'].includes(receipt.machOSigning.state),
+        'Native codesign inspection must explicitly establish unsigned or ad-hoc state'
+      );
       receipt.loadCommands = run('/usr/bin/otool', ['-l', binary]);
     }
     const asset = `coven-desktop-use-${identity.version}-${target}.tar.gz`;

@@ -164,7 +164,7 @@ Legacy plugin inputs add a `deprecation` string to result details and the JSON t
 
 For the explicit paired release installer, provenance requirements, updates, rollback and Cargo shadow diagnostics, see [paired releases](docs/paired-releases.md). Version `0.1.3` is currently a preparation candidate; public installation requires actual tag-bound attestations.
 
-For source development, install the adapter binary from this repo:
+For source development, this unpinned command builds the repository's current default branch; it does not select the source of a paired release. For a version-pinned source fallback, use the [Cargo fallback procedure](docs/paired-releases.md#version-pinned-cargo-source-fallback).
 
 ```bash
 cargo install --git https://github.com/OpenCoven/desktop-use coven-desktop-use

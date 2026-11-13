@@ -35,6 +35,49 @@ coven-desktop-use-install rollback --version 0.1.3 --root /absolute/private/desk
 
 Rollback revalidates that retained pair and updates local selection; reinstall its retained package and restore its explicit path in each affected host yourself. It does not undo desktop effects, files written by desktop actions, grants, helper installations or running-process state. `previousVersion` records the immediately preceding local selection, not a complete host deployment history.
 
+## Version-pinned Cargo source fallback
+
+If you choose to build the adapter from source, install Rust/Cargo yourself and independently select the same release version and full source commit as the intended package. Obtain the commit from verified release evidence, not an untrusted download or a moving branch. Alternatively, independently verify that the chosen release tag resolves to that full commit. The current `0.1.3` candidate has no created release tag; the placeholders below do not assert that any tag or public release exists.
+
+Use a separate absolute install root so an existing Cargo/PATH adapter is not silently replaced. Replace both placeholders with your verified selection, then build with the checked-in lockfile:
+
+```sh
+release_version='<selected release version>'
+release_commit='<independently verified full source commit>'
+adapter_root='/absolute/private/desktop-use-source'
+cargo install --git https://github.com/OpenCoven/desktop-use --rev "$release_commit" --locked --root "$adapter_root" coven-desktop-use
+```
+
+If selecting by an independently verified existing tag, replace `--rev "$release_commit"` with `--tag "$release_tag"`, where `release_tag` is the chosen `v<release_version>` tag that you verified resolves to `release_commit`. Keep `--locked` and the subsequent full-commit checks in either case. Do not use the README's unpinned development command as the release fallback.
+
+Inspect the built binary's actual JSON `--version` envelope and reject any source/version disagreement before selecting it:
+
+```sh
+"$adapter_root/bin/coven-desktop-use" --version > "$adapter_root/native-identity.json"
+node --input-type=module - "$adapter_root/native-identity.json" "$release_version" "$release_commit" <<'JS'
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+const [file, version, commit] = process.argv.slice(2);
+assert.match(commit, /^[a-f0-9]{40}$/);
+const identity = JSON.parse(readFileSync(file, 'utf8'));
+assert.equal(identity.ok, true);
+assert.equal(identity.version, version);
+assert.equal(identity.releaseVersion, version);
+assert.equal(identity.source.repository, 'OpenCoven/desktop-use');
+assert.equal(identity.source.commit, commit);
+assert.equal(identity.source.dirty, false);
+console.log(identity);
+JS
+```
+
+After those checks, explicitly set the actual gateway launcher's `COVEN_DESKTOP_USE_BIN` to the absolute `$adapter_root/bin/coven-desktop-use` path, or use that absolute path as the SDK/MCP trusted `adapterPath`. For a deliberate terminal launch:
+
+```sh
+COVEN_DESKTOP_USE_BIN="$adapter_root/bin/coven-desktop-use" openclaw gateway
+```
+
+Install/select the matching package separately and confirm the actual host's health response reports this adapter path and version after your explicit reload. This is a source build; it does not substitute for verified prebuilt artifacts, public delivery, native qualification, rollback or installed graphical acceptance.
+
 ## Interruptions and partial failures
 
 An error reports a fixed error code plus the completed phase and private staging directory when applicable. A failed stage stays under `versions/.stage-*` for inspection and never becomes active. A published stage may exist even if the final directory durability check failed. An activation failure before rename preserves the previous `active.json`; failure after rename reports `selectionChanged: true` and unknown durability. No automatic retry replays a host action.
