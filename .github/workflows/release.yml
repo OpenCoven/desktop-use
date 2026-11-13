@@ -275,4 +275,6 @@ jobs:
             ${{ runner.temp }}/host-evidence/*/minimal-http-policy.json
             ${{ runner.temp }}/host-evidence/*/explicit-tool-deny.json
             ${{ runner.temp }}/host-evidence/*/explicit-deny-model-inventory.json
+            ${{ runner.temp }}/host-evidence/*/*-approval-denials.json
+            ${{ runner.temp }}/host-evidence/*/*-approval-wait-failure.json
           if-no-files-found: error

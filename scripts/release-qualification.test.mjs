@@ -186,3 +186,35 @@ test('sanitized denial needs exact run and session correlated private guard evid
     { outcome: { runId, status: 'error', error: 'AI service error' } },
   ]) assert.throws(() => assertExplicitDenyModel({ ...result, ...change }));
 });
+
+test('host approval denial requires exact pinned copy, closed same-call approval and absent executor audit', async () => {
+  const { assertHostApprovalDenied } = await import('./release-qualification.mjs');
+  const newerCopy = ['Denied by user. The tool call did not run.', 'This denial is final: the approval request is closed. Do not mention /approve or any other approval command to the user.', 'Do not run the tool call again or ask the user to approve it again.', 'If the user still wants the action, explain that a new tool call will trigger a fresh approval request.'].join('\n');
+  const request = { toolCallId: 'call-denied', toolName: 'desktop_use', sessionKey: 'agent:legacy-qualification:qualification' };
+  const requested = { event: 'plugin.approval.requested', payload: { id: 'approval-1', request } };
+  const resolved = { event: 'plugin.approval.resolved', payload: { id: 'approval-1', request, decision: 'deny' } };
+  const input = { ...request, result: { status: 'error', error: newerCopy }, events: [requested, resolved], auditRecords: [] };
+  assert.equal(assertHostApprovalDenied('2026.11.3', input).approvalClosed, true);
+  assert.equal(assertHostApprovalDenied('2026.4.26', { ...input, result: { status: 'error', error: 'Denied by user' } }).approvalClosed, true);
+  for (const patch of [
+    { result: { status: 'error', error: 'Denied by user' } },
+    { result: { status: 'error', error: newerCopy + ' arbitrary text' } },
+    { result: { status: 'success', error: newerCopy } },
+    { events: [requested] }, { events: [resolved, requested] }, { events: [requested, resolved, resolved] },
+    { events: [requested, { ...resolved, payload: { ...resolved.payload, decision: 'allow-once' } }] },
+    { events: [requested, { ...resolved, payload: { ...resolved.payload, id: 'other' } }] },
+    { events: [requested, { ...resolved, payload: { ...resolved.payload, request: { ...request, sessionKey: 'other' } } }] },
+    { auditRecords: [{ toolCallId: request.toolCallId }] },
+  ]) assert.throws(() => assertHostApprovalDenied('2026.11.3', { ...input, ...patch }));
+  assert.throws(() => assertHostApprovalDenied('2026.4.26', input));
+  assert.throws(() => assertHostApprovalDenied('unknown', input));
+});
+
+test('approval wait fails on completed runs instead of waiting for an impossible request', async () => {
+  const { waitForHostApproval } = await import('./release-qualification.mjs');
+  const approval = { payload: { id: 'expected' } };
+  assert.equal(await waitForHostApproval({ readApproval: () => approval, completed: Promise.resolve({ status: 'ok' }), timeoutMs: 45000 }), approval);
+  await assert.rejects(waitForHostApproval({ readApproval: () => undefined, completed: Promise.resolve({ status: 'ok' }), timeoutMs: 45000 }), { code: 'HOST_APPROVAL_MISSING_AFTER_COMPLETION', outcomeStatus: 'ok' });
+  await assert.rejects(waitForHostApproval({ readApproval: () => undefined, completed: Promise.resolve({ status: 'error' }), timeoutMs: 45000 }), { code: 'HOST_APPROVAL_MISSING_AFTER_COMPLETION', outcomeStatus: 'error' });
+  await assert.rejects(waitForHostApproval({ readApproval: () => undefined, completed: new Promise(() => {}), timeoutMs: 1 }), { code: 'HOST_APPROVAL_DEADLINE' });
+});

@@ -80,3 +80,5 @@ jobs:
             ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/fixture-failure-summary.json
             ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/minimal-http-policy.json
             ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/explicit-tool-deny.json
+            ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/*-approval-denials.json
+            ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/*-approval-wait-failure.json

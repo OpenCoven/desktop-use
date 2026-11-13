@@ -198,3 +198,45 @@ export function assertExplicitDenyModel({ hostVersion, outcome, providerCalls, p
   assert.equal(text, 'Qualification explicit-deny-model complete.');
   return 'no-tool-provider-completion';
 }
+
+export function assertHostApprovalDenied(hostVersion, { result, events, toolCallId, toolName, sessionKey, auditRecords }) {
+  assert.ok(HOSTS.some(host => host.version === hostVersion), 'Exact denial host required');
+  const newerCopy = ['Denied by user. The tool call did not run.', 'This denial is final: the approval request is closed. Do not mention /approve or any other approval command to the user.', 'Do not run the tool call again or ask the user to approve it again.', 'If the user still wants the action, explain that a new tool call will trigger a fresh approval request.'].join('\n');
+  assert.equal(result.status, 'error');
+  assert.equal(result.error, hostVersion === '2026.11.3' ? newerCopy : 'Denied by user');
+  const requested = events.filter(event => event.event === 'plugin.approval.requested' && event.payload.request?.toolCallId === toolCallId);
+  assert.equal(requested.length, 1, 'Exactly one approval for the denied call');
+  const approval = requested[0];
+  assert.equal(approval.payload.request.toolName, toolName);
+  assert.equal(approval.payload.request.sessionKey, sessionKey);
+  const resolved = events.filter(event => event.event === 'plugin.approval.resolved' && event.payload.id === approval.payload.id);
+  assert.equal(resolved.length, 1, 'Denied approval must be closed exactly once');
+  assert.ok(events.indexOf(resolved[0]) > events.indexOf(approval), 'Resolution must follow the request');
+  assert.equal(resolved[0].payload.decision, 'deny');
+  for (const [key, value] of Object.entries({ toolCallId, toolName, sessionKey })) assert.equal(resolved[0].payload.request?.[key], value);
+  assert.equal(auditRecords.some(record => record.toolCallId === toolCallId), false, 'Host-denied call must not reach executor audit');
+  return { toolCallId, toolName, sessionKey, approvalId: approval.payload.id, decision: 'deny', approvalClosed: true, executorAuditAbsent: true, denialCopy: hostVersion === '2026.11.3' ? 'final-denial-with-fresh-call-guidance' : 'minimum-denial' };
+}
+
+export async function waitForHostApproval({ readApproval, completed, timeoutMs }) {
+  assert.ok(Number.isSafeInteger(timeoutMs) && timeoutMs > 0);
+  const deadline = Date.now() + timeoutMs;
+  let ended = false, outcome, failure;
+  const terminal = completed.then(value => { outcome = value; ended = true; }, error => { failure = error; ended = true; });
+  while (true) {
+    const approval = readApproval();
+    if (approval) return approval;
+    if (ended) {
+      if (failure) throw failure;
+      const error = new Error('Host run completed without the expected approval');
+      error.code = 'HOST_APPROVAL_MISSING_AFTER_COMPLETION';
+      error.outcomeStatus = ['ok', 'error', 'timeout'].includes(outcome?.status) ? outcome.status : 'other';
+      throw error;
+    }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw Object.assign(new Error('Host approval deadline exceeded'), { code: 'HOST_APPROVAL_DEADLINE' });
+    let timer;
+    try { await Promise.race([terminal, new Promise(resolve => { timer = setTimeout(resolve, Math.min(50, remaining)); })]); }
+    finally { clearTimeout(timer); }
+  }
+}

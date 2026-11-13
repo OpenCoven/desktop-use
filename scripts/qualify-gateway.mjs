@@ -1,6 +1,6 @@
 import { assertPackedMetadata } from "./packed-metadata.mjs";
 import { createCapabilitiesFixture, discoveryCallsForPlan, inspectDiscoveryTransport, correlateDiscoveryReplay, inspectDiscoveryHistory, QUALIFICATION_CONTEXT_TOKENS, DISCOVERY_TRUNCATION_MARKER } from "./gateway-capabilities-fixture.mjs";
-import { linkLaneHost, assertHostInstallation, assertLoadedSdk, assertMinimalHttpPolicy, assertExplicitDenyModel, assertExplicitDenyGuard } from "./release-qualification.mjs";
+import { linkLaneHost, assertHostInstallation, assertLoadedSdk, assertMinimalHttpPolicy, assertExplicitDenyModel, assertExplicitDenyGuard, assertHostApprovalDenied, waitForHostApproval } from "./release-qualification.mjs";
 import { createImageFixture, inspectProviderImage } from "./gateway-image-fixture.mjs";
 import { COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME } from "../src/tool-names.ts";
 // Real pinned gateway + local deterministic model transport; no live provider or desktop input.
@@ -362,7 +362,13 @@ try {
       await Promise.race([modelReady, completed.then(outcome => { throw new Error(`Agent ${name} ended before a model request: ${outcome.status}`); })]);
       for (const approvalName of options.approvalCalls ?? [name]) {
         const approvalCallId = options.calls ? batchCallId(approvalName) : `call_${approvalName}`;
-        const approval = await until(() => events.slice(start).find(e => e.event === "plugin.approval.requested" && e.payload.request.toolCallId === approvalCallId), 45000);
+        let approval;
+        try {
+          approval = await waitForHostApproval({ completed, timeoutMs: 45000, readApproval: () => events.slice(start).find(e => e.event === "plugin.approval.requested" && e.payload.request.toolCallId === approvalCallId && e.payload.request.toolName === tool && e.payload.request.sessionKey === sessionKey) });
+        } catch (error) {
+          await save(`${name}-approval-wait-failure.json`, { phase: "approval-wait", runId: accepted.runId, sessionKey, toolName: tool, toolCallId: approvalCallId, code: error.code ?? "HOST_APPROVAL_TRANSPORT_ERROR", outcomeStatus: error.outcomeStatus ?? null, observedApprovalCalls: events.slice(start).filter(event => event.event === "plugin.approval.requested").map(event => ({ id: event.payload.id, toolCallId: event.payload.request.toolCallId, toolName: event.payload.request.toolName, sessionKey: event.payload.request.sessionKey })).slice(0, 32) });
+          throw error;
+        }
         timing.approvalRequestedMs = Date.now() - startedAt;
         await save(`${approvalName}-timing.json`, timing);
         await save(`${approvalName}-approval.json`, approval.payload);
@@ -387,7 +393,21 @@ try {
       }
       denialProof = assertExplicitDenyModel({ hostVersion: expectedHost, outcome, providerCalls: providerCalls - providerStart, providerResponses: requests.slice(responseStart), messages: history.messages, guardEvidence, sessionKey });
     } else if (!options.abort) assert.equal(outcome.status, "ok", JSON.stringify(outcome));
-    return { history, runId: accepted.runId, events: events.slice(start), denialProof, guardEvidence, providerCalls: providerCalls - providerStart };
+    const approvalDenials = [];
+    if (decision === "deny") {
+      const auditPath = join(root, `state/agents/${sessionKey.split(":")[1]}/audit/computer-use.jsonl`);
+      const auditText = await readFile(auditPath, "utf8").catch(error => { if (error.code !== "ENOENT") throw error; return ""; });
+      const auditRecords = auditText.trim() ? auditText.trim().split("\n").map(line => JSON.parse(line)) : [];
+      for (const approvalName of options.approvalCalls ?? [name]) {
+        const toolCallId = options.calls ? batchCallId(approvalName) : `call_${approvalName}`;
+        const results = history.messages.filter(message => message.role === "toolResult" && message.toolName === tool && message.toolCallId === toolCallId);
+        assert.equal(results.length, 1, "Exact denied tool result required");
+        const result = JSON.parse(results[0].content.filter(block => block.type === "text").map(block => block.text).join("\n"));
+        approvalDenials.push(assertHostApprovalDenied(expectedHost, { result, events: events.slice(start), toolCallId, toolName: tool, sessionKey, auditRecords }));
+      }
+      await save(`${name}-approval-denials.json`, approvalDenials);
+    }
+    return { history, runId: accepted.runId, events: events.slice(start), denialProof, guardEvidence, approvalDenials, providerCalls: providerCalls - providerStart };
   }
   const toolResult = (history, name = COMPUTER_USE_TOOL_NAME) => {
     const message = history.messages?.findLast(m => m.role === "toolResult" && m.toolName === name);
@@ -574,7 +594,7 @@ try {
       assert.equal(batch.events.some(event => event.event === "plugin.approval.requested" && event.payload.request.toolCallId === batchCallId(callName("denied", action))), false);
       denied.push({ action, canonical: legacyActions[action] ?? action, modelDenied: true, approvalRequested: false });
     }
-    for (const action of gatedActions) assert.equal(JSON.parse(await resultFor("gated", action)).error, "Denied by user");
+    assert.equal(batch.approvalDenials.length, gatedActions.length);
     // Direct HTTP bypasses model schema validation. Representative excluded
     // shell/file/clipboard/launch families must still meet the trusted hook ceiling.
     const direct = [];
@@ -647,7 +667,7 @@ try {
   const clipboard = await runCase("legacy-clipboard-denied", { action: "clipboard-write", text: secret, confirm: true }, "deny");
   assert.ok(clipboard.events.some(e => e.event === "plugin.approval.requested"));
   assert.equal(toolResult(clipboard.history).status, "error");
-  assert.equal(toolResult(clipboard.history).error, "Denied by user");
+  assert.equal(clipboard.approvalDenials.length, 1);
   // Gateway construction can load bundled provider metadata before dispatching
   // the tool; warm each control route before timing cancellation of live work.
   await httpInvoke(COMPUTER_USE_TOOL_NAME, { action: "stop" }, session);
