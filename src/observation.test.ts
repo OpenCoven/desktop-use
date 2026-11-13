@@ -250,7 +250,7 @@ test("cleanup failure preserves code-based cancellation with no private diagnost
     assert.equal((result.details.cleanup as any).code, "TEMPORARY_CLEANUP_FAILED");
     assert.equal(result.content.some(block => block.type === "image"), false);
     assert.equal(JSON.stringify(result.details).includes("private cleanup diagnostics"), false);
-  } finally { fault.mock.restore(); syncBuiltinESMExports(); await originalRm(dirname(c.owned()), { recursive: true, force: true }); }
+  } finally { fault.mock.restore(); syncBuiltinESMExports(); if (c.owned()) await originalRm(dirname(c.owned()), { recursive: true, force: true }); }
 });
 
 test("runner cancellation remains cancelled when final observation cleanup also fails", async () => {
@@ -269,7 +269,7 @@ test("runner cancellation remains cancelled when final observation cleanup also 
     assert.equal((result.details.cleanup as any).code, "TEMPORARY_CLEANUP_FAILED");
     assert.equal(result.content.some(block => block.type === "image"), false);
     assert.equal(JSON.stringify(result).includes("private cleanup diagnostics"), false);
-  } finally { fault.mock.restore(); syncBuiltinESMExports(); await originalRm(dirname(c.owned()), { recursive: true, force: true }); }
+  } finally { fault.mock.restore(); syncBuiltinESMExports(); if (c.owned()) await originalRm(dirname(c.owned()), { recursive: true, force: true }); }
 });
 
 test("precommit cancellation and both cleanup failures preserve cancellation without replacing the destination", async () => {
@@ -298,6 +298,6 @@ test("precommit cancellation and both cleanup failures preserve cancellation wit
   } finally {
     openFault.mock.restore(); cleanupFault.mock.restore(); syncBuiltinESMExports();
     await originalRm(root, { recursive: true, force: true });
-    await originalRm(dirname(c.owned()), { recursive: true, force: true });
+    if (c.owned()) await originalRm(dirname(c.owned()), { recursive: true, force: true });
   }
 });
