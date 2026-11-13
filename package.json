@@ -32,7 +32,7 @@
     "prepack": "pnpm run build",
     "test:packed": "node scripts/test-packed-consumers.mjs",
     "test:runtime-graphs": "node --test scripts/check-plugin-runtime-imports.test.mjs",
-    "test:release": "node --test scripts/release-manifest.test.mjs scripts/install-adapter.test.mjs scripts/release-identity.test.mjs",
+    "test:release": "node --test scripts/release-manifest.test.mjs scripts/install-adapter.test.mjs scripts/release-identity.test.mjs scripts/release-qualification.test.mjs scripts/release-native.test.mjs",
     "release:manifest": "node scripts/release-manifest.mjs"
   },
   "devDependencies": {

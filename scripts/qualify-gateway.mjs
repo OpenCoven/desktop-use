@@ -1,5 +1,6 @@
-import { createCapabilitiesFixture, discoveryCallsForPlan, inspectDiscoveryTransport, correlateDiscoveryReplay, inspectDiscoveryHistory, QUALIFICATION_CONTEXT_TOKENS, DISCOVERY_TRUNCATION_MARKER } from "./gateway-capabilities-fixture.mjs";
 import { assertPackedMetadata } from "./packed-metadata.mjs";
+import { createCapabilitiesFixture, discoveryCallsForPlan, inspectDiscoveryTransport, correlateDiscoveryReplay, inspectDiscoveryHistory, QUALIFICATION_CONTEXT_TOKENS, DISCOVERY_TRUNCATION_MARKER } from "./gateway-capabilities-fixture.mjs";
+import { linkLaneHost, assertHostInstallation, assertLoadedSdk } from "./release-qualification.mjs";
 import { createImageFixture, inspectProviderImage } from "./gateway-image-fixture.mjs";
 import { COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME } from "../src/tool-names.ts";
 // Real pinned gateway + local deterministic model transport; no live provider or desktop input.
@@ -24,8 +25,9 @@ const permissionConfigs = {
   "stop-only": { actionProfile: "full", allowedActions: [] },
 };
 assert.ok(Object.hasOwn(permissionConfigs, profile), "Profile must be full, observation-only, desktop-only, or stop-only");
-const root = resolve(process.argv[2] ?? `/tmp/desktopuse-gateway-receipt-${Date.now()}`);
+let root = resolve(process.argv[2] ?? `/tmp/desktopuse-gateway-receipt-${Date.now()}`);
 await mkdir(root, { recursive: true, mode: 0o700 });
+root = await realpath(root);
 const save = async (name, data) => writeFile(join(root, name), `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
 const delay = ms => new Promise(r => setTimeout(r, ms));
 async function until(fn, timeoutMs = 30000) {
@@ -40,7 +42,16 @@ async function until(fn, timeoutMs = 30000) {
 const listen = server => new Promise(r => server.listen(0, "127.0.0.1", r));
 const host = await realpath(resolve(process.argv[3] ?? join(repo, "node_modules/openclaw")));
 const pkg = JSON.parse(await readFile(join(host, "package.json"), "utf8"));
-assert.equal(pkg.version, "2026.4.26");
+const expectedHost = process.argv[7] ?? "2026.4.26";
+assert.equal(pkg.version, expectedHost);
+const newerHost = expectedHost === "2026.11.3";
+assert.ok(["2026.4.26", "2026.11.3"].includes(expectedHost));
+const sdkResolution = await linkLaneHost(pluginRoot, host);
+await save("sdk-resolution.json", { ...sdkResolution, expectedHost, actualHost: pkg.version, toolSearch: newerHost ? false : "host-default" });
+if (process.env.RELEASE_HOST_LOCK) {
+  const hostIdentity = assertHostInstallation(expectedHost, pkg, JSON.parse(await readFile(process.env.RELEASE_HOST_LOCK, "utf8")));
+  await save("host-integrity.json", hostIdentity);
+}
 const hostRequire = createRequire(join(host, "package.json"));
 const WebSocket = hostRequire("ws");
 assert.equal(process.env.OPENCLAW_IMAGE_BACKEND ?? "sharp", "sharp", "Frame qualification requires the pinned Sharp backend");
@@ -171,6 +182,26 @@ const config = {
     ],
   },
 };
+if (newerHost) {
+  config.agents.entries = Object.fromEntries(config.agents.list.map(({ id, default: _default, ...entry }) => [id, entry]));
+  delete config.agents.list;
+  config.agents.defaults.cwd = workspace;
+  config.agents.ownership = "explicit";
+  delete config.canvasHost;
+  // Exercise the public direct-schema mode; the separate SDK approval lane tests default dispatch_action.
+  config.tools.toolSearch = false;
+}
+const wrapperPath = join(pluginRoot, "release-qualification-wrapper.js");
+await writeFile(wrapperPath, `import plugin from './dist/index.js';
+import { createRequire } from 'node:module';
+import { realpathSync, writeFileSync } from 'node:fs';
+export default {...plugin, register(api) {
+  const sdkEntry = realpathSync(createRequire(import.meta.url).resolve('openclaw/plugin-sdk/plugin-entry'));
+  writeFileSync(${JSON.stringify(join(root, "loaded-sdk.json"))}, JSON.stringify({sdkEntry}));
+  return plugin.register(api);
+}};
+`);
+config.plugins.load.paths = [wrapperPath];
 const configPath = join(root, "openclaw.json"); await save("openclaw.json", config);
 const log = await open(join(root, "console.log"), "w", 0o600);
 const env = Object.fromEntries(["PATH", "TMPDIR", "LANG", "USER"].filter(k => process.env[k]).map(k => [k, process.env[k]]));
@@ -179,23 +210,24 @@ await assert.rejects(access(unavailableAdapter), { code: "ENOENT" });
 Object.assign(env, { OPENCLAW_IMAGE_BACKEND: process.env.OPENCLAW_IMAGE_BACKEND ?? "sharp", OPENCLAW_STATE_DIR: join(root, "state"), OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_HOME: join(root, "home"), OPENCLAW_PLUGIN_LOAD_PROFILE: "1", OPENCLAW_LIVE_GATEWAY: "1", OPENCLAW_LIVE_GATEWAY_PROVIDERS: "qualification", COVEN_DESKTOP_USE_BIN: capabilitiesFixture.adapter, COVEN_HOME: join(root, "coven-home") });
 await save("action-permissions.json", { profile, trustedConfig: permissionConfigs[profile], expectedActions: profileActions, expectedAliases: visibleAliases });
 await save("adapter-fixture.json", { mode: "synthetic-capture-only-when-harness-enabled", nativePlatform: process.platform, realRustBinary: imageFixture.binary, nonCaptureUnavailable: true, graphicalEffects: false, liveProvider: false });
-// Refuse to start a gateway if this package would escape the explicit state root.
-// Verify byte-identical compiled runtime, then use the checkout's installed SDK peer for a
-// dry resolver call with no audit write or gateway/profile initialization.
+// Ordinary source CI still compares its newly packed runtime; attested release lanes verify the manifest tree in release-host.mjs.
+if (!process.env.RELEASE_NATIVE_ADAPTER) {
 for (const file of ["index.js", "openclaw.plugin.json", "src/computer-use-audit.ts", "src/computer-use-agent.ts", "src/tool-names.ts", "src/action-permissions.ts", "src/computer-use-actions.ts", "src/computer-use-policy.ts", "src/plugin-tool.ts", "src/capabilities.ts", "src/host-actions.ts", "src/observation.ts", "src/file-actions.ts", "contracts/v1/observation.schema.json", "contracts/v1/capabilities.schema.json", "contracts/v1/canonical-actions.json", "contracts/v1/canonical-actions.schema.json"]) {
   const runtimeFile = file === "openclaw.plugin.json" ? file : "dist/" + file.replace(/\.ts$/, ".js");
   assert.deepEqual(await readFile(join(repo, runtimeFile)), await readFile(join(pluginRoot, runtimeFile)), `Packed runtime differs: ${runtimeFile}`);
 }
 // Compare complete metadata, allowing only pnpm pack's known prepack removal.
 assertPackedMetadata(JSON.parse(await readFile(join(repo, "package.json"), "utf8")), JSON.parse(await readFile(join(pluginRoot, "package.json"), "utf8")));
-const auditProbe = spawnSync(process.execPath, ["--import", createRequire(join(repo, "package.json")).resolve("tsx"), "--input-type=module", "-e",
+}
+// Preflight imports the installed compiled audit module through this lane's exact host SDK.
+const auditProbe = spawnSync(process.execPath, ["--input-type=module", "-e",
   "const audit = await import(process.argv[1]); console.log(JSON.stringify(['computer-use','legacy-qualification'].map(agentId => audit.resolveComputerUseAuditLogPath({agentId}))));",
-  pathToFileURL(join(repo, "src/computer-use-audit.ts")).href,
-], { cwd: repo, env, encoding: "utf8" });
+  pathToFileURL(join(pluginRoot, "dist/src/computer-use-audit.js")).href,
+], { cwd: workspace, env: { ...env, NODE_PATH: "" }, encoding: "utf8" });
 assert.equal(auditProbe.status, 0, auditProbe.stderr);
 assert.deepEqual(JSON.parse(auditProbe.stdout.trim()), [join(root, "state/agents/computer-use/audit/computer-use.jsonl"), join(root, "state/agents/legacy-qualification/audit/computer-use.jsonl")]);
-await save("audit-path-preflight.json", { isolated: true });
-const gateway = spawn(process.execPath, [join(host, "openclaw.mjs"), "gateway", "run"], { cwd: repo, env, stdio: ["ignore", log.fd, log.fd] });
+await save("audit-path-preflight.json", { isolated: true, ...sdkResolution, compiledModule: join(pluginRoot, "dist/src/computer-use-audit.js") });
+const gateway = spawn(process.execPath, [join(host, "openclaw.mjs"), "gateway", "run"], { cwd: workspace, env, stdio: ["ignore", log.fd, log.fd] });
 let gatewayExit; gateway.on("exit", (code, signal) => { gatewayExit = { code, signal }; });
 let socket;
 const pending = new Map(); const events = [];
@@ -204,6 +236,8 @@ try {
     assert.equal(gatewayExit, undefined, `Gateway exited: ${JSON.stringify(gatewayExit)}`);
     return readFile(join(root, "console.log"), "utf8").then(text => text.includes("[gateway] ready"));
   }, 600000);
+  const loadedSdk = JSON.parse(await readFile(join(root, "loaded-sdk.json"), "utf8"));
+  assertLoadedSdk([loadedSdk], sdkResolution);
   socket = new WebSocket(`ws://127.0.0.1:${port}`);
   const rpc = (method, params = {}, timeoutMs = 600000) => {
     const id = randomUUID();
@@ -220,10 +254,10 @@ try {
       if (frame.type === "event") {
         events.push(frame);
         if (frame.event === "connect.challenge") {
-          rpc("connect", { minProtocol: 3, maxProtocol: 3,
+          rpc("connect", { minProtocol: newerHost ? 4 : 3, maxProtocol: newerHost ? 4 : 3,
             client: { id: "gateway-client", version: pkg.version, platform: process.platform, mode: "backend" },
             role: "operator", scopes: ["operator.admin", "operator.read", "operator.write", "operator.approvals"],
-            caps: ["tool-events"], auth: { token },
+            caps: ["tool-events", "plugin-approvals"], auth: { token },
           }).then(resolve, reject);
         }
       } else if (frame.type === "res" && pending.has(frame.id)) {
@@ -269,7 +303,7 @@ try {
     const modelReady = new Promise(resolve => modelRequested = resolve);
     cases.set(name, { args, tool, calls: options.calls, stopAfterBatch: options.stopAfterBatch, imageKind: options.imageKind, replaySourceCase: options.replaySourceCase, onModelRequest: () => { timing.modelRequestedMs = Date.now() - startedAt; modelRequested(); } });
     const start = events.length;
-    const accepted = await rpc("agent", { message: `QUALIFICATION_CASE:${name}`, agentId: sessionKey.split(":")[1], sessionKey, idempotencyKey: randomUUID(), deliver: false, timeout: 420 });
+    const accepted = await rpc(newerHost ? "chat.send" : "agent", { message: `QUALIFICATION_CASE:${name}`, agentId: sessionKey.split(":")[1], sessionKey, idempotencyKey: randomUUID(), deliver: false, ...(newerHost ? { timeoutMs: 420000 } : { timeout: 420 }) });
     timing.acceptedMs = Date.now() - startedAt;
     const completed = rpc("agent.wait", { runId: accepted.runId, timeoutMs: 420000 }, 430000);
     completed.catch(() => {});
@@ -608,6 +642,10 @@ try {
   console.log(`Gateway qualification checkpoint: ${root}`);
   }
   }
+  await save("complete.json", { status: "passed", profile, lane, expectedHost, actualHost: pkg.version, sdkResolution, syntheticBackend: true, graphicalAcceptance: "not-run" });
+} catch (error) {
+  await save("qualification-failure.json", { name: error.name, code: error.code ?? null, message: error.message.split("\n")[0].replaceAll(token, "[redacted]").slice(0, 200), frames: error.stack?.split("\n").filter(line => /^\s+at /.test(line)) });
+  throw error;
 } finally {
   await capabilitiesFixture.restore();
   await save("events.json", events);
