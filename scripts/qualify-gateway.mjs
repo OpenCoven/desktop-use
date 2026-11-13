@@ -165,9 +165,11 @@ await save("adapter-fixture.json", { mode: "synthetic-capture-only-when-harness-
 // Refuse to start a gateway if this package would escape the explicit state root.
 // Verify byte-identical source, then use the checkout's installed SDK peer for a
 // dry resolver call with no audit write or gateway/profile initialization.
-for (const file of ["index.ts", "openclaw.plugin.json", "src/computer-use-audit.ts", "src/computer-use-agent.ts", "src/tool-names.ts", "src/action-permissions.ts", "src/computer-use-actions.ts", "src/computer-use-policy.ts", "src/plugin-tool.ts", "src/capabilities.ts", "src/host-actions.ts", "src/observation.ts", "src/file-actions.ts", "contracts/v1/observation.schema.json", "contracts/v1/capabilities.schema.json", "contracts/v1/canonical-actions.json", "contracts/v1/canonical-actions.schema.json", "package.json"]) {
+for (const file of ["index.ts", "openclaw.plugin.json", "src/computer-use-audit.ts", "src/computer-use-agent.ts", "src/tool-names.ts", "src/action-permissions.ts", "src/computer-use-actions.ts", "src/computer-use-policy.ts", "src/plugin-tool.ts", "src/capabilities.ts", "src/host-actions.ts", "src/observation.ts", "src/file-actions.ts", "contracts/v1/observation.schema.json", "contracts/v1/capabilities.schema.json", "contracts/v1/canonical-actions.json", "contracts/v1/canonical-actions.schema.json"]) {
   assert.deepEqual(await readFile(join(repo, file)), await readFile(join(pluginRoot, file)), `Packed source differs: ${file}`);
 }
+// pnpm pack reorders manifest keys; compare its complete JSON value.
+assert.deepEqual(JSON.parse(await readFile(join(repo, "package.json"), "utf8")), JSON.parse(await readFile(join(pluginRoot, "package.json"), "utf8")), "Packed package metadata differs");
 const auditProbe = spawnSync(process.execPath, ["--import", createRequire(join(repo, "package.json")).resolve("tsx"), "--input-type=module", "-e",
   "const audit = await import(process.argv[1]); console.log(JSON.stringify(['computer-use','legacy-qualification'].map(agentId => audit.resolveComputerUseAuditLogPath({agentId}))));",
   pathToFileURL(join(repo, "src/computer-use-audit.ts")).href,
