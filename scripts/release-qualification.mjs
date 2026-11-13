@@ -139,3 +139,62 @@ export async function createNoRustGuard(root, originalPath) {
   };
   return { path, receipt, async assertUnused() { assert.deepEqual((await receipt()).attempts, [], 'Rust tool invocation occurred during clean installation'); } };
 }
+
+const explicitDenyGuard = 'No callable tools remain after resolving explicit tool allowlist (agents.denied-qualification.tools.allow: computer_use, desktop_use); no registered tools matched. Fix the allowlist or enable the plugin that registers the requested tool.';
+const sanitizedDeniedReply = "⚠️ OpenClaw couldn't finish this reply. Check the conversation before trying again. For details, open Settings → Logs in the Control UI or run `openclaw logs --follow` in your terminal.";
+
+export function assertExplicitDenyGuard(logSuffix, { runId, sessionKey }) {
+  assert.match(runId, /^[a-f0-9-]{36}$/);
+  assert.equal(sessionKey, 'agent:denied-qualification:qualification');
+  assert.ok(logSuffix.length <= 2 * 1024 * 1024, 'Bounded private diagnostic window required');
+  const records = logSuffix.trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+  const candidates = records.filter(record => {
+    const identity = record['1'];
+    if (identity?.runId !== runId) return false;
+    const message = record['2'];
+    if (typeof message !== 'string') return false;
+    const match = message.match(/^lane task error: lane=(\S+) durationMs=\d+ error=(.+)$/);
+    return match?.[1] === `session:${sessionKey}`;
+  });
+  assert.equal(candidates.length, 1, 'Exactly one current run/session explicit allowlist guard required');
+  const candidate = candidates[0];
+  assert.deepEqual(candidate['1'], { runId, sessionKey, taskKind: 'turn', errorName: 'Error' });
+  assert.equal(JSON.parse(candidate['2'].match(/ error=(.+)$/)[1]), explicitDenyGuard);
+  return { kind: 'exact-session-lane-explicit-allowlist-guard', runId, sessionKey, records: 1 };
+}
+
+export function assertExplicitDenyModel({ hostVersion, outcome, providerCalls, providerResponses, messages, guardEvidence, sessionKey }) {
+  assert.ok(HOSTS.some(host => host.version === hostVersion), 'Exact qualified host required');
+  assert.ok(Array.isArray(messages), 'Explicit-deny history required');
+  for (const message of messages) {
+    assert.ok(!['tool', 'toolResult'].includes(message.role), 'Explicit deny must not produce tool results');
+    assert.equal(message.tool_calls?.length ?? 0, 0, 'Explicit deny must not produce tool calls');
+    assert.equal(Array.isArray(message.content) && message.content.some(block => ['toolCall', 'tool_use', 'toolResult', 'tool_result'].includes(block.type)), false, 'Explicit deny must not dispatch tools');
+  }
+  if (outcome.status === 'error') {
+    assert.equal(providerCalls, 0, 'Allowlist precheck must precede every provider request');
+    assert.deepEqual(providerResponses, []);
+    if (guardEvidence) {
+      assert.equal(hostVersion, '2026.11.3');
+      assert.equal(outcome.error, sanitizedDeniedReply);
+      assert.equal(sessionKey, 'agent:denied-qualification:qualification');
+      assert.deepEqual(guardEvidence, { kind: 'exact-session-lane-explicit-allowlist-guard', runId: outcome.runId, sessionKey, records: 1 });
+      return 'correlated-pre-provider-explicit-allowlist-rejection';
+    }
+    assert.equal(outcome.error, `Error: ${explicitDenyGuard}`);
+    return 'pre-provider-explicit-allowlist-rejection';
+  }
+  assert.equal(outcome.status, 'ok', 'Only a proven no-tool completion may succeed');
+  assert.equal(providerCalls, 1);
+  assert.equal(providerResponses.length, 1);
+  const response = providerResponses[0];
+  assert.equal(response.case, 'explicit-deny-model');
+  assert.deepEqual(response.tools, []);
+  assert.equal(response.finished, true);
+  const assistant = messages.filter(message => message.role === 'assistant');
+  assert.equal(assistant.length, 1);
+  const content = assistant[0].content;
+  const text = typeof content === 'string' ? content : content.filter(block => block.type === 'text').map(block => block.text).join('');
+  assert.equal(text, 'Qualification explicit-deny-model complete.');
+  return 'no-tool-provider-completion';
+}

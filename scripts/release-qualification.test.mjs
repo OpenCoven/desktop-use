@@ -127,3 +127,62 @@ test('clean-install guard blocks Rust tool resolution and records any attempted 
     await assert.rejects(guard.assertUnused(), /Rust tool invocation/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test('explicit deny accepts only the exact pre-provider guard or a proven no-tool provider completion', async () => {
+  const { assertExplicitDenyModel } = await import('./release-qualification.mjs');
+  const error = 'Error: No callable tools remain after resolving explicit tool allowlist (agents.denied-qualification.tools.allow: computer_use, desktop_use); no registered tools matched. Fix the allowlist or enable the plugin that registers the requested tool.';
+  const rejected = { hostVersion: '2026.4.26', outcome: { status: 'error', error }, providerCalls: 0, providerResponses: [], messages: [] };
+  assert.equal(assertExplicitDenyModel(rejected), 'pre-provider-explicit-allowlist-rejection');
+  assert.equal(assertExplicitDenyModel({ ...rejected, hostVersion: '2026.11.3' }), 'pre-provider-explicit-allowlist-rejection');
+  const completed = { ...rejected, outcome: { status: 'ok' }, providerCalls: 1, providerResponses: [{ case: 'explicit-deny-model', tools: [], finished: true }], messages: [{ role: 'assistant', content: [{ type: 'text', text: 'Qualification explicit-deny-model complete.' }] }] };
+  assert.equal(assertExplicitDenyModel(completed), 'no-tool-provider-completion');
+  for (const change of [
+    { outcome: { status: 'error', error: 'AI service error' } },
+    { outcome: { status: 'error', error: error.replace('denied-qualification', 'computer-use') } },
+    { outcome: { status: 'error', error: error.replace('no registered tools matched', 'the selected model does not support tools') } },
+    { outcome: { status: 'error', error: `${error} unrelated failure` } },
+    { outcome: { status: 'timeout', error } },
+    { providerCalls: 1 },
+    { hostVersion: 'unqualified' },
+    { messages: [{ role: 'toolResult' }] },
+    { messages: [{ role: 'assistant', content: [{ type: 'toolCall', name: 'computer_use' }] }] },
+  ]) assert.throws(() => assertExplicitDenyModel({ ...rejected, ...change }));
+  for (const change of [
+    { providerCalls: 0 }, { providerCalls: 2 }, { providerResponses: [] }, { messages: [] },
+    { providerResponses: [{ case: 'different-case', tools: [], finished: true }] },
+    { providerResponses: [{ case: 'explicit-deny-model', tools: ['computer_use'], finished: true }] },
+    { providerResponses: [{ case: 'explicit-deny-model', tools: [], finished: false }] },
+    { messages: [{ role: 'assistant', content: [{ type: 'text', text: 'unrelated response' }] }] },
+    { messages: [{ role: 'assistant', tool_calls: [{ id: 'forbidden' }], content: [{ type: 'text', text: 'Qualification explicit-deny-model complete.' }] }] },
+  ]) assert.throws(() => assertExplicitDenyModel({ ...completed, ...change }));
+});
+
+test('sanitized denial needs exact run and session correlated private guard evidence', async () => {
+  const { assertExplicitDenyGuard, assertExplicitDenyModel } = await import('./release-qualification.mjs');
+  const runId = '9ece0830-b7ca-4c60-9f89-4da7d229b146';
+  const sessionKey = 'agent:denied-qualification:qualification';
+  const guard = 'No callable tools remain after resolving explicit tool allowlist (agents.denied-qualification.tools.allow: computer_use, desktop_use); no registered tools matched. Fix the allowlist or enable the plugin that registers the requested tool.';
+  const record = { '1': { runId, sessionKey, taskKind: 'turn', errorName: 'Error' }, '2': `lane task error: lane=session:${sessionKey} durationMs=12 error=${JSON.stringify(guard)}` };
+  const context = { runId, sessionKey };
+  const proof = assertExplicitDenyGuard(JSON.stringify(record), context);
+  const error = "⚠️ OpenClaw couldn't finish this reply. Check the conversation before trying again. For details, open Settings → Logs in the Control UI or run `openclaw logs --follow` in your terminal.";
+  const result = { hostVersion: '2026.11.3', outcome: { runId, status: 'error', error }, providerCalls: 0, providerResponses: [], messages: [], guardEvidence: proof, sessionKey };
+  assert.equal(assertExplicitDenyModel(result), 'correlated-pre-provider-explicit-allowlist-rejection');
+  for (const bad of [
+    { ...record, '1': { ...record['1'], runId: 'other' } },
+    { ...record, '1': { ...record['1'], sessionKey: 'agent:other:qualification' } },
+    { ...record, '1': { ...record['1'], taskKind: 'cron' } },
+    { ...record, '1': { ...record['1'], errorName: 'TypeError' } },
+    { ...record, '2': record['2'].replace('lane=session:', 'lane=wrong:') },
+    { ...record, '2': record['2'].replace('no registered tools matched', 'runtime failed') },
+    { ...record, '2': `${record['2']} extra error` },
+    { '2': `[tools] ${guard}` },
+  ]) assert.throws(() => assertExplicitDenyGuard(JSON.stringify(bad), context));
+  assert.throws(() => assertExplicitDenyGuard([record, record].map(JSON.stringify).join('\n'), context));
+  assert.throws(() => assertExplicitDenyGuard([record, { ...record, '2': record['2'].replace('no registered tools matched', 'runtime failed') }].map(JSON.stringify).join('\n'), context));
+  for (const change of [
+    { guardEvidence: undefined }, { providerCalls: 1 }, { sessionKey: 'other' },
+    { hostVersion: '2026.4.26' }, { outcome: { runId: 'other', status: 'error', error } },
+    { outcome: { runId, status: 'error', error: 'AI service error' } },
+  ]) assert.throws(() => assertExplicitDenyModel({ ...result, ...change }));
+});

@@ -1,6 +1,6 @@
 import { assertPackedMetadata } from "./packed-metadata.mjs";
 import { createCapabilitiesFixture, discoveryCallsForPlan, inspectDiscoveryTransport, correlateDiscoveryReplay, inspectDiscoveryHistory, QUALIFICATION_CONTEXT_TOKENS, DISCOVERY_TRUNCATION_MARKER } from "./gateway-capabilities-fixture.mjs";
-import { linkLaneHost, assertHostInstallation, assertLoadedSdk, assertMinimalHttpPolicy } from "./release-qualification.mjs";
+import { linkLaneHost, assertHostInstallation, assertLoadedSdk, assertMinimalHttpPolicy, assertExplicitDenyModel, assertExplicitDenyGuard } from "./release-qualification.mjs";
 import { createImageFixture, inspectProviderImage } from "./gateway-image-fixture.mjs";
 import { COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME } from "../src/tool-names.ts";
 // Real pinned gateway + local deterministic model transport; no live provider or desktop input.
@@ -61,6 +61,7 @@ await save("host-image-identity.json", { host, openclawVersion: pkg.version, sha
 const batchCallId = name => `call${name.replace(/[^a-zA-Z0-9]/g, "")}`;
 const cases = new Map();
 const requests = [];
+let providerCalls = 0;
 const modelErrors = [];
 const modelFailures = [];
 const modelSchemas = {};
@@ -76,6 +77,7 @@ const profileActions = {
 }[profile];
 const visibleAliases = Object.keys(legacyActions).filter(action => profileActions.includes(legacyActions[action]));
 const model = createServer(async (req, res) => {
+  providerCalls++;
   let phase = "request";
   let fixtureCase = null;
   try {
@@ -114,7 +116,7 @@ const model = createServer(async (req, res) => {
     if (finished) {
       phase = "discovery-transport";
       const calls = discoveryCallsForPlan(plan, { currentCase: marker, batchCallId, allowedActions: profileActions, canonicalAliases: legacyActions, legacyToolName: DESKTOP_USE_TOOL_NAME, canonicalToolName: COMPUTER_USE_TOOL_NAME });
-      const receipts = calls.length ? inspectDiscoveryTransport(body, { currentCase: marker, calls, contextWindowTokens: QUALIFICATION_CONTEXT_TOKENS, toolName: plan.tool ?? COMPUTER_USE_TOOL_NAME }) : [];
+      const receipts = calls.length ? inspectDiscoveryTransport(body, { currentCase: marker, calls, contextWindowTokens: QUALIFICATION_CONTEXT_TOKENS, toolName: plan.tool ?? COMPUTER_USE_TOOL_NAME, hostVersion: expectedHost }) : [];
       if (receipts.length) await save(`${marker}-discovery-provider-transport.json`, receipts);
       if (marker === "capability-model-profile") {
         if (profile === "stop-only") {
@@ -332,7 +334,7 @@ try {
     assert.equal(deniedModel.history.messages?.filter(message => message.role === "toolResult").length, 0);
     assert.equal(events.slice(beforeDenied).some(event => event.event === "plugin.approval.requested"), false);
     await assert.rejects(access(join(root, "state/agents/denied-qualification/audit/computer-use.jsonl")), { code: "ENOENT" });
-    await save("explicit-tool-deny.json", { hostVersion: expectedHost, sessionKey: deniedSession, deniedTools: [COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME], httpStatus: 404, modelInventory: [], toolResults: 0, approvals: 0, executorAuditAbsent: true });
+    await save("explicit-tool-deny.json", { hostVersion: expectedHost, sessionKey: deniedSession, deniedTools: [COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME], httpStatus: 404, modelInventory: [], modelDenial: deniedModel.denialProof, guardEvidence: deniedModel.guardEvidence, providerCalls: deniedModel.providerCalls, toolResults: 0, approvals: 0, executorAuditAbsent: true });
     const health = await httpInvoke(COMPUTER_USE_TOOL_NAME, { action: "health" }); await save("health.json", health);
     assert.equal(health.status, 200); assert.deepEqual(health.body.result.details.agent.toolPolicy, template.tools);
     assert.deepEqual(health.body.result.details.actionPermissions.allowedActions, profileActions);
@@ -346,6 +348,9 @@ try {
     const modelReady = new Promise(resolve => modelRequested = resolve);
     cases.set(name, { args, tool, noTools: options.noTools, calls: options.calls, stopAfterBatch: options.stopAfterBatch, imageKind: options.imageKind, replaySourceCase: options.replaySourceCase, onModelRequest: () => { timing.modelRequestedMs = Date.now() - startedAt; modelRequested(); } });
     const start = events.length;
+    const providerStart = providerCalls;
+    const responseStart = requests.length;
+    const privateLogPrefix = options.noTools && newerHost ? await readFile(join(root, "gateway.jsonl")) : null;
     const accepted = await rpc(newerHost ? "chat.send" : "agent", { message: `QUALIFICATION_CASE:${name}`, agentId: sessionKey.split(":")[1], sessionKey, idempotencyKey: randomUUID(), deliver: false, ...(newerHost ? { timeoutMs: 420000 } : { timeout: 420 }) });
     timing.acceptedMs = Date.now() - startedAt;
     const completed = rpc("agent.wait", { runId: accepted.runId, timeoutMs: 420000 }, 430000);
@@ -369,8 +374,20 @@ try {
     await save(`${name}-timing.json`, timing);
     console.log(`Gateway agent finished ${name}: ${outcome.status}`);
     const history = await rpc("chat.history", { sessionKey, limit: 100 }); await save(`${name}-history.json`, history);
-    if (!options.abort) assert.equal(outcome.status, "ok", JSON.stringify(outcome));
-    return { history, events: events.slice(start) };
+    let denialProof;
+    let guardEvidence;
+    if (options.noTools) {
+      assert.equal(name, "explicit-deny-model");
+      assert.equal(sessionKey, "agent:denied-qualification:qualification");
+      assert.equal(outcome.runId, accepted.runId);
+      if (newerHost && outcome.status === "error") {
+        const privateLog = await readFile(join(root, "gateway.jsonl"));
+        assert.ok(privateLog.subarray(0, privateLogPrefix.length).equals(privateLogPrefix), "Private diagnostic prefix must remain unchanged");
+        guardEvidence = assertExplicitDenyGuard(privateLog.subarray(privateLogPrefix.length).toString("utf8"), { runId: accepted.runId, sessionKey });
+      }
+      denialProof = assertExplicitDenyModel({ hostVersion: expectedHost, outcome, providerCalls: providerCalls - providerStart, providerResponses: requests.slice(responseStart), messages: history.messages, guardEvidence, sessionKey });
+    } else if (!options.abort) assert.equal(outcome.status, "ok", JSON.stringify(outcome));
+    return { history, runId: accepted.runId, events: events.slice(start), denialProof, guardEvidence, providerCalls: providerCalls - providerStart };
   }
   const toolResult = (history, name = COMPUTER_USE_TOOL_NAME) => {
     const message = history.messages?.findLast(m => m.role === "toolResult" && m.toolName === name);
@@ -382,17 +399,17 @@ try {
     const message = result.history.messages?.findLast(message => message.role === "toolResult" && message.toolName === tool && message.toolCallId === toolCallId);
     assert.ok(message, "Missing exact discovery history tool call");
     const text = message.content.filter(block => block.type === "text").map(block => block.text).join("\n");
-    if (!text.includes(DISCOVERY_TRUNCATION_MARKER)) return JSON.parse(text);
+    if (!(newerHost ? message.__openclaw?.truncated : text.includes(DISCOVERY_TRUNCATION_MARKER))) return JSON.parse(text);
     const transports = JSON.parse(await readFile(join(root, `${name}-discovery-provider-transport.json`), "utf8"));
     const transport = transports.find(receipt => receipt.toolCallId === toolCallId);
-    const history = inspectDiscoveryHistory(message, { toolCallId });
+    const history = inspectDiscoveryHistory(message, { toolCallId, hostVersion: expectedHost, runId: result.runId, transport });
     assert.ok(history.truncated, "Replay requires actual history truncation");
     assert.ok(transport?.truncated || transport?.fullCapabilityJsonTransport, "Replay requires verified provider-wire evidence");
     const agentId = sessionKey.split(":")[1];
     const auditPath = join(root, `state/agents/${agentId}/audit/computer-use.jsonl`);
     const auditRecords = (await readFile(auditPath, "utf8")).trim().split("\n").map(line => JSON.parse(line));
     const replay = await httpInvoke(tool, args, sessionKey);
-    const details = correlateDiscoveryReplay({ transport, history, auditRecords, call: { toolCallId, action: args.action }, replay, scope: { agentId, sessionKey, auditPath } });
+    const details = correlateDiscoveryReplay({ transport, history, auditRecords, call: { toolCallId, action: args.action }, replay, scope: { agentId, sessionKey, auditPath, runId: result.runId } });
     await save(`${name}-${args.action}-structured-replay.json`, { stage: "separate-structured-http-replay", originalModelCall: { toolCallId, transport, history }, scope: { agentId, sessionKey, workspace: agentId === "legacy-qualification" ? legacyWorkspace : workspace }, response: replay, auditCorrelation: { action: details.action, status: details.status, success: details.success } });
     return details;
   }
