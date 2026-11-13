@@ -1170,6 +1170,7 @@ fn x11_click(x: i32, y: i32, button: u32, times: u32) -> String {
     let cmd_args: Vec<OsString> = vec![
         "mousemove".into(),
         "--sync".into(),
+        "--".into(),
         x.to_string().into(),
         y.to_string().into(),
         "click".into(),

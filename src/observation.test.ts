@@ -1,0 +1,168 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { readFile, writeFile, mkdtemp, rm, symlink, access, stat, realpath } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { createComputerUseTool, normalizeParams } from "./plugin-tool.js";
+
+const fixture = async (kind = "png") => ({
+  bytes: await readFile(new URL(`../contracts/v1/fixtures/images/valid.${kind}`, import.meta.url)),
+  receipt: JSON.parse(await readFile(new URL(`../contracts/v1/fixtures/observations/valid-${kind}.json`, import.meta.url), "utf8")),
+});
+async function capture(kind = "png", mutate?: (path: string, receipt: any, bytes: Buffer) => Promise<unknown>) {
+  const { bytes, receipt } = await fixture(kind);
+  let owned = "";
+  const audits: unknown[] = [];
+  const tool = createComputerUseTool({ appendAuditEvent: async event => { audits.push(event); }, runAdapter: async (_args, params) => {
+    owned = params.path!;
+    assert.ok(owned, "caller supplies a private destination");
+    assert.equal((await stat(dirname(owned))).mode & 0o777, 0o700);
+    await writeFile(owned, bytes);
+    receipt.capturedAtMs = Date.now();
+    const override = await mutate?.(owned, receipt, bytes);
+    return override ?? { ok: true, path: "/untrusted/backend-path", observationV1: receipt };
+  } });
+  return { tool, bytes, audits, owned: () => owned };
+}
+for (const kind of ["png", "jpg"]) test(`delivers exact validated ${kind} bytes without default-path approval and cleans private staging`, async () => {
+  const c = await capture(kind);
+  const result = await c.tool.execute("image", { action: "screenshot", mode: "screen", format: kind });
+  assert.equal(result.details.status, "success");
+  const image = result.content.find(block => block.type === "image");
+  assert.ok(image, "image is explicit typed content");
+  assert.equal(image.mimeType, kind === "png" ? "image/png" : "image/jpeg");
+  assert.deepEqual(Buffer.from(image.data, "base64"), c.bytes);
+  assert.equal((result.details.observationV1 as any).geometry.state, "unavailable");
+  assert.equal(JSON.stringify(result.details).includes(image.data), false);
+  assert.equal(JSON.stringify(c.audits).includes(image.data), false);
+  assert.equal(JSON.stringify(c.audits).includes(c.owned()), false);
+  await assert.rejects(access(dirname(c.owned())), { code: "ENOENT" });
+});
+
+test("explicit destinations require approval and publish the approved bytes atomically", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "observation-destination-")));
+  try {
+    const c = await capture(); const path = join(root, "output.jpg");
+    const blocked = await c.tool.execute("unapproved", { action: "screenshot", mode: "screen", path });
+    assert.equal(blocked.details.status, "needsApproval"); assert.equal(c.owned(), "");
+    await writeFile(path, "old");
+    const result = await c.tool.execute("approved", { action: "screenshot", mode: "screen", path, confirm: true });
+    assert.equal(result.details.status, "success"); assert.notEqual(c.owned(), path);
+    assert.deepEqual(await readFile(path), c.bytes);
+    assert.equal((result.details.outputPublication as any).status, "success");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+for (const variant of ["hash", "dimensions", "version", "stale", "type", "size", "extent", "scope", "symlink", "missing"]) test(`withholds ${variant} artifact and keeps successful capture outcome truthful`, async () => {
+  const c = await capture("png", async (path, receipt) => {
+    if (variant === "hash") receipt.primaryImage.sha256 = "0".repeat(64);
+    if (variant === "dimensions") receipt.primaryImage.sourceDimensions.width++;
+    if (variant === "version") receipt.schemaVersion = 2;
+    if (variant === "stale") receipt.capturedAtMs = 0;
+    if (variant === "type") receipt.primaryImage.mimeType = "image/jpeg";
+    if (variant === "size") await writeFile(path, Buffer.alloc(8388609));
+    if (variant === "extent") receipt.coordinateReference.sourceExtent.width++;
+    if (variant === "scope") receipt.requestedScope.mode = "window";
+    if (variant === "symlink") { await rm(path); await symlink(new URL("../contracts/v1/fixtures/images/valid.png", import.meta.url), path); }
+    if (variant === "missing") await rm(path);
+  });
+  const result = await c.tool.execute("invalid", { action: "screenshot", mode: "screen" });
+  assert.equal(result.details.status, "success");
+  assert.equal(result.content.some(block => block.type === "image"), false);
+  assert.equal((result.details.observationUnavailable as any).code, "OBSERVATION_VALIDATION_FAILED");
+  assert.equal(result.details.observationV1, undefined);
+  await assert.rejects(access(dirname(c.owned())), { code: "ENOENT" });
+});
+
+for (const outcome of ["failed", "cancelled"]) test(`${outcome} capture never delivers or publishes a stale artifact`, async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "observation-cancel-")));
+  try {
+    const abort = new AbortController();
+    const c = await capture("png", async () => { if (outcome === "cancelled") abort.abort(); return { ok: outcome === "cancelled", code: outcome === "failed" ? "BACKEND_ERROR" : undefined }; });
+    const path = join(root, "output.png");
+    const result = await c.tool.execute("cancel", { action: "screenshot", mode: "screen", path, confirm: true }, abort.signal);
+    assert.equal(result.content.some(block => block.type === "image"), false);
+    assert.equal(result.details.status, outcome === "cancelled" ? "cancelled" : "error");
+    await assert.rejects(access(path), { code: "ENOENT" });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("accepts bounded signed i32 coordinates and passes a literal option value", async () => {
+  for (const coords of ["-1920,-80", "-2147483648,2147483647"]) {
+    let argv: string[] = [];
+    const tool = createComputerUseTool({ appendAuditEvent: async () => {}, runAdapter: async args => { argv = args; return { ok: true }; } });
+    await tool.execute("negative", { action: "click", coords, confirm: true });
+    assert.deepEqual(argv, ["click", "--confirm", "--coords", coords]);
+  }
+  for (const coords of ["-2147483649,0", "2147483648,0", "--help,0"]) assert.throws(() => normalizeParams({ action: "click", coords }));
+});
+
+test("uses the adapter's outer macOS receipt while preserving nested backend outcome", async () => {
+  const c = await capture("png", async (_path, receipt) => ({ ok: true, backend: "peekaboo", result: { success: true }, observationV1: receipt }));
+  const result = await c.tool.execute("mac-envelope", { action: "screenshot", mode: "screen" });
+  assert.ok(result.content.some(block => block.type === "image"));
+});
+
+test("does not expose an unvalidated receipt in legacy result metadata", async () => {
+  const c = await capture("png", async (_path, receipt) => { receipt.schemaVersion = 99; });
+  const result = await c.tool.execute("invalid-version", { action: "screenshot", mode: "screen" });
+  assert.equal(JSON.stringify(result.details).includes('"schemaVersion":99'), false);
+});
+
+test("rechecks approved destination binding after capture", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "observation-rebind-")));
+  try {
+    const parent = join(root, "approved"), other = join(root, "other");
+    const { mkdir, rename } = await import("node:fs/promises"); await mkdir(parent); await mkdir(other);
+    const c = await capture("png", async () => { await rename(parent, join(root, "old")); await symlink(other, parent); });
+    const result = await c.tool.execute("rebound", { action: "screenshot", mode: "screen", path: join(parent, "out.png"), confirm: true });
+    assert.equal((result.details.outputPublication as any).status, "needsApproval");
+    await assert.rejects(access(join(other, "out.png")), { code: "ENOENT" });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("reports an explicit publication failure separately from successful capture", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "observation-write-fail-")));
+  try {
+    const path = join(root, "destination");
+    const { mkdir } = await import("node:fs/promises"); await mkdir(path);
+    const c = await capture();
+    const result = await c.tool.execute("publish-fail", { action: "screenshot", mode: "screen", path, confirm: true });
+    assert.equal(result.details.status, "success");
+    assert.equal((result.details.outputPublication as any)?.status, "error");
+    assert.equal((result.details.outputPublication as any)?.code, "OUTPUT_PUBLICATION_FAILED");
+    assert.equal(result.content.some(block => block.type === "image"), false);
+    assert.equal((await stat(path)).isDirectory(), true);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("preserves completed explicit output if the shared deadline expires before delivery", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "observation-late-timeout-")));
+  const path = join(root, "output.png");
+  const originalNow = Date.now;
+  const { existsSync } = await import("node:fs");
+  try {
+    const c = await capture();
+    Date.now = () => originalNow() + (existsSync(path) ? 2000 : 0);
+    const result = await c.tool.execute("late-timeout", { action: "screenshot", mode: "screen", path, confirm: true, timeoutMs: 1000 });
+    assert.equal(result.details.status, "success");
+    assert.equal((result.details.outputPublication as any).status, "success");
+    assert.ok(result.details.observationUnavailable);
+    assert.equal(result.content.some(block => block.type === "image"), false);
+    assert.deepEqual(await readFile(path), c.bytes);
+  } finally { Date.now = originalNow; await rm(root, { recursive: true, force: true }); }
+});
+
+test("inspect delivers the owned primary with truthful unknown annotation, ignoring extra backend artifacts", async () => {
+  const c = await capture("png", async (_path, receipt) => {
+    receipt.requestedScope.annotationRequested = true;
+    receipt.primaryImage.annotationKind = "unverified";
+    receipt.primaryImage.annotationReasonCode = "PROVIDER_ANNOTATION_UNVERIFIED";
+    return { ok: true, path: "/untrusted/raw.png", annotationPath: "/untrusted/annotated.png", observationV1: receipt };
+  });
+  const result = await c.tool.execute("inspect", { action: "inspect", mode: "screen" });
+  assert.equal(result.content.filter(block => block.type === "image").length, 1);
+  assert.equal((result.details.observationV1 as any).primaryImage.annotationKind, "unverified");
+  const image = result.content.find(block => block.type === "image")!;
+  assert.deepEqual(Buffer.from(image.data, "base64"), c.bytes);
+});

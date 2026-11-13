@@ -212,6 +212,16 @@ Real adapter health check:
 cargo run -- doctor
 ```
 
+## Image observations
+
+Successful plugin `inspect` and `screenshot` calls return one typed PNG/JPEG image block plus an `observationV1` metadata receipt. The adapter completely decodes a bounded capture before publication; the plugin reads only its fresh private capture destination, verifies file identity, receipt, hash, MIME type and dimensions, and removes staging in `finally`. Backend-returned paths and optional annotation paths never authorize an image read. The adapter JSON and result details contain metadata, with pixels carried separately in the image block. Durable action audit contains neither image bytes nor screenshot content.
+
+Limits per primary image are 8 MiB encoded, 16,384 pixels per dimension, 64 million pixels and 256 MiB of bounded decoder allocation. Neither adapter nor plugin resizes images by default. `coordinateReference` uses normalized delivered-image coordinates from 0 to 1 and retains the original pixel `sourceExtent`; source and delivered dimensions are equal for this transport. A host may resize again. Only use a desktop transform when `geometry.state` is `available` with producer evidence. Current backends report geometry unavailable; image dimensions do not establish desktop origin, logical scale, Retina mapping or a mixed-display layout. Native coordinate acceptance remains open.
+
+The public OpenClaw tool context does not identify the selected model's image capability. Results therefore label `modelImageSupport.state` as `unknown` and explain that text-only models cannot inspect the supplied pixels. An image-capable model is required for visual reasoning; the metadata summary remains available to text-only consumers. Post-capture validation or delivery failure returns `observationUnavailable` while preserving the underlying capture outcome. Failed, unsupported or cancelled captures deliver no image.
+
+Default private capture staging adds no approval prompt. An explicit `path` retains canonical-target approval and publishes validated bytes by atomic replacement only after the last cancellation check. `outputPublication` reports its separate success, failure or changed-target approval requirement. A completed write remains reported even if the deadline or cancellation later prevents image delivery. Neither layer protects against a hostile concurrent writer running as the same OS user. Private staging and reads share the existing action deadline; no observation cache or automatic input replay is added.
+
 ## Trusted action permissions
 
 The plugin defaults to `actionProfile: "full"`, retaining all 18 canonical actions and five deprecated action aliases in 0.1.x. Set a trusted plugin configuration to narrow eligibility for both `computer_use` and `desktop_use`:

@@ -39,6 +39,18 @@ the trust boundary already belongs in this adapter/plugin package. The plugin
 does provide a Control UI descriptor that OpenSide or OpenClaw Control UI can
 consume for the panel state.
 
+## Validated image delivery
+
+`src/observation.ts` owns the plugin's per-call private capture directory and exact primary path. Eligibility, request validation and approval classification run before that path is inserted. Rust owns a second private helper destination, completely validates PNG/JPEG data with bounded decoding, and returns only the versioned receipt. The Node reader validates the checked-in `contracts/v1/observation.schema.json`, opens its known primary with no-follow and file-identity checks where supported, bounds the read, and checks freshness, SHA-256, MIME, source/delivered dimensions and normalized source extent. It does not decode images again or trust a backend JSON path. Staging is removed after success, failure or cancellation.
+
+The tool returns at most two content blocks: one text summary and one primary image. Optional raw/annotated backend paths are not opened; annotation and actual scope remain explicitly unverified when the producer cannot establish them. Image data stays out of structured details and durable action audits. The adapter's existing 10 MiB JSON limit remains metadata-only. Image limits are 8 MiB encoded, 16,384 pixels per axis, 64 million pixels and 256 MiB bounded decoder allocation; there is no model-controlled limit override or default resize.
+
+`observationV1.coordinateReference` describes normalized delivered-image coordinates and the original pixel source extent. A future evidence-bound `geometry` producer may provide piecewise image-to-desktop rectangles and desktop units. Current geometry is unavailable: never turn image pixels into an assumed zero-origin desktop transform. macOS points/Retina, negative display origins, mixed scales and host resizing require separate native evidence. The pinned gateway fixture proves exact 32×24 synthetic PNG/JPEG bytes reach its deterministic image-capable provider; it does not prove native desktop behavior, arbitrary-size host resizing or a live provider. The public tool context leaves actual selected-model image support unknown, and the text summary explicitly says that text-only models cannot inspect pixels.
+
+Signed `coords` values are validated as decimal i32 pairs and passed as literal argv. The X11 `mousemove` invocation uses an explicit `--` option boundary. Pinned [xdotool source](https://github.com/jordansissel/xdotool/blob/14ca26a2c95035f9c635a6a11d075e8d7d0d6529/cmd_mousemove.c#L59) consumes options before parsing signed coordinate arguments; the local fixture proves the argv boundary only. Actual negative-origin targeting remains unverified for macOS, Wayland and an X server, and accepting a signed request does not establish native support.
+
+An explicit capture destination is a separately approved write target. The plugin rechecks its canonical binding after capture and publishes validated bytes with the existing atomic file writer. `outputPublication` records success, publication failure or `OUTPUT_TARGET_CHANGED`; successful capture alone does not imply destination publication. Cancellation before the final commit leaves the destination unchanged; completed replacement is not rolled back. If later image delivery fails, the successful write and capture outcomes remain available with `observationUnavailable`. The same action deadline covers capture, any existing single observation retry, reading and publication.
+
 ## Install Shape
 
 Build or install the adapter:

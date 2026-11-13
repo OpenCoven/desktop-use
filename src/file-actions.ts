@@ -50,7 +50,7 @@ export async function listDirectory(target: string, signal: AbortSignal | undefi
   } finally { await directory.close(); }
 }
 
-export async function writeRegularFile(target: string, content: string, overwrite: boolean, signal: AbortSignal | undefined, deadline: number): Promise<void> {
+export async function writeRegularFile(target: string, content: string | Buffer, overwrite: boolean, signal: AbortSignal | undefined, deadline: number): Promise<void> {
   check(signal, deadline);
   let mode = 0o600;
   try {

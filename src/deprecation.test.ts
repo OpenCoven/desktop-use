@@ -14,6 +14,13 @@ const aliases = [
   { legacy: "press", canonical: "keypress", extra: { keys: ["tab"], confirm: true }, argv: ["keypress", "--confirm", "--keys", "tab"] },
 ] as const;
 
+function stripOwnedPath(args: string[]) {
+  const index = args.indexOf("--path");
+  if (index < 0) return args;
+  assert.match(args[index + 1], /desktopuse-observation-[^/]+\/primary.image$/);
+  return [...args.slice(0, index), ...args.slice(index + 2)];
+}
+
 function harness(legacyTool = false, response: unknown = { ok: true }) {
   const calls: string[][] = [];
   const audits: ComputerUseAuditEvent[] = [];
@@ -34,7 +41,7 @@ for (const { legacy, canonical, extra, argv } of aliases) {
   test(`${legacy} still executes ${canonical} and returns a deprecation notice`, async () => {
     const { tool, calls, audits } = harness();
     const result = await tool.execute("legacy", { action: legacy, ...extra });
-    assert.deepEqual(calls, [argv]);
+    assert.deepEqual(calls.map(stripOwnedPath), [argv]);
     assert.equal(result.details.status, "success");
     assert.equal(result.details.success, true);
     assert.equal(result.details.action, canonical);
@@ -125,7 +132,7 @@ test("legacy names preserve approval decisions and redacted audit results", asyn
         };
       }
       assert.deepEqual(oldDetails, currentResult.details);
-      assert.deepEqual(old.calls, current.calls);
+      assert.deepEqual(old.calls.map(stripOwnedPath), current.calls.map(stripOwnedPath));
       const { timestamp: oldTime, ...oldAudit } = old.audits[0];
       const { timestamp: currentTime, ...currentAudit } = current.audits[0];
       assert.deepEqual(oldAudit, currentAudit);

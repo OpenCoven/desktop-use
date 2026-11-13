@@ -5,6 +5,11 @@ on:
     paths:
       - '.github/workflows/gateway-contract.yml'
       - 'scripts/qualify-gateway.mjs'
+      - 'scripts/gateway-image-fixture.mjs'
+      - 'contracts/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'vendor/**'
       - 'index.ts'
       - 'src/**'
       - 'agents/**'
@@ -38,6 +43,7 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: cargo build --locked
       - name: Pack the plugin and run the minimum supported gateway
         shell: bash
         run: |
@@ -66,6 +72,7 @@ jobs:
             ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/model-error-sanitization.json
             ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/model-tool-schemas.json
             ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/adapter-fixture.json
+            ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/provider-image-*.json
             ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/legacy-action-compatibility.json
             ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/legacy-tool-compatibility.json
             ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/events.json

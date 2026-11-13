@@ -1,3 +1,4 @@
+import { withOwnedObservation, type ObservationImage } from "./observation.js";
 import { CANONICAL_ACTIONS, LEGACY_ACTION_ALIASES, type LegacyAction } from "./computer-use-actions.js";
 import { ACTION_PROFILE_DENIED_REASON, isActionAllowed, resolveActionPermissions, validateActionPermissions, type ActionPermissions } from "./action-permissions.js";
 import { installedBinary, planHostAction } from "./host-actions.js";
@@ -41,7 +42,7 @@ const CAPTURE_TIMEOUT_MS = 45_000;
 const DEFAULT_ADAPTER_BIN = "coven-desktop-use";
 
 type ToolResult = {
-  content: [{ type: "text"; text: string }];
+  content: [{ type: "text"; text: string }, ...ObservationImage[]];
   details: Record<string, unknown> & {
     status: string;
     success?: boolean;
@@ -189,6 +190,7 @@ function createTool(options: CreateComputerUseToolOptions, legacyTool = false) {
       if (params.action !== "stop") calls.add(controller);
       let decision = classifyComputerUseRequest(params, ctx);
       let details: ToolResult["details"];
+      const images: ObservationImage[] = [];
       try {
         if (!isActionAllowed(actionPermissions, params.action)) {
           decision = { ...decision, status: "blocked", requiresApproval: false,
@@ -209,7 +211,7 @@ function createTool(options: CreateComputerUseToolOptions, legacyTool = false) {
             };
           } else {
             const boundedAdapter: AdapterRunner = (args, request) => runAdapter(args, request, controller.signal);
-            details = await executeAllowedAction(params, ctx, boundedAdapter, controller.signal);
+            details = await executeAllowedAction(params, ctx, boundedAdapter, controller.signal, image => images.push(image));
             if (normalizeComputerUseAction(params.action) === "health") {
               details.actionPermissions = { scope: "adapter-eligibility", ...actionPermissions, gatewayAuthorization: "not-reported" };
             }
@@ -239,7 +241,7 @@ function createTool(options: CreateComputerUseToolOptions, legacyTool = false) {
         notices.push("clipboard-write text is deprecated; use clipboardText instead.");
       }
       if (notices.length) details.deprecation = notices.join(" ");
-      return jsonResult(details);
+      return jsonResult(details, images);
     },
   };
 }
@@ -253,6 +255,7 @@ async function executeAllowedAction(
   ctx: ComputerUsePolicyContext,
   runAdapter: AdapterRunner,
   signal?: AbortSignal,
+  onImage?: (image: ObservationImage) => void,
 ): Promise<ToolResult["details"]> {
   const action = normalizeComputerUseAction(params.action);
   const evidence = {
@@ -262,18 +265,18 @@ async function executeAllowedAction(
   };
 
   if (DESKTOP_ADAPTER_ACTIONS.has(action)) {
-    const raw = await runAdapterWithTransientObservationRetry(
-      buildAdapterArgs(params),
-      params,
-      runAdapter,
-      action,
-    );
+    const observation = ["inspect", "screenshot"].includes(action)
+      ? await withOwnedObservation(params, ctx, request => runAdapterWithTransientObservationRetry(buildAdapterArgs(request), request, runAdapter, action), signal)
+      : undefined;
+    const raw = observation ? observation.raw : await runAdapterWithTransientObservationRetry(buildAdapterArgs(params), params, runAdapter, action);
+    if (observation?.image) onImage?.(observation.image);
     const safe = action === "type-text" ? redactTypeDiagnostics(decodeAdapterAction(raw)) : raw;
     const normalized = normalizeAdapterResult(safe, { evidence });
     return {
       ...normalized,
       action,
       permissionFlow: permissionFlowForResult(safe, action),
+      ...(observation ? { observationV1: observation.observationV1, observationUnavailable: observation.observationUnavailable, outputPublication: observation.outputPublication, modelImageSupport: observation.modelImageSupport } : {}),
     };
   }
 
@@ -533,7 +536,7 @@ export function normalizeParams(params: unknown): ComputerUseParams {
   if (Array.isArray(record.keys)) {
     assertMaxBytes(record.keys.join(","), "keys", MAX_ARG_BYTES);
   }
-  if (record.coords && !/^\d{1,5},\d{1,5}$/.test((record.coords as string).trim())) {
+  if (record.coords !== undefined && (!/^-?\d{1,10},-?\d{1,10}$/.test(record.coords as string) || (record.coords as string).split(",").some(n => Number(n) < -2147483648 || Number(n) > 2147483647))) {
     throw new ToolInputError("coords must be in x,y form, for example 120,240.");
   }
   const normalized = record as ComputerUseParams;
@@ -851,9 +854,9 @@ function adapterSetupGuide(adapterBin: string): unknown {
 }
 
 
-function jsonResult(details: ToolResult["details"]): ToolResult {
+function jsonResult(details: ToolResult["details"], images: ObservationImage[] = []): ToolResult {
   return {
-    content: [{ type: "text", text: JSON.stringify(details, null, 2) }],
+    content: [{ type: "text", text: JSON.stringify(details, null, 2) }, ...images],
     details,
   };
 }

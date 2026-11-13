@@ -794,3 +794,16 @@ fn undeclared_capture_modes_never_invoke_or_broaden_a_helper() {
         assert!(!path.exists());
     }
 }
+
+#[test]
+fn x11_signed_coordinates_follow_explicit_option_boundary() {
+    let f = Fixture::new();
+    f.tool("xdotool", "printf '%s\\n' \"$@\" > \"$FIXTURE_LOG\"");
+    let result =
+        f.run(json!({"platform":"x11","args":["click","--coords","-1920,-80","--confirm"]}));
+    assert_eq!(result["ok"], true);
+    assert_eq!(
+        f.log(),
+        "mousemove\n--sync\n--\n-1920\n-80\nclick\n--repeat\n1\n1\n"
+    );
+}

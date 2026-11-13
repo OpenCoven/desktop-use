@@ -1,3 +1,4 @@
+import { createImageFixture, inspectProviderImage } from "./gateway-image-fixture.mjs";
 import { COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME } from "../src/tool-names.ts";
 // Real pinned gateway + local deterministic model transport; no live provider or desktop input.
 import assert from "node:assert/strict";
@@ -5,7 +6,7 @@ import { createServer, request as httpRequest } from "node:http";
 import { createRequire } from "node:module";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID, randomBytes } from "node:crypto";
-import { mkdir, readFile, writeFile, open, symlink, access, rename, realpath } from "node:fs/promises";
+import { mkdir, readFile, writeFile, open, symlink, access, rename, realpath, rm } from "node:fs/promises";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -43,6 +44,7 @@ const cases = new Map();
 const requests = [];
 const modelErrors = [];
 const modelSchemas = {};
+const imageFixture = await createImageFixture(repo, root);
 const canonicalActions = ["health", "stop", "doctor", "inspect", "screenshot", "click", "type-text", "keypress", "scroll", "focus", "shell", "file-list", "file-read", "file-write", "clipboard-read", "clipboard-write", "browser-open", "app-launch"];
 const legacyActions = { permissions: "doctor", see: "inspect", capture: "screenshot", type: "type-text", press: "keypress" };
 const profileActions = {
@@ -72,6 +74,7 @@ const model = createServer(async (req, res) => {
     modelSchemas[definition.name] = definition.parameters;
     await save("model-tool-schemas.json", modelSchemas);
     const finished = messages.slice(userIndex + 1).some(m => m.role === "tool");
+    if (finished && plan.imageKind) await save(`provider-image-${plan.imageKind}.json`, await inspectProviderImage(body, imageFixture.fixtures[plan.imageKind]));
     // The host can run a batch in parallel: execute Stop on the next provider
     // response so it cannot cancel the observations being qualified alongside it.
     const stopAfterBatch = plan.stopAfterBatch && finished && !plan.stopSent;
@@ -126,7 +129,7 @@ const config = {
   skills: { allowBundled: [] }, tools: { profile: "minimal" },
   models: { mode: "merge", providers: { qualification: {
     baseUrl: `http://127.0.0.1:${model.address().port}/v1`, apiKey: "disposable-qualification-key", api: "openai-completions",
-    models: [{ id: "fixture", name: "Local qualification transport", reasoning: false, input: ["text"],
+    models: [{ id: "fixture", name: "Local qualification transport", reasoning: false, input: ["text", "image"],
       contextWindow: 65536, maxTokens: 1024, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
   } } },
   agents: {
@@ -143,13 +146,13 @@ const log = await open(join(root, "console.log"), "w", 0o600);
 const env = Object.fromEntries(["PATH", "TMPDIR", "LANG", "USER"].filter(k => process.env[k]).map(k => [k, process.env[k]]));
 const unavailableAdapter = join(root, "deliberately-unavailable-desktop-adapter");
 await assert.rejects(access(unavailableAdapter), { code: "ENOENT" });
-Object.assign(env, { OPENCLAW_STATE_DIR: join(root, "state"), OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_HOME: join(root, "home"), OPENCLAW_PLUGIN_LOAD_PROFILE: "1", OPENCLAW_LIVE_GATEWAY: "1", OPENCLAW_LIVE_GATEWAY_PROVIDERS: "qualification", COVEN_DESKTOP_USE_BIN: unavailableAdapter });
+Object.assign(env, { OPENCLAW_STATE_DIR: join(root, "state"), OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_HOME: join(root, "home"), OPENCLAW_PLUGIN_LOAD_PROFILE: "1", OPENCLAW_LIVE_GATEWAY: "1", OPENCLAW_LIVE_GATEWAY_PROVIDERS: "qualification", COVEN_DESKTOP_USE_BIN: imageFixture.adapter });
 await save("action-permissions.json", { profile, trustedConfig: permissionConfigs[profile], expectedActions: profileActions, expectedAliases: visibleAliases });
-await save("adapter-fixture.json", { mode: "deliberately-unavailable", graphicalEffects: false });
+await save("adapter-fixture.json", { mode: "synthetic-capture-only-when-harness-enabled", nativePlatform: process.platform, realRustBinary: imageFixture.binary, nonCaptureUnavailable: true, graphicalEffects: false, liveProvider: false });
 // Refuse to start a gateway if this package would escape the explicit state root.
 // Verify byte-identical source, then use the checkout's installed SDK peer for a
 // dry resolver call with no audit write or gateway/profile initialization.
-for (const file of ["index.ts", "openclaw.plugin.json", "src/computer-use-audit.ts", "src/computer-use-agent.ts", "src/tool-names.ts", "src/action-permissions.ts", "src/computer-use-actions.ts", "src/computer-use-policy.ts", "src/plugin-tool.ts"]) {
+for (const file of ["index.ts", "openclaw.plugin.json", "src/computer-use-audit.ts", "src/computer-use-agent.ts", "src/tool-names.ts", "src/action-permissions.ts", "src/computer-use-actions.ts", "src/computer-use-policy.ts", "src/plugin-tool.ts", "src/observation.ts", "src/file-actions.ts", "contracts/v1/observation.schema.json"]) {
   assert.deepEqual(await readFile(join(repo, file)), await readFile(join(pluginRoot, file)), `Packed source differs: ${file}`);
 }
 const auditProbe = spawnSync(process.execPath, ["--import", createRequire(join(repo, "package.json")).resolve("tsx"), "--input-type=module", "-e",
@@ -231,7 +234,7 @@ try {
     const timing = {};
     let modelRequested;
     const modelReady = new Promise(resolve => modelRequested = resolve);
-    cases.set(name, { args, tool, calls: options.calls, stopAfterBatch: options.stopAfterBatch, onModelRequest: () => { timing.modelRequestedMs = Date.now() - startedAt; modelRequested(); } });
+    cases.set(name, { args, tool, calls: options.calls, stopAfterBatch: options.stopAfterBatch, imageKind: options.imageKind, onModelRequest: () => { timing.modelRequestedMs = Date.now() - startedAt; modelRequested(); } });
     const start = events.length;
     const accepted = await rpc("agent", { message: `QUALIFICATION_CASE:${name}`, agentId: sessionKey.split(":")[1], sessionKey, idempotencyKey: randomUUID(), deliver: false, timeout: 420 });
     timing.acceptedMs = Date.now() - startedAt;
@@ -266,6 +269,17 @@ try {
     return JSON.parse(text);
   };
   const noFile = async path => assert.rejects(access(path), { code: "ENOENT" });
+  if (profileActions.includes("screenshot")) {
+    await writeFile(imageFixture.marker, "synthetic-only", { mode: 0o600 });
+    try {
+      for (const kind of ["png", "jpg"]) {
+        const image = await runCase(`synthetic-image-${kind}`, { action: "screenshot", mode: "screen", format: kind }, "none", session, COMPUTER_USE_TOOL_NAME, { imageKind: kind });
+        assert.equal(toolResult(image.history).status, "success");
+        assert.equal(image.events.some(e => e.event === "plugin.approval.requested"), false, "Default private staging adds no approval");
+      }
+    } finally { await rm(imageFixture.marker, { force: true }); }
+  }
+
   if (profile === "full") {
     const initial = await runCase("initial-stop", { action: "stop" }, "none");
     assert.equal(toolResult(initial.history).status, "success");
