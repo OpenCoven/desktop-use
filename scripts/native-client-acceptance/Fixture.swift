@@ -15,11 +15,16 @@ final class FixtureView: NSView, NSTextFieldDelegate {
         ("SE", NSRect(x: 620, y: 448, width: 16, height: 16), [225, 235, 250], NSPoint(x: 592, y: 445)),
     ]
     let stateURL: URL
+    let controlTimeline: FixtureControlTimeline?
+    private lazy var stateWriter = FixtureStateWriter(schedule: { callback in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.016) { callback() }
+    }, write: { [weak self] in self?.writeState() })
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
 
-    init(stateURL: URL) {
+    init(stateURL: URL, observeControls: Bool = false) {
         self.stateURL = stateURL
+        self.controlTimeline = observeControls ? FixtureControlTimeline() : nil
         super.init(frame: NSRect(x: 0, y: 0, width: 640, height: 480))
         status.frame = NSRect(x: 190, y: 45, width: 420, height: 70)
         status.textColor = .white
@@ -42,6 +47,7 @@ final class FixtureView: NSView, NSTextFieldDelegate {
         NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: scroll.contentView, queue: .main) { [weak self] _ in
             guard let self else { return }
             self.scrollOffset = Int(self.scroll.contentView.bounds.origin.y)
+            self.recordControl(.scroll)
             self.persist()
         }
         addSubview(scroll)
@@ -70,16 +76,35 @@ final class FixtureView: NSView, NSTextFieldDelegate {
             needsDisplay = true
         }
         window?.makeFirstResponder(self)
+        recordControl(.click)
         persist()
     }
     override func keyDown(with event: NSEvent) {
         keyEvents += 1
+        recordControl(.key)
         persist()
     }
-    func controlTextDidChange(_ notification: Notification) { persist() }
+    func controlTextDidChange(_ notification: Notification) {
+        recordControl(.text)
+        persist()
+    }
+    private func recordControl(_ kind: FixtureControlTimeline.Kind) {
+        controlTimeline?.record(kind, textUtf16Length: field.stringValue.utf16.count, scrollOffset: scrollOffset, keyCount: keyEvents, clickCount: clicks)
+    }
     func persist() {
         status.stringValue = "Clicks: \(clicks) | Keys: \(keyEvents)\nInput: \(field.stringValue) | Scroll: \(scrollOffset)"
+        if controlTimeline != nil { stateWriter.request() } else { writeState() }
+    }
+    func flushPendingState() {
+        if controlTimeline != nil { stateWriter.flushPending() }
+    }
+    private func writeState() {
         var state: [String: Any] = ["ready": true, "pid": ProcessInfo.processInfo.processIdentifier, "clicks": clicks, "keys": keyEvents, "text": field.stringValue, "scrollOffset": scrollOffset, "fixtureSize": [640, 480], "targetRect": [40, 40, 120, 80], "windowNumber": window?.windowNumber ?? 0]
+        if let timeline = controlTimeline,
+           let encoded = try? JSONEncoder().encode(timeline.snapshot()),
+           let observation = try? JSONSerialization.jsonObject(with: encoded) {
+            state["controlObservationV1"] = observation
+        }
         state["landmarks"] = landmarks.map { marker in
             ["name": marker.name, "rect": [marker.rect.minX, marker.rect.minY, marker.rect.width, marker.rect.height], "rgb": marker.rgb] as [String: Any]
         }
@@ -110,7 +135,7 @@ final class FixtureDelegate: NSObject, NSApplicationDelegate {
         window = NSWindow(contentRect: NSRect(x: 120, y: 180, width: 640, height: 480), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "Desktop Use Disposable Acceptance"
         window.isReleasedWhenClosed = false
-        view = FixtureView(stateURL: stateURL)
+        view = FixtureView(stateURL: stateURL, observeControls: config["observeControls"] == "true")
         window.contentView = view
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -118,11 +143,17 @@ final class FixtureDelegate: NSObject, NSApplicationDelegate {
         view.persist()
         Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in self?.view.persist() }
     }
+    func applicationWillTerminate(_ notification: Notification) { view?.flushPendingState() }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }
 
-let app = NSApplication.shared
-let delegate = FixtureDelegate()
-app.delegate = delegate
-app.setActivationPolicy(.regular)
-app.run()
+@main
+enum FixtureApplication {
+    static func main() {
+        let app = NSApplication.shared
+        let delegate = FixtureDelegate()
+        app.delegate = delegate
+        app.setActivationPolicy(.regular)
+        withExtendedLifetime(delegate) { app.run() }
+    }
+}
