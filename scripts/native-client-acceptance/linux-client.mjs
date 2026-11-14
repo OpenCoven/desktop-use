@@ -1,4 +1,4 @@
-// Opt-in actual X11/Wayland client probe, only inside the owned graphics container.
+// Opt-in actual X11 client probe, only inside the owned graphics container.
 import assert from 'node:assert/strict';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
@@ -7,13 +7,14 @@ import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { proveTextEffect, proveScrollEffect } from './linux-control-proof.mjs';
+import { captureX11ScopeSnapshot, proveCaptureScope, proveImageFormat } from './linux-scope-proof.mjs';
 import { createDesktopClient, resolveActionPermissions } from '@opencoven/openclaw-desktop-use/sdk';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 assert.equal(process.platform, 'linux');
 assert.equal(process.env.NATIVE_OWNED_DISPOSABLE_DISPLAY, 'yes');
 const root = '/owned';
-const adapter = '/owned/source/target/debug/coven-desktop-use';
+const adapter = process.env.NATIVE_ACCEPTANCE_ADAPTER || '/owned/source/target/debug/coven-desktop-use';
 const statePath = '/owned/fixture-client-state.json';
 const state = async () => JSON.parse(await readFile(statePath));
 const require = createRequire(import.meta.url);
@@ -54,20 +55,24 @@ for (const surface of ['sdk', 'mcp-modern', 'mcp-legacy']) {
     const health = await call({ action: 'health' }); assert.equal(health.details.capabilitiesV1.schemaVersion, 1);
     await call({ action: 'focus', windowTitle: 'DesktopuseInstalledClient' });
     let decodedPoint, controlPoints;
-    for (const format of ['png', 'jpg']) {
-      const capture = await call({ action: 'screenshot', mode: 'screen', format });
+    for (const mode of ['screen', 'frontmost']) for (const format of ['png', 'jpg']) {
+      const beforeCapture = await captureX11ScopeSnapshot(statePath);
+      const capture = await call({ action: 'screenshot', mode, format }, `${mode}-${format}`);
+      const afterCapture = await captureX11ScopeSnapshot(statePath);
       const images = capture.content.filter(c => c.type === 'image'); assert.equal(images.length, 1);
       const bytes = Buffer.from(images[0].data, 'base64'), receipt = capture.details.observationV1;
       assert.equal(createHash('sha256').update(bytes).digest('hex'), receipt.primaryImage.sha256);
       assert.equal(bytes.length, receipt.primaryImage.byteLength);
       assert.equal(receipt.geometry.state, 'available');
-      const file = join(root, `${surface}-actual.${format}`); await writeFile(file, bytes, { mode: 0o600 });
+      const file = join(root, `${surface}-${mode}-actual.${format}`); await writeFile(file, bytes, { mode: 0o600 });
       const decoded = spawnSync('python3', ['/owned/linux-image-proof.py', file, statePath, JSON.stringify(receipt)], { encoding: 'utf8', timeout: 20_000 });
       assert.equal(decoded.status, 0, decoded.stderr);
       const pixelProof = JSON.parse(decoded.stdout);
-      if (format === 'png') { decodedPoint = pixelProof.desktopPoint; controlPoints = pixelProof.controlDesktopPoints; }
+      const formatProof = proveImageFormat({requestedFormat:format,imageMimeType:images[0].mimeType,receiptMimeType:receipt.primaryImage.mimeType,decodedMimeType:pixelProof.decodedMimeType});
+      const scopeProof = proveCaptureScope({ mode, before:beforeCapture, after:afterCapture, receipt, fixture:await state(), decodedDimensions:pixelProof.decodedDimensions });
+      if (format === 'png' && mode === 'frontmost') { decodedPoint = pixelProof.desktopPoint; controlPoints = pixelProof.controlDesktopPoints; }
       assert.equal(pixelProof.landmarks.length, 4);
-      cases.push({ action: 'screenshot', mimeType: images[0].mimeType, byteLength: bytes.length, sha256: receipt.primaryImage.sha256, dimensions: receipt.primaryImage.sourceDimensions, geometry: receipt.geometry, pixelProof });
+      cases.push({ action: 'screenshot', mode, requestedScope:receipt.requestedScope, actualScope:receipt.actualScope, mimeType: images[0].mimeType, byteLength: bytes.length, sha256: receipt.primaryImage.sha256, dimensions: receipt.primaryImage.sourceDimensions, geometry: receipt.geometry, pixelProof, scopeProof, formatProof });
     }
     const before = await state();
     assert.ok(decodedPoint);

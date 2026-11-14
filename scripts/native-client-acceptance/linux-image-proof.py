@@ -5,6 +5,14 @@ import sys
 from pathlib import Path
 
 
+def image_header_mime(header):
+    if header.startswith(b'\x89PNG\r\n\x1a\n'):
+        return 'image/png'
+    if header.startswith(b'\xff\xd8\xff'):
+        return 'image/jpeg'
+    raise AssertionError('decoded image must also carry a recognized PNG/JPEG header')
+
+
 def prove_landmarks(fixture, receipt, image_width, image_height, sample_pixel, tolerance):
     assert receipt['geometry']['state'] == 'available'
     landmark_proofs = []
@@ -36,6 +44,8 @@ def main():
     gi.require_version('GdkPixbuf', '2.0')
     from gi.repository import GdkPixbuf
     picture = GdkPixbuf.Pixbuf.new_from_file(sys.argv[1])
+    with Path(sys.argv[1]).open('rb') as image_file:
+        decoded_mime_type = image_header_mime(image_file.read(8))
     fixture = json.loads(Path(sys.argv[2]).read_text())
     receipt = json.loads(sys.argv[3])
     expected = (224, 48, 64) if not fixture['clicks'] else (32, 192, 96)
@@ -65,7 +75,7 @@ def main():
     offset = resized_point[1]*resized.get_rowstride()+resized_point[0]*resized.get_n_channels()
     sample = list(resized.get_pixels()[offset:offset+3])
     assert max(abs(a-b) for a,b in zip(sample,expected)) <= max(tolerance,1)
-    print(json.dumps({'imagePoint':point,'desktopPoint':mapped,'independentExpectedPoint':expected_point,'targetBounds':box,'colorTolerance':tolerance,'landmarks':landmark_proofs,'controlDesktopPoints':control_points,'actualReceivedPixelsVerified':True,'clientResize':{'dimensions':[640,480],'normalizedPoint':normalized,'sample':sample,'mappingPreserved':True}}))
+    print(json.dumps({'decodedMimeType':decoded_mime_type,'decodedDimensions':{'width':picture.get_width(),'height':picture.get_height()},'imagePoint':point,'desktopPoint':mapped,'independentExpectedPoint':expected_point,'targetBounds':box,'colorTolerance':tolerance,'landmarks':landmark_proofs,'controlDesktopPoints':control_points,'actualReceivedPixelsVerified':True,'clientResize':{'dimensions':[640,480],'normalizedPoint':normalized,'sample':sample,'mappingPreserved':True}}))
 
 
 if __name__ == '__main__':

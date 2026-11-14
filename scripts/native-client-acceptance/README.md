@@ -83,6 +83,8 @@ For cancellation timing diagnostics, the fixture's optional `--observe-controls`
 
 ## Owned virtual Linux X11
 
+The installed Linux client requests both full-screen and frontmost PNG/JPEG captures through the SDK and both MCP revisions. Each capture is bracketed by independent read-only X11 root/window geometry, focus, PID and process-birth queries. The verifier requires stable owned-window identity and exact decoded dimensions, scope metadata and complete image-to-desktop rectangles; a broader display image cannot satisfy a frontmost request. Four landmarks and resized coordinates remain checked before input. These assertions need a new native execution receipt; pure tests and earlier screen-only/provider receipts do not establish the new extent proof.
+
 Stage a minimal context instead of sending a checkout or private state to Docker. The pinned images describe this test environment, not the supported native release matrix. Start the resulting container without host mounts, published ports, devices or networking; the isolated Xvfb display is not a physical desktop.
 
 ```sh

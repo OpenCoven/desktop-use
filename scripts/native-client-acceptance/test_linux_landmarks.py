@@ -5,6 +5,12 @@ spec=importlib.util.spec_from_file_location('linux_image_proof',Path(__file__).w
 proof=importlib.util.module_from_spec(spec);spec.loader.exec_module(proof)
 
 class LandmarkProofTests(unittest.TestCase):
+ def test_actual_image_header_identifies_png_and_jpeg(self):
+  self.assertEqual(proof.image_header_mime(b'\x89PNG\r\n\x1a\n'),'image/png')
+  self.assertEqual(proof.image_header_mime(b'\xff\xd8\xff\xe0'),'image/jpeg')
+ def test_truncated_or_unrecognized_image_header_fails(self):
+  for header in [b'',b'\x89PNG',b'\xff\xd8',b'GIF89a']:
+   with self.assertRaises(AssertionError):proof.image_header_mime(header)
  def example(self):
   fixture={'origin':[-100,20],'size':[640,480],'landmarks':[{'name':name,'rect':[x,y,16,16],'rgb':list(rgb)} for name,x,y,rgb in [('NW',4,4,(40,210,220)),('NE',620,4,(200,60,210)),('SW',4,448,(250,145,30)),('SE',620,448,(225,235,250))]],'controls':{'textEntry':[170,100,430,34],'scrollRegion':[170,180,430,230]}}
   receipt={'geometry':{'state':'available','regions':[{'imageRect':{'x':0,'y':0,'width':1280,'height':960},'desktopRect':{'x':-100,'y':20,'width':640,'height':480}}]}}
