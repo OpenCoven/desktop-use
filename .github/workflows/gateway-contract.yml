@@ -5,6 +5,7 @@ on:
     paths:
       - '.github/workflows/gateway-contract.yml'
       - 'scripts/qualify-gateway.mjs'
+      - 'scripts/gateway-action-batches*.mjs'
       - 'index.ts'
       - 'src/**'
       - 'agents/**'
