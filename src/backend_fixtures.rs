@@ -16,6 +16,11 @@ impl Fixture {
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("input-image"),
+            include_bytes!("../contracts/v1/fixtures/images/valid.png"),
+        )
+        .unwrap();
         Self { root }
     }
     pub fn tool(&self, name: &str, script: &str) {
@@ -36,7 +41,8 @@ impl Fixture {
             .env("FIXTURE_CONFIG", config.to_string())
             .env("FIXTURE_OUTPUT", self.root.join("result.json"))
             .env("FIXTURE_READY", self.root.join("ready"))
-            .env("FIXTURE_LOG", self.root.join("argv.log"));
+            .env("FIXTURE_LOG", self.root.join("argv.log"))
+            .env("FIXTURE_IMAGE", self.root.join("input-image"));
         for key in [
             "SWAYSOCK",
             "HYPRLAND_INSTANCE_SIGNATURE",
@@ -354,7 +360,7 @@ fn macos_type_passes_flag_like_text_as_literal_positional_input() {
 fn ext_capture_protocol_is_unverified_helper_compatibility_instead_of_falsely_unsupported() {
     let f = Fixture::new();
     f.tool("wayland-info", "printf '%s' \"interface: 'ext_image_copy_capture_manager_v1' interface: 'ext_output_image_capture_source_manager_v1'\"");
-    f.tool("grim", r#"printf '%s\n' "$@" >> "$FIXTURE_LOG"; for arg in "$@"; do target="$arg"; done; printf fixture-image > "$target""#);
+    f.tool("grim", r#"printf '%s\n' "$@" >> "$FIXTURE_LOG"; for arg in "$@"; do target="$arg"; done; /bin/cp "$FIXTURE_IMAGE" "$target""#);
     let result = f.run(json!({"platform":"wayland","args":["doctor"]}));
     assert_eq!(result["capabilities"]["screenshot"]["state"], "unverified");
     let result = f.run(json!({"platform":"wayland","args":["screenshot","--mode","screen","--path",f.root.join("capture.png").to_string_lossy()]}));
@@ -389,7 +395,7 @@ fn screenshot_exit_zero_without_an_artifact_is_not_success() {
     assert_eq!(result["code"], "CAPTURE_MISSING");
     f.tool(
         "scrot",
-        r#"for arg in "$@"; do target="$arg"; done; printf fixture-image > "$target""#,
+        r#"for arg in "$@"; do target="$arg"; done; /bin/cp "$FIXTURE_IMAGE" "$target""#,
     );
     let result = f.run(json!({"platform":"x11","args":["screenshot","--path",path]}));
     assert_eq!(result["ok"], true);
@@ -490,11 +496,20 @@ fn ydotool_only_input_skips_irrelevant_wayland_registry_probe() {
 #[test]
 fn wayland_capture_encoding_follows_requested_format_not_destination_suffix() {
     let f = Fixture::new();
-    f.tool("grim",r#"printf '%s\n' "$@" >> "$FIXTURE_LOG"; for arg in "$@"; do target="$arg"; done; printf image > "$target""#);
+    f.tool("grim",r#"printf '%s\n' "$@" >> "$FIXTURE_LOG"; for arg in "$@"; do target="$arg"; done; /bin/cp "$FIXTURE_IMAGE" "$target""#);
     for (format, name, encoding) in [
         ("png", "capture.jpg", "png"),
         ("jpg", "capture.png", "jpeg"),
     ] {
+        fs::write(
+            f.root.join("input-image"),
+            if format == "png" {
+                include_bytes!("../contracts/v1/fixtures/images/valid.png").as_slice()
+            } else {
+                include_bytes!("../contracts/v1/fixtures/images/valid.jpg").as_slice()
+            },
+        )
+        .unwrap();
         fs::write(f.root.join("argv.log"), "").unwrap();
         let result=f.run(json!({"platform":"wayland","args":["screenshot","--format",format,"--path",f.root.join(name).to_string_lossy()]}));
         assert_eq!(result["ok"], true);
@@ -516,4 +531,342 @@ fn timeout_flag_without_value_is_rejected_before_input_dispatch() {
     assert_eq!(result["ok"], false);
     assert!(result["error"].as_str().unwrap().contains("--timeout-ms"));
     assert!(f.log().is_empty());
+}
+
+// Removing owned full-image validation must make these tests fail: helpers here
+// really write the supplied fixture to the exact argv destination.
+fn capture_fixture(f: &Fixture, helper: &str, bytes: &[u8]) {
+    fs::write(f.root.join("input-image"), bytes).unwrap();
+    f.tool(helper, r#"printf '%s\n' "$@" >> "$FIXTURE_LOG"
+previous=; for arg in "$@"; do if [ "$previous" = --path ]; then target="$arg"; fi; previous="$arg"; done
+if [ -z "$target" ]; then for arg in "$@"; do target="$arg"; done; fi
+/bin/cp "$FIXTURE_IMAGE" "$target"
+printf '{"success":true,"data":{"path":"/unrelated/private.png"}}'"#);
+}
+
+#[test]
+fn validated_owned_png_and_jpeg_receipts_ignore_destination_suffix() {
+    for (format, bytes, mime) in [
+        (
+            "png",
+            include_bytes!("../contracts/v1/fixtures/images/valid.png").as_slice(),
+            "image/png",
+        ),
+        (
+            "jpg",
+            include_bytes!("../contracts/v1/fixtures/images/valid.jpg").as_slice(),
+            "image/jpeg",
+        ),
+    ] {
+        for (platform, helper) in [
+            ("x11", "scrot"),
+            ("x11", "maim"),
+            ("wayland", "grim"),
+            ("macos", "peekaboo"),
+        ] {
+            let f = Fixture::new();
+            capture_fixture(&f, helper, bytes);
+            let path = f.root.join("destination.wrong-extension");
+            let result = f.run(json!({"platform":platform,"args":["screenshot","--mode","screen","--format",format,"--path",path]}));
+            assert_eq!(result["ok"], true, "{platform} {format}: {result}");
+            let receipt = &result["observationV1"];
+            assert_eq!(receipt["schemaVersion"], 1, "{result}");
+            assert_eq!(receipt["primaryImage"]["mimeType"], mime);
+            assert_eq!(receipt["primaryImage"]["byteLength"], bytes.len());
+            assert_eq!(
+                receipt["primaryImage"]["sourceDimensions"],
+                json!({"width":32,"height":24})
+            );
+            assert_eq!(receipt["geometry"]["state"], "unavailable");
+            assert_eq!(receipt["provider"]["version"], Value::Null);
+            assert_eq!(fs::read(path).unwrap(), bytes);
+        }
+    }
+}
+
+#[test]
+fn malformed_or_wrong_encoding_capture_never_publishes_a_receipt_or_destination() {
+    let png = include_bytes!("../contracts/v1/fixtures/images/valid.png");
+    let jpg = include_bytes!("../contracts/v1/fixtures/images/valid.jpg");
+    for (format, bytes) in [
+        ("png", b"not-an-image".as_slice()),
+        ("png", b"".as_slice()),
+        ("png", &png[..33]),
+        ("png", &png[..png.len() - 8]),
+        ("png", jpg.as_slice()),
+        ("jpg", png.as_slice()),
+        (
+            "jpg",
+            include_bytes!("../contracts/v1/fixtures/images/jpeg-missing-eoi.jpg").as_slice(),
+        ),
+        (
+            "jpg",
+            include_bytes!("../contracts/v1/fixtures/images/jpeg-truncated-entropy.jpg").as_slice(),
+        ),
+    ] {
+        for (platform, helper) in [("x11", "scrot"), ("macos", "peekaboo")] {
+            let f = Fixture::new();
+            capture_fixture(&f, helper, bytes);
+            let path = f.root.join("capture.png");
+            fs::write(&path, "old-image").unwrap();
+            let result = f.run(json!({"platform":platform,"args":["screenshot","--mode","screen","--format",format,"--path",path]}));
+            assert_eq!(result["ok"], false, "{format} {platform}: {result}");
+            assert!(result.get("observationV1").is_none());
+            assert_eq!(fs::read(path).unwrap(), b"old-image");
+            assert!(!result.to_string().contains("unrelated"));
+        }
+    }
+}
+
+#[test]
+fn cancelled_capture_keeps_previous_destination_and_cleans_staging() {
+    for (platform, helper) in [("x11", "scrot"), ("macos", "peekaboo")] {
+        let f = Fixture::new();
+        fs::write(
+            f.root.join("input-image"),
+            include_bytes!("../contracts/v1/fixtures/images/valid.png"),
+        )
+        .unwrap();
+        f.tool(helper, r#"printf '%s\n' "$@" >> "$FIXTURE_LOG"
+previous=; for arg in "$@"; do if [ "$previous" = --path ]; then target="$arg"; fi; previous="$arg"; done
+if [ -z "$target" ]; then for arg in "$@"; do target="$arg"; done; fi
+/bin/cp "$FIXTURE_IMAGE" "$target"
+/bin/sleep 5
+printf '{"success":true}'"#);
+        let path = f.root.join("capture.png");
+        fs::write(&path, "old-image").unwrap();
+        let result = f.run(json!({"platform":platform,"args":["screenshot","--mode","screen","--path",path],"cancelAfterMs":50}));
+        assert_eq!(result["code"], "CANCELLED");
+        assert!(result.get("observationV1").is_none());
+        assert_eq!(fs::read(path).unwrap(), b"old-image");
+        assert!(!fs::read_dir(&f.root).unwrap().any(|e| e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".desktopuse-capture-")));
+    }
+}
+
+#[test]
+fn capture_bounds_and_unsafe_files_fail_before_publish() {
+    use std::os::unix::fs::symlink;
+    let png = include_bytes!("../contracts/v1/fixtures/images/valid.png");
+    for kind in [
+        "encoded-limit",
+        "dimension-limit",
+        "pixel-limit",
+        "symlink",
+        "fifo",
+        "directory",
+    ] {
+        let f = Fixture::new();
+        let mut bytes = png.to_vec();
+        if kind == "encoded-limit" {
+            bytes.resize(8 * 1024 * 1024 + 1, 0);
+        }
+        if kind == "dimension-limit" {
+            bytes[16..20].copy_from_slice(&16385u32.to_be_bytes());
+        }
+        if kind == "pixel-limit" {
+            bytes[16..20].copy_from_slice(&8192u32.to_be_bytes());
+            bytes[20..24].copy_from_slice(&8192u32.to_be_bytes());
+        }
+        capture_fixture(&f, "scrot", &bytes);
+        if kind == "symlink" {
+            symlink(f.root.join("input-image"), f.root.join("image-link")).unwrap();
+            f.tool(
+                "scrot",
+                r#"for arg in "$@"; do target="$arg"; done; /bin/ln -s "$FIXTURE_IMAGE" "$target""#,
+            );
+        }
+        if kind == "fifo" {
+            f.tool(
+                "scrot",
+                r#"for arg in "$@"; do target="$arg"; done; /usr/bin/mkfifo "$target""#,
+            );
+        }
+        if kind == "directory" {
+            f.tool(
+                "scrot",
+                r#"for arg in "$@"; do target="$arg"; done; /bin/mkdir "$target""#,
+            );
+        }
+        let path = f.root.join("capture.png");
+        let result = f.run(json!({"platform":"x11","args":["screenshot","--path",path]}));
+        assert_eq!(result["ok"], false, "{kind}: {result}");
+        assert_eq!(
+            result["code"],
+            if kind.ends_with("limit") {
+                "IMAGE_LIMIT"
+            } else {
+                "CAPTURE_MISSING"
+            },
+            "{kind}: {result}"
+        );
+        assert!(!path.exists());
+    }
+}
+
+#[test]
+fn replacing_owned_path_preserves_option_like_target_values() {
+    let args = vec![
+        "--app".into(),
+        "--path".into(),
+        "--path".into(),
+        "destination".into(),
+    ];
+    assert_eq!(strip_option(&args, "--path"), vec!["--app", "--path"]);
+}
+
+#[test]
+fn macos_inspect_reports_unknown_annotation_and_scope_without_substituting_paths() {
+    for no_annotate in [false, true] {
+        let f = Fixture::new();
+        capture_fixture(
+            &f,
+            "peekaboo",
+            include_bytes!("../contracts/v1/fixtures/images/valid.png"),
+        );
+        let path = f.root.join("inspect.png");
+        let mut args = vec![
+            "inspect".into(),
+            "--path".into(),
+            path.to_string_lossy().into_owned(),
+        ];
+        if no_annotate {
+            args.push("--no-annotate".into());
+        }
+        let result = f.run(json!({"platform":"macos","args":args}));
+        assert_eq!(result["ok"], true, "{result}");
+        let receipt = &result["observationV1"];
+        assert_eq!(receipt["requestedScope"]["mode"], "auto");
+        assert_eq!(
+            receipt["actualScope"],
+            json!({"state":"unavailable","reasonCode":"PROVIDER_SCOPE_UNVERIFIED"})
+        );
+        assert_eq!(
+            receipt["primaryImage"]["annotationKind"],
+            if no_annotate { "raw" } else { "unverified" }
+        );
+        assert_eq!(
+            receipt["requestedScope"]["annotationRequested"],
+            !no_annotate
+        );
+        assert_eq!(result["path"], path.to_string_lossy().as_ref());
+    }
+}
+
+#[test]
+fn macos_stale_destination_and_helper_json_path_are_not_capture_evidence() {
+    let f = Fixture::new();
+    f.tool(
+        "peekaboo",
+        r#"printf '{"success":true,"data":{"path":"/unrelated/private.png"}}'"#,
+    );
+    let path = f.root.join("old.png");
+    fs::write(
+        &path,
+        include_bytes!("../contracts/v1/fixtures/images/valid.png"),
+    )
+    .unwrap();
+    let before = fs::read(&path).unwrap();
+    let result = f.run(json!({"platform":"macos","args":["screenshot","--path",path]}));
+    assert_eq!(result["code"], "CAPTURE_MISSING");
+    assert!(result.get("observationV1").is_none());
+    assert_eq!(fs::read(path).unwrap(), before);
+    assert!(!result.to_string().contains("unrelated"));
+}
+
+#[test]
+fn undeclared_capture_modes_never_invoke_or_broaden_a_helper() {
+    for (platform, helper) in [("macos", "peekaboo"), ("x11", "scrot"), ("wayland", "grim")] {
+        let f = Fixture::new();
+        capture_fixture(
+            &f,
+            helper,
+            include_bytes!("../contracts/v1/fixtures/images/valid.png"),
+        );
+        let path = f.root.join("capture.png");
+        let result = f.run(json!({"platform":platform,"args":["screenshot","--mode","unknown-mode","--path",path]}));
+        assert_eq!(result["ok"], false, "{result}");
+        assert_eq!(result["supported"], false);
+        assert!(f.log().is_empty());
+        assert!(!path.exists());
+    }
+}
+
+#[test]
+fn x11_coordinates_cannot_wrap_or_silently_clip_to_a_root_edge() {
+    for coords in ["-1920,-80", "32768,80", "1600,80"] {
+        let f = Fixture::new();
+        f.tool("xdotool", r#"if [ "$1" = getdisplaygeometry ]; then printf '1600 900'; else printf input > "$FIXTURE_LOG"; fi"#);
+        let result =
+            f.run(json!({"platform":"x11","args":["click","--coords",coords,"--confirm"]}));
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["code"], "COORDINATES_OUT_OF_RANGE");
+        assert!(f.log().is_empty());
+    }
+}
+
+#[test]
+fn wayland_pointer_without_versioned_geometry_never_sends_input() {
+    let f = Fixture::new();
+    f.tool("ydotool", "printf input > \"$FIXTURE_LOG\"");
+    let result =
+        f.run(json!({"platform":"wayland","args":["click","--coords","-720,60","--confirm"]}));
+    assert_eq!(result["ok"], false);
+    assert_eq!(result["code"], "POINTER_MAPPING_UNVERIFIED");
+    assert!(f.log().is_empty());
+}
+
+// Removing the exact owned-primary rebind must leave these paths pointing at deleted staging.
+#[test]
+fn macos_primary_artifact_paths_follow_committed_capture_without_relabeling_other_files() {
+    for shape in ["raw", "files", "unrelated", "multiple", "missing", "scalar"] {
+        let f = Fixture::new();
+        f.tool("peekaboo", &format!(r#"previous=; for arg in "$@"; do if [ "$previous" = --path ]; then target="$arg"; fi; previous="$arg"; done
+/bin/cp "$FIXTURE_IMAGE" "$target"
+case {} in
+raw) printf '{{"success":true,"data":{{"screenshot_raw":"%s","screenshot_annotated":"%s","ui_map":"%s","analysis":{{"text":"%s"}}}}}}' "$target" "$target" "$target" "$target";;
+files) printf '{{"success":true,"data":{{"files":[{{"path":"%s","item_label":"Display 1 (Index 0)","mime_type":"image/png"}}],"observations":[],"snapshot_id":"fixture"}}}}' "$target";;
+unrelated) printf '{{"success":true,"data":{{"screenshot_raw":"/untrusted/raw.png","files":[{{"path":"/untrusted/other.png"}}]}}}}';;
+multiple) printf '{{"success":true,"data":{{"files":[{{"path":"%s"}},{{"path":"/untrusted/second.png"}}]}}}}' "$target";;
+missing) printf '{{"success":true}}';;
+scalar) printf '{{"success":true,"data":"unrelated data"}}';;
+esac"#, shape));
+        let path = f.root.join("published.png");
+        let result =
+            f.run(json!({"platform":"macos","args":["inspect","--mode","screen","--path",path]}));
+        assert_eq!(result["ok"], true, "{result}");
+        assert_eq!(result["path"], path.to_string_lossy().as_ref());
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            include_bytes!("../contracts/v1/fixtures/images/valid.png")
+        );
+        let data = &result["result"]["data"];
+        match shape {
+            "raw" => {
+                assert_eq!(data["screenshot_raw"], path.to_string_lossy().as_ref());
+                assert_eq!(data["screenshot_annotated"], data["ui_map"]);
+                assert_eq!(data["ui_map"], data["analysis"]["text"]);
+                assert_ne!(data["screenshot_annotated"], data["screenshot_raw"]);
+                assert!(!Path::new(data["screenshot_annotated"].as_str().unwrap()).exists());
+            }
+            "files" => {
+                assert_eq!(data["files"][0]["path"], path.to_string_lossy().as_ref());
+                assert_eq!(data["files"][0]["item_label"], "Display 1 (Index 0)");
+            }
+            "unrelated" => {
+                assert_eq!(data["screenshot_raw"], "/untrusted/raw.png");
+                assert_eq!(data["files"][0]["path"], "/untrusted/other.png");
+            }
+            "multiple" => {
+                assert_ne!(data["files"][0]["path"], path.to_string_lossy().as_ref());
+                assert_eq!(data["files"][1]["path"], "/untrusted/second.png");
+            }
+            "missing" => assert!(result["result"].get("data").is_none()),
+            "scalar" => assert_eq!(data, "unrelated data"),
+            _ => unreachable!(),
+        }
+    }
 }

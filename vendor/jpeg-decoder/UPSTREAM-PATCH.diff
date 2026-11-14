@@ -1,0 +1,54 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 22eadd8..babc91e 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -104,0 +105,4 @@ version = "0.3"
++
++# The upstream crate predates rustc check-cfg; retain its legacy cfg value.
++[lints.rust]
++unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_arch, values("asmjs"))'] }
+diff --git a/src/decoder.rs b/src/decoder.rs
+index b8eb5311a171d49a8fa35782d833363d145c8b2c..69ced21d9a8474157fdf4971bb3ecdf9c819a429 100644
+GIT binary patch
+delta 18
+acmbQUpLxc9<_&MfC*PLf+5A_0{&4_RZwV{_
+
+delta 19
+ZcmbQSpLx!H<_&MfSrmX^^IP%N#{p2C2pRwY
+
+diff --git a/src/huffman.rs b/src/huffman.rs
+index fca57c1..fb3904f 100644
+--- a/src/huffman.rs
++++ b/src/huffman.rs
+@@ -16,0 +17,2 @@ pub struct HuffmanDecoder {
++    // Real entropy bits exclude zero-filled Huffman lookahead after a marker.
++    real_bits: u8,
+@@ -24,0 +27 @@ impl HuffmanDecoder {
++            real_bits: 0,
+@@ -39 +42 @@ impl HuffmanDecoder {
+-            self.consume_bits(size);
++            self.consume_bits(size)?;
+@@ -49 +52 @@ impl HuffmanDecoder {
+-                    self.consume_bits(i + 1);
++                    self.consume_bits(i + 1)?;
+@@ -72 +75 @@ impl HuffmanDecoder {
+-                self.consume_bits(size);
++                self.consume_bits(size)?;
+@@ -87 +90 @@ impl HuffmanDecoder {
+-        self.consume_bits(count);
++        self.consume_bits(count)?;
+@@ -100,0 +104 @@ impl HuffmanDecoder {
++        self.real_bits = 0;
+@@ -116 +120,5 @@ impl HuffmanDecoder {
+-    fn consume_bits(&mut self, count: u8) {
++    fn consume_bits(&mut self, count: u8) -> Result<()> {
++        if count > self.real_bits {
++            return Err(Error::Format("premature end of entropy-coded data".to_owned()));
++        }
++        self.real_bits -= count;
+@@ -120,0 +129 @@ impl HuffmanDecoder {
++        Ok(())
+@@ -154,0 +164,3 @@ impl HuffmanDecoder {
++            if self.marker.is_none() {
++                self.real_bits += 8;
++            }

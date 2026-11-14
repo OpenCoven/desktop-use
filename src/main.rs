@@ -1,6 +1,8 @@
 #[cfg(all(test, unix))]
 mod backend_fixtures;
+mod geometry;
 mod linux_capabilities;
+mod observation;
 mod process;
 use std::cell::Cell;
 use std::env;
@@ -169,8 +171,8 @@ fn detect_linux_session() -> Platform {
 fn run_macos(command: &'static str, args: &[String]) -> String {
     match command {
         "doctor" => run_peekaboo(vec!["permissions".into()], false, true),
-        "inspect" => run_peekaboo(build_inspect_args(args), false, false),
-        "screenshot" => run_peekaboo(build_screenshot_args(args), false, false),
+        "inspect" => macos_capture("inspect", args),
+        "screenshot" => macos_capture("screenshot", args),
         "click" | "type-text" | "keypress" | "scroll" | "focus" if !has_flag(args, "--confirm") => {
             confirmation_required(command)
         }
@@ -874,8 +876,114 @@ fn capture_screenshot(
     format: &str,
     extras: &[(&'static str, String)],
 ) -> String {
+    let actual_mode = match mode {
+        "screen" => Some("screen"),
+        "window" | "frontmost" => Some("frontmost"),
+        _ => None,
+    };
+    capture_transaction(
+        path,
+        mode,
+        actual_mode,
+        format,
+        false,
+        |image_path, scale| match session {
+            LinuxSession::X11 => x11_screenshot(image_path, mode, format, extras),
+            LinuxSession::Wayland => wayland_screenshot(image_path, mode, format, extras, scale),
+        },
+    )
+}
+
+fn macos_capture(command: &str, args: &[String]) -> String {
+    let format = if command == "inspect" {
+        "png".to_string()
+    } else {
+        value(args, "--format").unwrap_or_else(|| "png".into())
+    };
+    if !["png", "jpg"].contains(&format.as_str()) {
+        return capture_failure_json("peekaboo", &observation::Failure::Encoding);
+    }
+    let path = output_path(value(args, "--path"), command, &format);
+    let mode = value(args, "--mode").unwrap_or_else(|| {
+        if command == "inspect" {
+            "auto".into()
+        } else {
+            "frontmost".into()
+        }
+    });
+    // No installed/version-qualified Peekaboo scope/geometry receipt producer is
+    // available. In particular, auto must never assert an actual screen extent.
+    capture_transaction(
+        &path,
+        &mode,
+        None,
+        &format,
+        command == "inspect" && !has_flag(args, "--no-annotate"),
+        |image_path, _scale| {
+            let mut owned_args = strip_option(args, "--path");
+            owned_args.extend(["--path".into(), image_path.into()]);
+            let backend_args = if command == "inspect" {
+                build_inspect_args(&owned_args)
+            } else {
+                build_screenshot_args(&owned_args)
+            };
+            run_peekaboo(backend_args, false, false)
+        },
+    )
+}
+
+fn strip_option(args: &[String], option: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        if args[index] == option {
+            index += 2;
+        } else {
+            result.push(args[index].clone());
+            if takes_value(&args[index]) {
+                index += 1;
+                if let Some(value) = args.get(index) {
+                    result.push(value.clone());
+                }
+            }
+            index += 1;
+        }
+    }
+    result
+}
+
+fn capture_failure_json(backend: &str, error: &observation::Failure) -> String {
+    if let observation::Failure::Process(failure) = error {
+        return process_failure_json(backend, failure);
+    }
+    json_obj(vec![("ok", "false".into()), ("supported", "true".into()), ("backend", json_string(backend)),
+        ("code", json_string(error.code())), ("error", json_string("Capture did not produce a valid bounded owned image. The destination was not changed; image diagnostics were withheld."))])
+}
+
+fn capture_transaction<F>(
+    path: &str,
+    requested_mode: &str,
+    actual_mode: Option<&str>,
+    format: &str,
+    annotation_requested: bool,
+    capture: F,
+) -> String
+where
+    F: FnOnce(&str, Option<f64>) -> String,
+{
     if let Err(error) = process::check(deadline()) {
-        return process_failure_json("linux-capture", &error);
+        return process_failure_json("capture", &error);
+    }
+    if !["auto", "screen", "window", "frontmost"].contains(&requested_mode) {
+        return json_obj(vec![
+            ("ok", "false".into()),
+            ("supported", "false".into()),
+            ("code", json_string("CAPTURE_SCOPE_UNSUPPORTED")),
+            (
+                "error",
+                json_string("The requested capture mode is unsupported. No helper was invoked."),
+            ),
+        ]);
     }
     let target = Path::new(path);
     let parent = target
@@ -890,40 +998,80 @@ fn capture_screenshot(
         builder.mode(0o700);
     }
     if builder.create(&directory).is_err() {
-        return linux_error_json(
-            "Cannot create a private capture staging directory in the destination directory.",
-            None,
-        );
+        return capture_failure_json("capture", &observation::Failure::Missing);
     }
     let staging = CaptureStaging(directory);
-    let extension = if format == "jpg" { "jpg" } else { "png" };
-    let image = staging.0.join(format!("capture.{extension}"));
-    let image_path = image.to_string_lossy();
-    let result = match session {
-        LinuxSession::X11 => x11_screenshot(&image_path, mode, extras),
-        LinuxSession::Wayland => wayland_screenshot(&image_path, mode, format, extras),
-    };
-    let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+    let image = staging.0.join(if format == "jpg" {
+        "capture.jpg"
+    } else {
+        "capture.png"
+    });
+    let geometry_before = geometry::probe(requested_mode);
+    let scale = geometry_before.as_ref().and_then(|s| s.scale);
+    let result = capture(&image.to_string_lossy(), scale);
+    let mut parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
     if parsed["ok"] != true {
         return result;
     }
-    if !std::fs::symlink_metadata(&image).is_ok_and(|m| m.file_type().is_file() && m.len() > 0) {
-        return json_obj(vec![("ok", "false".into()), ("supported", "true".into()), ("backend", json_string("linux")),
-            ("code", json_string("CAPTURE_MISSING")), ("error", json_string("Capture helper did not produce a new nonempty regular image artifact. The destination was not changed."))]);
-    }
-    if let Err(error) = process::check(deadline()) {
-        return process_failure_json("linux-capture", &error);
+    let provider = parsed["backend"].as_str().unwrap_or("unknown").to_owned();
+    let validated = match observation::validate_capture(&image, format, deadline()) {
+        Ok(validated) => validated,
+        Err(error) => return capture_failure_json(&provider, &error),
+    };
+    let mut receipt =
+        validated.receipt(&provider, requested_mode, actual_mode, annotation_requested);
+    geometry::attach(&mut receipt, geometry_before, requested_mode, &parsed);
+    if let Err(error) = validated.check_identity(&image, deadline()) {
+        return capture_failure_json(&provider, &error);
     }
     if std::fs::rename(&image, target).is_err() {
-        return linux_error_json(
-            "Captured artifact could not be atomically published to the destination.",
-            None,
-        );
+        return capture_failure_json(&provider, &observation::Failure::Missing);
     }
-    result
+    // Publication has completed. Do not turn this write into cancellation after
+    // the fact: the caller needs the truthful completed outcome.
+    rebind_peekaboo_primary_path(&mut parsed, &image.to_string_lossy(), path);
+    parsed["path"] = path.into();
+    parsed["observationV1"] = receipt;
+    parsed.to_string()
 }
 
-fn x11_screenshot(path: &str, mode: &str, extras: &[(&'static str, String)]) -> String {
+// Peekaboo 69764083 SeeResult.screenshot_raw / ImageCaptureResult.files identify
+// primary artifacts. Rebind only the exact helper-owned file after commit, never
+// annotations, maps, arbitrary strings or an ambiguous multi-image result.
+fn rebind_peekaboo_primary_path(result: &mut serde_json::Value, source: &str, target: &str) {
+    if result["backend"] != "peekaboo" {
+        return;
+    }
+    let Some(data) = result
+        .get_mut("result")
+        .and_then(|r| r.get_mut("data"))
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+    if data
+        .get("screenshot_raw")
+        .and_then(serde_json::Value::as_str)
+        == Some(source)
+    {
+        data.insert("screenshot_raw".into(), target.into());
+    }
+    if let Some(files) = data
+        .get_mut("files")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        if files.len() == 1 && files[0]["path"].as_str() == Some(source) {
+            files[0]["path"] = target.into();
+        }
+    }
+}
+
+fn x11_screenshot(
+    path: &str,
+    mode: &str,
+    format: &str,
+    extras: &[(&'static str, String)],
+) -> String {
     if resolve_path_binary("scrot").is_some() {
         let mut a: Vec<OsString> = vec!["--overwrite".into()];
         if matches!(mode, "window" | "frontmost") {
@@ -956,7 +1104,14 @@ fn x11_screenshot(path: &str, mode: &str, extras: &[(&'static str, String)]) -> 
             }
             return run_linux_command(
                 "maim",
-                vec!["-i".into(), id.into(), "--".into(), path.into()],
+                vec![
+                    "-f".into(),
+                    format.into(),
+                    "-i".into(),
+                    id.into(),
+                    "--".into(),
+                    path.into(),
+                ],
                 "maim",
                 false,
                 extras,
@@ -970,7 +1125,7 @@ fn x11_screenshot(path: &str, mode: &str, extras: &[(&'static str, String)]) -> 
             );
         }
 
-        let a: Vec<OsString> = vec!["--".into(), path.into()];
+        let a: Vec<OsString> = vec!["-f".into(), format.into(), "--".into(), path.into()];
         return run_linux_command("maim", a, "maim", false, extras);
     }
     missing_tool_json(
@@ -985,6 +1140,7 @@ fn wayland_screenshot(
     mode: &str,
     format: &str,
     extras: &[(&'static str, String)],
+    scale: Option<f64>,
 ) -> String {
     if matches!(mode, "window" | "frontmost") {
         return linux_capabilities::unsupported("Targeted Wayland capture is unsupported; request mode=screen explicitly. No screenshot was taken.");
@@ -1000,13 +1156,12 @@ fn wayland_screenshot(
         );
     }
     let encoding = if format == "jpg" { "jpeg" } else { "png" };
-    run_linux_command(
-        "grim",
-        vec!["-t".into(), encoding.into(), "--".into(), path.into()],
-        "grim",
-        false,
-        extras,
-    )
+    let mut capture_args: Vec<OsString> = vec!["-t".into(), encoding.into()];
+    if let Some(scale) = scale {
+        capture_args.extend(["-s".into(), scale.to_string().into()]);
+    }
+    capture_args.extend(["--".into(), path.into()]);
+    run_linux_command("grim", capture_args, "grim", false, extras)
 }
 
 fn linux_click(session: LinuxSession, args: &[String]) -> String {
@@ -1049,9 +1204,16 @@ fn x11_click(x: i32, y: i32, button: u32, times: u32) -> String {
             "x11-click",
         );
     }
+    if !geometry::x11_point_in_root(x, y) {
+        if let Err(error) = process::check(deadline()) {
+            return process_failure_json("xdotool", &error);
+        }
+        return json_obj(vec![("ok","false".into()),("supported","false".into()),("code",json_string("COORDINATES_OUT_OF_RANGE")),("error",json_string("X11 coordinates must be inside the verified root extent and signed 16-bit XTest range. No input was sent."))]);
+    }
     let cmd_args: Vec<OsString> = vec![
         "mousemove".into(),
         "--sync".into(),
+        "--".into(),
         x.to_string().into(),
         y.to_string().into(),
         "click".into(),
@@ -1069,6 +1231,12 @@ fn wayland_click(x: i32, y: i32, button: u32, times: u32) -> String {
             "Install with: sudo apt install ydotool, then enable ydotoold (see setup guide).",
             "wayland-click",
         );
+    }
+    if !geometry::wayland_pointer_ready(x, y) {
+        if let Err(error) = process::check(deadline()) {
+            return process_failure_json("ydotool", &error);
+        }
+        return json_obj(vec![("ok","false".into()),("supported","false".into()),("code",json_string("POINTER_MAPPING_UNVERIFIED")),("error",json_string("Absolute pointer mapping is unverified for this helper version, compositor layout or input configuration. No input was sent."))]);
     }
     // ydotool button codes for press+release: left=0xC0, right=0xC1, middle=0xC2.
     let click_code = match button {
