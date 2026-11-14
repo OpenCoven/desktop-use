@@ -36,7 +36,7 @@ test("plugin normalization preserves backend facts and overlays trusted authorit
     assert.equal(result.actions.click.policy.gatewayPolicy, "not-reported");
     assert.ok(!result.actions.click.surfaces.includes("sdk"));
     assert.equal(result.adapter?.resolvedPath, "/fixture/adapter");
-    assert.equal(result.adapter?.version, "0.1.2");
+    assert.equal(result.adapter?.version, "0.1.3");
     assert.equal(result.actionPermissions?.snapshotId, permissions.snapshotId);
   }
 });

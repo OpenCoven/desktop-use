@@ -31,7 +31,7 @@ test("real adapter spawn/output provenance distinguishes absent/nonexecutable ad
         const selected = await createComputerUseTool({ appendAuditEvent: async () => {} }).execute("selected", { action: "health" });
         assert.equal((selected.details.adapterInvocation as any).configuredPath, link);
         assert.equal((selected.details.adapterInvocation as any).resolvedPath, await realpath(path));
-        assert.equal((selected.details.adapterInvocation as any).version, "0.1.2");
+        assert.equal((selected.details.adapterInvocation as any).version, "0.1.3");
       }
     }
   } finally {
