@@ -218,30 +218,25 @@ export function assertHostApprovalDenied(hostVersion, { result, events, toolCall
   return { toolCallId, toolName, sessionKey, approvalId: approval.payload.id, decision: 'deny', approvalClosed: true, executorAuditAbsent: true, denialCopy: hostVersion === '2026.11.3' ? 'final-denial-with-fresh-call-guidance' : 'minimum-denial' };
 }
 
-export async function waitForHostApproval({ readApproval, completed, timeoutMs, completionGraceMs = 1000 }) {
+export async function waitForHostApproval({ readApproval, completed, timeoutMs }) {
   assert.ok(Number.isSafeInteger(timeoutMs) && timeoutMs > 0);
-  assert.ok(Number.isSafeInteger(completionGraceMs) && completionGraceMs >= 0);
   const deadline = Date.now() + timeoutMs;
-  let ended = false, outcome, failure, completedAt;
-  const terminal = completed.then(value => { outcome = value; ended = true; completedAt = Date.now(); }, error => { failure = error; ended = true; completedAt = Date.now(); });
+  let ended = false, outcome, failure;
+  const terminal = completed.then(value => { outcome = value; ended = true; }, error => { failure = error; ended = true; });
   while (true) {
     const approval = readApproval();
     if (approval) return approval;
     if (ended) {
       if (failure) throw failure;
-      if (Date.now() - completedAt >= completionGraceMs) {
-        const error = new Error('Host run completed without the expected approval');
-        error.code = 'HOST_APPROVAL_MISSING_AFTER_COMPLETION';
-        error.outcomeStatus = ['ok', 'error', 'timeout'].includes(outcome?.status) ? outcome.status : 'other';
-        throw error;
-      }
+      const error = new Error('Host run completed without the expected approval');
+      error.code = 'HOST_APPROVAL_MISSING_AFTER_COMPLETION';
+      error.outcomeStatus = ['ok', 'error', 'timeout'].includes(outcome?.status) ? outcome.status : 'other';
+      throw error;
     }
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw Object.assign(new Error('Host approval deadline exceeded'), { code: 'HOST_APPROVAL_DEADLINE' });
-    const graceRemaining = ended ? completionGraceMs - (Date.now() - completedAt) : remaining;
     let timer;
-    const pause = new Promise(resolve => { timer = setTimeout(resolve, Math.min(50, remaining, graceRemaining)); });
-    try { await (ended ? pause : Promise.race([terminal, pause])); }
+    try { await Promise.race([terminal, new Promise(resolve => { timer = setTimeout(resolve, Math.min(50, remaining)); })]); }
     finally { clearTimeout(timer); }
   }
 }
