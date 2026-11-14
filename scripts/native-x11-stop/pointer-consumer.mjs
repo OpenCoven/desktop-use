@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { createDesktopClient, resolveActionPermissions } from '@opencoven/openclaw-desktop-use/sdk';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
+import { observeApiFulfillment } from './promise-settlement.mjs';
 
 assert.equal(process.platform, 'linux');
 assert.equal(process.env.NATIVE_OWNED_DISPOSABLE_DISPLAY, 'yes');
@@ -29,10 +30,11 @@ const audit = [];
 const options = { workspaceDir: workspace, scope: { principalId: 'owned-x11-pointer-stop', sessionId: surface + mode },
   adapterPath: adapter, actionPermissions: resolveActionPermissions({ actionProfile: 'full' }),
   approvalProvider: async () => 'allowed', auditSink: async event => { audit.push(event); } };
-let call, close;
+let call, callObserved, close;
 if (surface === 'sdk') {
   const client = createDesktopClient(options);
   call = (request, signal) => client.execute(request, { callId: mode + '-' + request.action, signal });
+  callObserved = (request, signal) => observeApiFulfillment(call(request, signal), value => value);
   close = async () => {};
 } else {
   const stateDir = join(workspace, 'state'); await mkdir(stateDir, { mode: 0o700 });
@@ -47,10 +49,10 @@ if (surface === 'sdk') {
     env: { PATH: process.env.PATH, DISPLAY: process.env.DISPLAY, XDG_SESSION_TYPE: 'x11' } });
   transport.stderr?.on('data', () => {});
   await client.connect(transport);
-  call = async request => {
-    const value = await client.callTool({ name: 'computer_use', arguments: request });
-    return { content: value.content, details: value.structuredContent };
-  };
+  const rawCall = request => client.callTool({ name: 'computer_use', arguments: request });
+  const normalize = value => ({ content: value.content, details: value.structuredContent });
+  call = request => rawCall(request).then(normalize);
+  callObserved = request => observeApiFulfillment(rawCall(request), normalize);
   close = () => client.close();
 }
 const controller = new AbortController();
@@ -61,10 +63,9 @@ try {
   assert.equal((await call({ action: 'focus', windowTitle: fixtureTitle })).details.success, true);
   assert.ok(Number.isInteger(Number(pointX)) && Number.isInteger(Number(pointY)));
   const eventCursorBeforeInput = fixture.keys.length;
-  // Stamp fulfillment immediately, even if coordination or Stop is still
-  // awaited when the input call settles.
-  pending = call({ action: 'click', coords: pointX + ',' + pointY, double: true, timeoutMs: mode === 'timeout' ? 2000 : 15000 }, controller.signal)
-    .then(result => { const now = process.hrtime.bigint(); return { result, resultSettledMonotonicNs: now.toString(), resultSettledMonotonicMs: Number(now / 1_000_000n) }; });
+  // Observe the raw supported API's first callback before normalization and
+  // independently of any coordination or Stop still awaited by this runner.
+  pending = callObserved({ action: 'click', coords: pointX + ',' + pointY, double: true, timeoutMs: mode === 'timeout' ? 2000 : 15000 }, controller.signal);
   pending.catch(() => {});
   await writeFile(join(workspace, 'input-started'), 'ready');
   const deadline = Date.now() + 8000;
@@ -74,7 +75,7 @@ try {
   }
   if (mode === 'stop') assert.equal((await call({ action: 'stop' })).details.success, true);
   if (mode === 'abort') controller.abort();
-  const { result, resultSettledMonotonicMs, resultSettledMonotonicNs } = await pending;
+  const { result, resultSettledMonotonicMs, resultSettledMonotonicNs, fulfillmentBoundary } = await pending;
   assert.equal(result.details.status, mode === 'timeout' ? 'timeout' : 'cancelled');
   const native = result.details.result;
   assert.equal(native.inputCleanup.state, 'verified');
@@ -93,7 +94,7 @@ try {
   await writeFile(join(workspace, 'consumer-receipt.json'), JSON.stringify({ surface, mode, status: result.details.status,
     inputCleanup: native.inputCleanup, nativeOk: native.ok, nativeCode: native.code, controlledSchedulingFaultInjection: true,
     inputMayHaveStarted: native.inputMayHaveStarted, partial: native.partial,
-    resultSettledMonotonicMs, resultSettledMonotonicNs, eventCursorBeforeInput,
+    resultSettledMonotonicMs, resultSettledMonotonicNs, fulfillmentBoundary, eventCursorBeforeInput,
     approvalMode: surface === 'sdk' ? 'scripted-trusted-provider' : 'scripted-trusted-reference-pty', nativeSha256: nativeHash, privateInputAbsent: true }) + '\n');
 } finally {
   controller.abort(); if (pending) await pending.catch(() => {}); await close();

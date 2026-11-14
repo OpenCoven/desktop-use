@@ -16,6 +16,13 @@ from owned_process_guard import install_recovery_handlers, begin_recovery
 from owned_trace_stop import OwnedTraceStop, TraceUnavailable
 
 
+def consumer_fulfillment_ns(consumer):
+    if consumer.get('fulfillmentBoundary') != 'supported-api-first-fulfillment':
+        return None
+    value = consumer.get('resultSettledMonotonicNs')
+    return int(value) if isinstance(value,str) and value.isdecimal() and 0 < int(value) < 2**64 else None
+
+
 def completion_precedes_fulfillment(button_up_ns, helper_gone_ns, fulfillment_ns):
     return all(type(value) is int and value > 0 for value in [button_up_ns,helper_gone_ns,fulfillment_ns]) and button_up_ns < fulfillment_ns and helper_gone_ns < fulfillment_ns
 
@@ -249,9 +256,10 @@ def main():
                 native = {'ok':consumer['nativeOk'],'code':consumer['nativeCode'],'inputCleanup':consumer['inputCleanup'],
                           'inputMayHaveStarted':consumer['inputMayHaveStarted']}
                 report['consumerSettledMonotonicMs'] = consumer['resultSettledMonotonicMs']
-                fulfillment = consumer['resultSettledMonotonicNs']
-                assert isinstance(fulfillment,str) and fulfillment.isdecimal() and 0 < int(fulfillment) < 2**64
-                report['consumerSettledMonotonicNs'] = fulfillment
+                fulfillment = consumer_fulfillment_ns(consumer)
+                assert fulfillment is not None, 'RAW_API_FULFILLMENT_BOUNDARY_REQUIRED'
+                report['consumerSettledMonotonicNs'] = str(fulfillment)
+                report['fulfillmentBoundary'] = consumer['fulfillmentBoundary']
                 report['buttonUpObservedMonotonicNs'] = str(button_up_ns) if button_up_ns is not None else None
                 report['helperGoneObservedMonotonicNs'] = str(helper_gone_ns) if helper_gone_ns is not None else None
                 report['cleanupObservedBeforeFulfillment'] = completion_precedes_fulfillment(button_up_ns,helper_gone_ns,int(fulfillment))
