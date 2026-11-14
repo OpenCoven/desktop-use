@@ -49,3 +49,25 @@ test("provider schema conversion preserves the bounded compatibility vocabulary"
     }
   }
 });
+
+test("restricted model schemas retain only eligible canonical actions and aliases after provider conversion", async () => {
+  const { resolveActionPermissions } = await import("./action-permissions.js");
+  const cases = [
+    [{ actionProfile: "observation-only" }, ["health", "stop", "doctor", "inspect", "screenshot", "file-list", "file-read", "permissions", "see", "capture"]],
+    [{ actionProfile: "desktop-only" }, ["health", "stop", "doctor", "inspect", "screenshot", "click", "type-text", "keypress", "scroll", "focus", "clipboard-read", "clipboard-write", "browser-open", "app-launch", "permissions", "see", "capture", "type", "press"]],
+    [{ allowedActions: [] }, ["stop"]],
+    [{ allowedActions: ["type-text"] }, ["stop", "type-text", "type"]],
+  ] as const;
+  const all = ["health", "stop", "doctor", "inspect", "screenshot", "click", "type-text", "keypress", "scroll", "focus", "shell", "file-list", "file-read", "file-write", "clipboard-read", "clipboard-write", "browser-open", "app-launch", "permissions", "see", "capture", "type", "press", "toString", "unknown"];
+  for (const factory of [createComputerUseTool, createDesktopUseTool]) for (const [config, expected] of cases) {
+    const tool = factory({ actionPermissions: resolveActionPermissions(config) });
+    assert.deepEqual(tool.parameters.properties.action.enum, expected);
+    assert.deepEqual(tool.parameters.properties.action.anyOf.map(branch => branch.const), expected);
+    if (expected.length === 1) assert.match(tool.description, /Stop-only/i);
+    for (const parameters of [tool.parameters, cleanSchemaForGemini(tool.parameters)]) for (const action of all) {
+      const validate = () => validateToolArguments({ ...tool, parameters }, { name: tool.name, arguments: { action } });
+      if ((expected as readonly string[]).includes(action)) assert.deepEqual(validate(), { action });
+      else assert.throws(validate, /Validation failed/, action);
+    }
+  }
+});

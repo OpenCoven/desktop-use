@@ -1,4 +1,5 @@
 import { COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME } from "../src/tool-names.ts";
+import { buildRestrictedBatch, batchCallId, callName } from "./gateway-action-batches.mjs";
 // Real pinned gateway + local deterministic model transport; no live provider or desktop input.
 import assert from "node:assert/strict";
 import { createServer, request as httpRequest } from "node:http";
@@ -11,6 +12,14 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const pluginRoot = resolve(process.argv[4] ?? repo);
+const profile = process.argv[5] ?? "full";
+const permissionConfigs = {
+  full: { actionProfile: "full" },
+  "observation-only": { actionProfile: "observation-only" },
+  "desktop-only": { actionProfile: "desktop-only" },
+  "stop-only": { actionProfile: "full", allowedActions: [] },
+};
+assert.ok(Object.hasOwn(permissionConfigs, profile), "Profile must be full, observation-only, desktop-only, or stop-only");
 const root = resolve(process.argv[2] ?? `/tmp/desktopuse-gateway-receipt-${Date.now()}`);
 await mkdir(root, { recursive: true, mode: 0o700 });
 const save = async (name, data) => writeFile(join(root, name), `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
@@ -35,6 +44,13 @@ const modelErrors = [];
 const modelSchemas = {};
 const canonicalActions = ["health", "stop", "doctor", "inspect", "screenshot", "click", "type-text", "keypress", "scroll", "focus", "shell", "file-list", "file-read", "file-write", "clipboard-read", "clipboard-write", "browser-open", "app-launch"];
 const legacyActions = { permissions: "doctor", see: "inspect", capture: "screenshot", type: "type-text", press: "keypress" };
+const profileActions = {
+  full: canonicalActions,
+  "observation-only": ["health", "stop", "doctor", "inspect", "screenshot", "file-list", "file-read"],
+  "desktop-only": ["health", "stop", "doctor", "inspect", "screenshot", "click", "type-text", "keypress", "scroll", "focus", "clipboard-read", "clipboard-write", "browser-open", "app-launch"],
+  "stop-only": ["stop"],
+}[profile];
+const visibleAliases = Object.keys(legacyActions).filter(action => profileActions.includes(legacyActions[action]));
 const model = createServer(async (req, res) => {
   try {
     let input = ""; for await (const chunk of req) input += chunk;
@@ -48,12 +64,19 @@ const model = createServer(async (req, res) => {
     const definition = body.tools[0].function;
     const actionSchema = definition.parameters.properties.action;
     const values = actionSchema.enum ?? actionSchema.anyOf?.map(branch => branch.const);
-    assert.deepEqual([...values].sort(), [...canonicalActions, ...Object.keys(legacyActions)].sort(), "Model-visible bounded compatibility vocabulary");
-    for (const [legacy, canonical] of Object.entries(legacyActions)) assert.ok(actionSchema.description.includes(`${legacy} -> ${canonical}`));
-    assert.ok(actionSchema.description.includes("0.2.0"));
+    assert.deepEqual([...values].sort(), [...profileActions, ...visibleAliases].sort(), "Model-visible bounded compatibility vocabulary");
+    for (const legacy of visibleAliases) assert.ok(actionSchema.description.includes(`${legacy} -> ${legacyActions[legacy]}`));
+    if (visibleAliases.length) assert.ok(actionSchema.description.includes("0.2.0"));
+    if (profile === "stop-only") assert.ok(actionSchema.description.includes("Stop-only"));
     modelSchemas[definition.name] = definition.parameters;
     await save("model-tool-schemas.json", modelSchemas);
     const finished = messages.slice(userIndex + 1).some(m => m.role === "tool");
+    // The host can run a batch in parallel: execute Stop on the next provider
+    // response so it cannot cancel the observations being qualified alongside it.
+    const stopAfterBatch = plan.stopAfterBatch && finished && !plan.stopSent;
+    if (stopAfterBatch) plan.stopSent = true;
+    plan.responses = (plan.responses ?? 0) + 1;
+    if (plan.calls) assert.ok(plan.responses <= (plan.stopAfterBatch ? 3 : 2), "Restricted fixture must finish its bounded response sequence");
     requests.push({ case: marker, url: req.url, tools: (body.tools ?? []).map(t => t.function?.name), finished });
     await save("model-requests.json", requests);
     if (!finished) plan.onModelRequest?.();
@@ -61,8 +84,10 @@ const model = createServer(async (req, res) => {
     res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
     const chunk = (delta, finish_reason = null) => res.write(`data: ${JSON.stringify({ id: `chatcmpl-${marker}`, object: "chat.completion.chunk", created: Math.floor(Date.now() / 1000), model: "fixture", choices: [{ index: 0, delta, finish_reason }] })}\n\n`);
     chunk({ role: "assistant" });
-    chunk(finished ? { content: `Qualification ${marker} complete.` } : { tool_calls: [toolCall] });
-    chunk({}, finished ? "stop" : "tool_calls");
+    const toolCalls = stopAfterBatch ? [{ index: 0, id: batchCallId("restricted-allowed-stop"), type: "function", function: { name: plan.tool ?? COMPUTER_USE_TOOL_NAME, arguments: JSON.stringify({ action: "stop" }) } }] : plan.calls ? plan.calls.map((call, index) => ({ index, id: batchCallId(call.name), type: "function",
+      function: { name: plan.tool ?? COMPUTER_USE_TOOL_NAME, arguments: JSON.stringify(call.args) } })) : [toolCall];
+    chunk(finished && !stopAfterBatch ? { content: `Qualification ${marker} complete.` } : { tool_calls: toolCalls });
+    chunk({}, finished && !stopAfterBatch ? "stop" : "tool_calls");
     res.end("data: [DONE]\n\n");
   } catch (e) {
     modelErrors.push({ message: String(e) });
@@ -96,7 +121,7 @@ const config = {
   logging: { file: join(root, "gateway.jsonl"), level: "info" },
   discovery: { mdns: { mode: "off" } }, browser: { enabled: false }, cron: { enabled: false },
   canvasHost: { enabled: false }, update: { checkOnStart: false },
-  plugins: { allow: ["opencoven-desktop-use"], load: { paths: [pluginRoot] }, slots: { memory: "none" } },
+  plugins: { allow: ["opencoven-desktop-use"], load: { paths: [pluginRoot] }, slots: { memory: "none" }, entries: { "opencoven-desktop-use": { enabled: true, config: permissionConfigs[profile] } } },
   skills: { allowBundled: [] }, tools: { profile: "minimal" },
   models: { mode: "merge", providers: { qualification: {
     baseUrl: `http://127.0.0.1:${model.address().port}/v1`, apiKey: "disposable-qualification-key", api: "openai-completions",
@@ -117,12 +142,13 @@ const log = await open(join(root, "console.log"), "w", 0o600);
 const env = Object.fromEntries(["PATH", "TMPDIR", "LANG", "USER"].filter(k => process.env[k]).map(k => [k, process.env[k]]));
 const unavailableAdapter = join(root, "deliberately-unavailable-desktop-adapter");
 await assert.rejects(access(unavailableAdapter), { code: "ENOENT" });
-Object.assign(env, { OPENCLAW_STATE_DIR: join(root, "state"), OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_HOME: join(root, "home"), OPENCLAW_PLUGIN_LOAD_PROFILE: "1", OPENCLAW_LIVE_GATEWAY: "1", OPENCLAW_LIVE_GATEWAY_PROVIDERS: "qualification", COVEN_DESKTOP_USE_BIN: unavailableAdapter });
+Object.assign(env, { COVEN_HOME: join(root, "coven"), OPENCLAW_STATE_DIR: join(root, "state"), OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_HOME: join(root, "home"), OPENCLAW_PLUGIN_LOAD_PROFILE: "1", OPENCLAW_LIVE_GATEWAY: "1", OPENCLAW_LIVE_GATEWAY_PROVIDERS: "qualification", COVEN_DESKTOP_USE_BIN: unavailableAdapter });
+await save("action-permissions.json", { profile, trustedConfig: permissionConfigs[profile], expectedActions: profileActions, expectedAliases: visibleAliases });
 await save("adapter-fixture.json", { mode: "deliberately-unavailable", graphicalEffects: false });
 // Refuse to start a gateway if this package would escape the explicit state root.
 // Verify byte-identical source, then use the checkout's installed SDK peer for a
 // dry resolver call with no audit write or gateway/profile initialization.
-for (const file of ["src/computer-use-audit.ts", "src/computer-use-agent.ts", "src/tool-names.ts"]) {
+for (const file of ["index.ts", "openclaw.plugin.json", "src/computer-use-audit.ts", "src/computer-use-agent.ts", "src/tool-names.ts", "src/action-permissions.ts", "src/computer-use-actions.ts", "src/computer-use-policy.ts", "src/plugin-tool.ts"]) {
   assert.deepEqual(await readFile(join(repo, file)), await readFile(join(pluginRoot, file)), `Packed source differs: ${file}`);
 }
 const auditProbe = spawnSync(process.execPath, ["--import", createRequire(join(repo, "package.json")).resolve("tsx"), "--input-type=module", "-e",
@@ -185,22 +211,26 @@ try {
       request.on("error", reject); request.end(JSON.stringify({ tool, args, sessionKey }));
     });
   }
-  const minimalSession = "agent:minimal-qualification:qualification";
-  await rpc("sessions.patch", { key: minimalSession });
-  const minimalInventory = await rpc("tools.effective", { sessionKey: minimalSession });
-  await save("minimal-effective-tools.json", minimalInventory);
-  assert.equal(minimalInventory.profile, "minimal");
-  assert.deepEqual(minimalInventory.groups, []);
-  assert.equal((await httpInvoke(COMPUTER_USE_TOOL_NAME, { action: "stop" }, minimalSession)).status, 404);
-  const health = await httpInvoke(COMPUTER_USE_TOOL_NAME, { action: "health" }); await save("health.json", health);
-  assert.equal(health.status, 200); assert.deepEqual(health.body.result.details.agent.toolPolicy, template.tools);
-  for (const name of ["exec", "bash", "shell", "apply_patch", DESKTOP_USE_TOOL_NAME]) assert.equal((await httpInvoke(name, {})).status, 404, name);
+  if (profile === "full") {
+    const minimalSession = "agent:minimal-qualification:qualification";
+    await rpc("sessions.patch", { key: minimalSession });
+    const minimalInventory = await rpc("tools.effective", { sessionKey: minimalSession });
+    await save("minimal-effective-tools.json", minimalInventory);
+    assert.equal(minimalInventory.profile, "minimal");
+    assert.deepEqual(minimalInventory.groups, []);
+    assert.equal((await httpInvoke(COMPUTER_USE_TOOL_NAME, { action: "stop" }, minimalSession)).status, 404);
+    const health = await httpInvoke(COMPUTER_USE_TOOL_NAME, { action: "health" }); await save("health.json", health);
+    assert.equal(health.status, 200); assert.deepEqual(health.body.result.details.agent.toolPolicy, template.tools);
+    assert.deepEqual(health.body.result.details.actionPermissions.allowedActions, profileActions);
+    assert.equal(health.body.result.details.actionPermissions.gatewayAuthorization, "not-reported");
+    for (const name of ["exec", "bash", "shell", "apply_patch", DESKTOP_USE_TOOL_NAME]) assert.equal((await httpInvoke(name, {})).status, 404, name);
+  }
   async function runCase(name, args, decision = "allow-once", sessionKey = session, tool = COMPUTER_USE_TOOL_NAME, options = {}) {
     const startedAt = Date.now();
     const timing = {};
     let modelRequested;
     const modelReady = new Promise(resolve => modelRequested = resolve);
-    cases.set(name, { args, tool, onModelRequest: () => { timing.modelRequestedMs = Date.now() - startedAt; modelRequested(); } });
+    cases.set(name, { args, tool, calls: options.calls, stopAfterBatch: options.stopAfterBatch, onModelRequest: () => { timing.modelRequestedMs = Date.now() - startedAt; modelRequested(); } });
     const start = events.length;
     const accepted = await rpc("agent", { message: `QUALIFICATION_CASE:${name}`, agentId: sessionKey.split(":")[1], sessionKey, idempotencyKey: randomUUID(), deliver: false, timeout: 420 });
     timing.acceptedMs = Date.now() - startedAt;
@@ -211,12 +241,15 @@ try {
       // Cold per-agent provider initialization precedes the first model request.
       // Keep it under the existing agent deadline, not the approval-delivery window.
       await Promise.race([modelReady, completed.then(outcome => { throw new Error(`Agent ${name} ended before a model request: ${outcome.status}`); })]);
-      const approval = await until(() => events.slice(start).find(e => e.event === "plugin.approval.requested" && e.payload.request.toolCallId?.includes(name)), 45000);
-      timing.approvalRequestedMs = Date.now() - startedAt;
-      await save(`${name}-timing.json`, timing);
-      await save(`${name}-approval.json`, approval.payload);
-      await options.beforeDecision?.(approval.payload);
-      if (decision !== "expire") await rpc("plugin.approval.resolve", { id: approval.payload.id, decision });
+      for (const approvalName of options.approvalCalls ?? [name]) {
+        const approvalCallId = options.calls ? batchCallId(approvalName) : `call_${approvalName}`;
+        const approval = await until(() => events.slice(start).find(e => e.event === "plugin.approval.requested" && e.payload.request.toolCallId === approvalCallId), 45000);
+        timing.approvalRequestedMs = Date.now() - startedAt;
+        await save(`${approvalName}-timing.json`, timing);
+        await save(`${approvalName}-approval.json`, approval.payload);
+        await options.beforeDecision?.(approval.payload);
+        if (decision !== "expire") await rpc("plugin.approval.resolve", { id: approval.payload.id, decision });
+      }
     }
     const outcome = await completed; await save(`${name}-outcome.json`, outcome);
     await save(`${name}-timing.json`, timing);
@@ -232,9 +265,87 @@ try {
     return JSON.parse(text);
   };
   const noFile = async path => assert.rejects(access(path), { code: "ENOENT" });
-  const initial = await runCase("initial-stop", { action: "stop" }, "none");
-  assert.equal(toolResult(initial.history).status, "success");
+  if (profile === "full") {
+    const initial = await runCase("initial-stop", { action: "stop" }, "none");
+    assert.equal(toolResult(initial.history).status, "success");
+  }
   const secret = "qualification-private-content-4c925ce0";
+  if (profile !== "full") {
+    // Restricted lanes exercise the actual packed plugin config and provider schema.
+    // The unavailable adapter precludes graphical effects even for a regression.
+    const fixtures = {
+      health: {}, doctor: {}, inspect: {}, screenshot: {}, click: { on: "B1" },
+      "type-text": { text: secret }, keypress: { keys: ["tab"] }, scroll: { direction: "down" }, focus: { app: "fixture" },
+      shell: { command: process.execPath, args: ["-e", "require('fs').writeFileSync('forbidden-shell.txt','fixture')"] },
+      "file-list": { path: "." }, "file-read": { path: "observation.txt", includeText: true },
+      "file-write": { path: "forbidden-write.txt", content: secret },
+      "clipboard-read": {}, "clipboard-write": { clipboardText: secret },
+      "browser-open": { url: "https://example.invalid/qualification" }, "app-launch": { app: "desktopuse-nonexistent-fixture" },
+    };
+    await writeFile(join(workspace, "observation.txt"), "local observation fixture");
+    const { allowedActions, deniedActions, gatedActions, calls, approvalCalls } = buildRestrictedBatch(profileActions, fixtures);
+    assert.deepEqual([...calls.map(call => call.args.action), "stop"].sort(), [...canonicalActions, ...Object.keys(legacyActions)].sort(), "Each compatible action must occur exactly once across the batch and separate Stop");
+    assert.equal(new Set([...calls.map(call => batchCallId(call.name)), batchCallId(callName("allowed", "stop"))]).size, calls.length + 1, "Each batched tool-call id must be unique");
+    // A single real agent turn avoids rebuilding the unchanged provider catalog
+    // for each vocabulary item. Every tool call keeps its own id and receipt.
+    const batch = await runCase("restricted-matrix", { action: "stop" }, gatedActions.length ? "deny" : "none", session, COMPUTER_USE_TOOL_NAME,
+      { calls, stopAfterBatch: true, approvalCalls });
+    const resultFor = async (kind, action) => {
+      const name = callName(kind, action);
+      const message = batch.history.messages?.find(message => message.role === "toolResult" && message.toolCallId === batchCallId(name));
+      assert.ok(message, `Missing ${name} tool result`);
+      await save(`${name}-result.json`, message);
+      return message.content?.filter(content => content.type === "text").map(content => content.text).join("\n");
+    };
+    const allowed = [];
+    for (const action of allowedActions) {
+      const details = JSON.parse(await resultFor("allowed", action));
+      assert.equal(details.status, ["health", "doctor", "inspect", "screenshot"].includes(legacyActions[action] ?? action) ? "error" : "success");
+      if (action === "health") {
+        assert.deepEqual(details.actionPermissions.allowedActions, profileActions);
+        assert.equal(details.actionPermissions.gatewayAuthorization, "not-reported");
+        await save("health.json", details);
+      }
+      allowed.push({ action, status: details.status });
+    }
+    const denied = [];
+    for (const action of deniedActions) {
+      assert.match(await resultFor("denied", action), /Validation failed|disabled by the trusted/, `Model must refuse ${action}`);
+      assert.equal(batch.events.some(event => event.event === "plugin.approval.requested" && event.payload.request.toolCallId === batchCallId(callName("denied", action))), false);
+      denied.push({ action, canonical: legacyActions[action] ?? action, modelDenied: true, approvalRequested: false });
+    }
+    for (const action of gatedActions) {
+      assert.equal(batch.events.filter(event => event.event === "plugin.approval.requested" && event.payload.request.toolCallId === batchCallId(callName("gated", action))).length, 1, `Exactly one approval despite model confirmation: ${action}`);
+      assert.equal(JSON.parse(await resultFor("gated", action)).error, "Denied by user");
+    }
+    // Direct HTTP bypasses model schema validation. Representative excluded
+    // shell/file/clipboard/launch families must still meet the trusted hook ceiling.
+    const direct = [];
+    for (const action of ["shell", "file-write", "clipboard-write", "browser-open"].filter(action => !profileActions.includes(action))) {
+      const result = await httpInvoke(COMPUTER_USE_TOOL_NAME, { action, ...fixtures[action], confirm: true });
+      assert.equal(result.status, 403, `Authenticated HTTP must refuse ${action}`);
+      assert.match(result.body.error.message, /trusted.*action permissions/);
+      await save(`restricted-denied-${action}-direct.json`, result);
+      direct.push({ action, status: result.status });
+    }
+    const legacySession = "agent:legacy-qualification:qualification";
+    await rpc("sessions.patch", { key: legacySession });
+    const legacyStop = await httpInvoke(DESKTOP_USE_TOOL_NAME, { action: "stop" }, legacySession);
+    assert.equal(legacyStop.status, 200); assert.equal(legacyStop.body.result.details.status, "success");
+    await save("restricted-legacy-stop-direct.json", legacyStop);
+    const legacyDenied = await httpInvoke(DESKTOP_USE_TOOL_NAME, { action: "shell", ...fixtures.shell, confirm: true }, legacySession);
+    assert.equal(legacyDenied.status, 403);
+    for (const path of [join(workspace, "forbidden-shell.txt"), join(workspace, "forbidden-write.txt"), join(legacyWorkspace, "forbidden-shell.txt")]) await noFile(path);
+    const audit = await readFile(join(dirname(agentDir), "audit/computer-use.jsonl"), "utf8");
+    assert.ok(!audit.includes(secret));
+    const records = audit.trim().split("\n").map(line => JSON.parse(line));
+    assert.ok(!records.some(record => record.toolCallId?.startsWith("callrestricteddenied")), "Schema/hook denials never reach executor audit");
+    assert.ok(records.every(record => profileActions.includes(record.action)), "Only eligible actions reached executor audit");
+    await save("audit-summary.json", { records: records.length, privateContentAbsent: true, outcomes: records.map(record => ({ action: record.action, status: record.result.status })) });
+    await save("restricted-summary.json", { profile, allowed, denied, direct, retainedApprovals: gatedActions, batchedModelTurn: true, legacyStop: true, legacyDirectDenied: true, excludedFilesAbsent: true,
+      audit: "Existing executor stream only; host schema/hook denials do not execute or create adapter audit records.", nativeEffects: false, liveProvider: false });
+    console.log(`Gateway ${profile} qualification checkpoint: ${root}`);
+  } else {
   const deprecations = [];
   for (const [legacy, canonical] of Object.entries(legacyActions)) {
     const args = { action: legacy, ...(legacy === "type" ? { text: secret } : legacy === "press" ? { keys: ["Tab"] } : {}) };
@@ -330,6 +441,7 @@ try {
   await save("audit-summary.json", { records: records.length, privateContentAbsent: true, outcomes: records.map(r => ({ action: r.action, status: r.result.status })) });
   await save("events.json", events);
   console.log(`Gateway qualification checkpoint: ${root}`);
+  }
 } finally {
   await save("events.json", events);
   for (const waiter of pending.values()) clearTimeout(waiter.timer);

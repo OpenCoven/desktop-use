@@ -212,6 +212,38 @@ Real adapter health check:
 cargo run -- doctor
 ```
 
+## Trusted action permissions
+
+The plugin defaults to `actionProfile: "full"`, retaining all 18 canonical actions and five deprecated action aliases in 0.1.x. Set a trusted plugin configuration to narrow eligibility for both `computer_use` and `desktop_use`:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "opencoven-desktop-use": {
+        "enabled": true,
+        "config": {
+          "actionProfile": "observation-only",
+          "allowedActions": ["health", "doctor", "inspect", "screenshot"]
+        }
+      }
+    }
+  }
+}
+```
+
+| `actionProfile` | Eligible canonical actions before intersection |
+| --- | --- |
+| `full` (default) | All 18 canonical actions |
+| `observation-only` | `health`, `stop`, `doctor`, `inspect`, `screenshot`, `file-list`, `file-read` |
+| `desktop-only` | All canonical actions except `shell`, `file-list`, `file-read`, `file-write` |
+
+Omit `allowedActions` to use the preset. When supplied, it intersects the preset; it cannot add an action excluded by the preset. Stop is always available without approval, even when omitted from the list. An explicit `allowedActions: []` leaves a functioning Stop-only tool that cancels active calls in the same trusted scope. Config accepts canonical names only; aliases, unknown names/properties, invalid profiles, and duplicate entries fail visibly. This is global plugin configuration, separate from the agent's OpenClaw tool profile and allowlist.
+
+The plugin snapshots permissions at registration; direct tool factories accept immutable snapshots from `resolveActionPermissions`. Reload the plugin or gateway to apply configuration changes. Model arguments cannot supply or widen this configuration. The model schema lists only eligible actions and the deprecated aliases whose canonical actions remain eligible. Alias normalization also precedes hook and execution permission checks, so `confirm:true` cannot override a denial. These eligibility settings retain all existing risk approvals, target checks, and scoped Stop behavior; they are not an OS sandbox or a grant of gateway authorization. Observation-only still requires approval for an explicit capture destination that can replace a file or a read outside the workspace.
+
+A hook denial is a gateway rejection before execution and does not produce an adapter execution audit record. Direct executor denials return `status: "blocked"`, `success: false`, and `code: "ACTION_PROFILE_DENIED"` through the existing redacted audit stream. Health labels its permission summary as `adapter-eligibility` with gateway authorization `not-reported`. Health uses a doctor probe when doctor is eligible. With health enabled but doctor disabled, health retains local agent, health-check, audit, and permission metadata and returns `blocked` with `ACTION_PROFILE_DENIED` and `adapterProbe: { action: "doctor", status: "skipped", code: "ACTION_PROFILE_DENIED" }`; it runs no adapter probe and does not establish backend health.
+
 ## Execution bounds, stop, and privacy
 
 The CLI gives each action a cumulative 30-second helper deadline, including every step of a sequence. `--timeout-ms` accepts an integer from 1000 to 120000. The plugin defaults to 30 seconds, or 45 seconds for inspect/screenshot, and shares that budget across its single observation retry. Timed-out and cancelled work is never retried automatically. Each helper has a 1 MiB combined output limit in the CLI; plugin host helpers have a 64,000-byte combined limit, and the adapter JSON has a 10 MiB limit.

@@ -1,3 +1,5 @@
+import { CANONICAL_ACTIONS, LEGACY_ACTION_ALIASES, type LegacyAction } from "./computer-use-actions.js";
+import { ACTION_PROFILE_DENIED_REASON, isActionAllowed, resolveActionPermissions, validateActionPermissions, type ActionPermissions } from "./action-permissions.js";
 import { installedBinary, planHostAction } from "./host-actions.js";
 import { FileActionError, listDirectory, readRegularFile, writeRegularFile } from "./file-actions.js";
 import { runProcess, ProcessFailure } from "./process-runner.js";
@@ -53,31 +55,12 @@ type AuditWriter = (event: ComputerUseAuditEvent) => Promise<unknown>;
 
 export type CreateComputerUseToolOptions = {
   ctx?: ComputerUsePolicyContext;
+  actionPermissions?: ActionPermissions;
   runAdapter?: AdapterRunner;
   appendAuditEvent?: AuditWriter;
 };
 
-const CANONICAL_ACTIONS = [
-  "health",
-  "stop",
-  "doctor",
-  "inspect",
-  "screenshot",
-  "click",
-  "type-text",
-  "keypress",
-  "scroll",
-  "focus",
-  "shell",
-  "file-list",
-  "file-read",
-  "file-write",
-  "clipboard-read",
-  "clipboard-write",
-  "browser-open",
-  "app-launch",
-] as const;
-const LEGACY_ACTIONS = ["permissions", "see", "capture", "type", "press"] as const;
+const LEGACY_ACTIONS = Object.keys(LEGACY_ACTION_ALIASES) as LegacyAction[];
 
 const ComputerUseToolSchema = {
   type: "object",
@@ -143,6 +126,20 @@ const ComputerUseToolSchema = {
   },
 } as const;
 
+function permissionToolSchema(permissions: ActionPermissions) {
+  const aliases = LEGACY_ACTIONS.filter(action => isActionAllowed(permissions, action));
+  const vocabulary = [...permissions.allowedActions, ...aliases];
+  const full = permissions.allowedActions.length === CANONICAL_ACTIONS.length;
+  const description = full ? ComputerUseToolSchema.properties.action.description
+    : `${permissions.allowedActions.length === 1 ? "Stop-only: cancels active same-scope work." : `Eligible canonical actions: ${permissions.allowedActions.join(", ")}.`} ${aliases.length ? `Deprecated aliases: ${aliases.map(action => `${action} -> ${LEGACY_ACTION_ALIASES[action]}`).join(", ")}. Removal targeted at 0.2.0.` : ""} Trusted action eligibility does not grant approval.`;
+  return { ...ComputerUseToolSchema, properties: { ...ComputerUseToolSchema.properties, action: {
+    ...ComputerUseToolSchema.properties.action,
+    enum: vocabulary,
+    anyOf: ComputerUseToolSchema.properties.action.anyOf.filter(branch => vocabulary.includes(branch.const)),
+    description,
+  } } };
+}
+
 const DESKTOP_ADAPTER_ACTIONS = new Set([
   "doctor",
   "inspect",
@@ -162,6 +159,11 @@ export function createComputerUseTool(options: CreateComputerUseToolOptions = {}
 
 function createTool(options: CreateComputerUseToolOptions, legacyTool = false) {
   const ctx = options.ctx ?? {};
+  const actionPermissions = options.actionPermissions === undefined ? resolveActionPermissions() : validateActionPermissions(options.actionPermissions);
+  const parameters = permissionToolSchema(actionPermissions);
+  const permissionDescription = actionPermissions.allowedActions.length === CANONICAL_ACTIONS.length ? ""
+    : actionPermissions.allowedActions.length === 1 ? " Stop-only: cancels active work in the same trusted scope without approval."
+    : ` Trusted ${actionPermissions.profile} action eligibility: ${actionPermissions.allowedActions.join(", ")}. Existing approval requirements still apply.`;
   const runAdapter = options.runAdapter ?? runAdapterBinary;
   const appendAuditEvent =
     options.appendAuditEvent ??
@@ -171,9 +173,10 @@ function createTool(options: CreateComputerUseToolOptions, legacyTool = false) {
     name: legacyTool ? DESKTOP_USE_TOOL_NAME : COMPUTER_USE_TOOL_NAME,
     label: legacyTool ? "Desktop Use" : "Computer Use",
     description: legacyTool
-      ? `Deprecated alias for ${COMPUTER_USE_TOOL_NAME}. Use ${COMPUTER_USE_TOOL_NAME} instead. Removal targeted at 0.2.0.`
+      ? `Deprecated alias for ${COMPUTER_USE_TOOL_NAME}. Use ${COMPUTER_USE_TOOL_NAME} instead. Removal targeted at 0.2.0.${permissionDescription}`
+      : permissionDescription ? `OpenCoven computer-use agent tool.${permissionDescription}`
       : "OpenCoven computer-use agent tool for health checks, observation, approved desktop input, scoped shell/file actions, browser/app launches, and clipboard workflows.",
-    parameters: ComputerUseToolSchema,
+    parameters,
     async execute(toolCallId: string, rawParams: unknown, gatewaySignal?: AbortSignal): Promise<ToolResult> {
       let params = normalizeParams(rawParams);
       const controller = new AbortController();
@@ -187,20 +190,30 @@ function createTool(options: CreateComputerUseToolOptions, legacyTool = false) {
       let decision = classifyComputerUseRequest(params, ctx);
       let details: ToolResult["details"];
       try {
-        const prepared = await prepareComputerUseRequest(params, ctx);
-        params = prepared.params;
-        decision = prepared.decision;
-        if (controller.signal.aborted) throw new ProcessFailure("CANCELLED");
-        if (decision.status === "blocked" || decision.status === "needsApproval") {
-          details = {
-            status: decision.status, success: false, action: decision.normalizedAction,
-            target: decision.target, risk: decision.risk, reason: decision.reason,
-            requiresApproval: decision.requiresApproval, approvalPrompt: decision.approvalPrompt,
-            params: redactComputerUseValue(params),
-          };
+        if (!isActionAllowed(actionPermissions, params.action)) {
+          decision = { ...decision, status: "blocked", requiresApproval: false,
+            approvalPrompt: undefined, reason: ACTION_PROFILE_DENIED_REASON };
+          details = { status: "blocked", success: false, action: decision.normalizedAction,
+            code: "ACTION_PROFILE_DENIED", reason: ACTION_PROFILE_DENIED_REASON };
         } else {
-          const boundedAdapter: AdapterRunner = (args, request) => runAdapter(args, request, controller.signal);
-          details = await executeAllowedAction(params, ctx, boundedAdapter, controller.signal);
+          const prepared = await prepareComputerUseRequest(params, ctx);
+          params = prepared.params;
+          decision = prepared.decision;
+          if (controller.signal.aborted) throw new ProcessFailure("CANCELLED");
+          if (decision.status === "blocked" || decision.status === "needsApproval") {
+            details = {
+              status: decision.status, success: false, action: decision.normalizedAction,
+              target: decision.target, risk: decision.risk, reason: decision.reason,
+              requiresApproval: decision.requiresApproval, approvalPrompt: decision.approvalPrompt,
+              params: redactComputerUseValue(params),
+            };
+          } else {
+            const boundedAdapter: AdapterRunner = (args, request) => runAdapter(args, request, controller.signal);
+            details = await executeAllowedAction(params, ctx, actionPermissions, boundedAdapter, controller.signal);
+            if (normalizeComputerUseAction(params.action) === "health") {
+              details.actionPermissions = { scope: "adapter-eligibility", ...actionPermissions, gatewayAuthorization: "not-reported" };
+            }
+          }
         }
       } catch (error) {
         const code = error instanceof ProcessFailure || error instanceof FileActionError ? error.code : error instanceof ToolInputError ? "INVALID_INPUT" : ["ENOENT", "EACCES", "EPERM", "EISDIR", "ENOTDIR", "EEXIST", "EIO", "ENOSPC"].includes((error as NodeJS.ErrnoException)?.code ?? "") ? (error as NodeJS.ErrnoException).code! : "ACTION_FAILED";
@@ -238,6 +251,7 @@ export function createDesktopUseTool(options: CreateComputerUseToolOptions = {})
 async function executeAllowedAction(
   params: ComputerUseParams,
   ctx: ComputerUsePolicyContext,
+  permissions: ActionPermissions,
   runAdapter: AdapterRunner,
   signal?: AbortSignal,
 ): Promise<ToolResult["details"]> {
@@ -266,7 +280,7 @@ async function executeAllowedAction(
 
   switch (action) {
     case "health":
-      return runHealth(ctx, runAdapter, params, signal);
+      return runHealth(ctx, permissions, runAdapter, params, signal);
     case "stop":
       return stopComputerUse(ctx);
     case "shell":
@@ -296,7 +310,23 @@ async function executeAllowedAction(
   }
 }
 
-async function runHealth(ctx: ComputerUsePolicyContext, runAdapter: AdapterRunner, params: ComputerUseParams, _signal?: AbortSignal): Promise<ToolResult["details"]> {
+async function runHealth(ctx: ComputerUsePolicyContext, permissions: ActionPermissions, runAdapter: AdapterRunner, params: ComputerUseParams, _signal?: AbortSignal): Promise<ToolResult["details"]> {
+  const localHealth = {
+    action: "health",
+    agent: COMPUTER_USE_AGENT,
+    healthCheck: COMPUTER_USE_HEALTH_CHECK,
+    auditLog: resolveComputerUseAuditLogPath(ctx),
+  };
+  if (!isActionAllowed(permissions, "doctor")) {
+    return {
+      ...localHealth,
+      status: "blocked",
+      success: false,
+      code: "ACTION_PROFILE_DENIED",
+      reason: "The doctor probe was not run because doctor is disabled by trusted action permissions.",
+      adapterProbe: { action: "doctor", status: "skipped", code: "ACTION_PROFILE_DENIED" },
+    };
+  }
   const adapterBin = resolveAdapterBin();
   let adapterResult: unknown;
   try {
@@ -314,10 +344,7 @@ async function runHealth(ctx: ComputerUsePolicyContext, runAdapter: AdapterRunne
   });
   return {
     ...normalized,
-    action: "health",
-    agent: COMPUTER_USE_AGENT,
-    healthCheck: COMPUTER_USE_HEALTH_CHECK,
-    auditLog: resolveComputerUseAuditLogPath(ctx),
+    ...localHealth,
     repairHints: [
       missingAdapterHint(adapterBin),
       `Run ${COMPUTER_USE_TOOL_NAME} action=doctor after granting Screen Recording and Accessibility.`,
