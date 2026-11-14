@@ -53,7 +53,10 @@ try {
   assert.equal(fixture.pid, Number(fixturePid)); assert.equal(fixture.ready, true);
   assert.equal((await call({ action: 'focus', windowTitle: fixtureTitle })).details.success, true);
   const eventCursorBeforeInput = fixture.keys.length;
-  pending = call({ action: 'type-text', text: 'a'.repeat(4000), timeoutMs: mode === 'timeout' ? 2000 : 15000 }, controller.signal);
+  // Stamp fulfillment immediately, even if coordination or Stop is still
+  // awaited when the input call settles.
+  pending = call({ action: 'type-text', text: 'a'.repeat(4000), timeoutMs: mode === 'timeout' ? 2000 : 15000 }, controller.signal)
+    .then(result => ({ result, resultSettledMonotonicMs: Number(process.hrtime.bigint() / 1_000_000n) }));
   pending.catch(() => {});
   await writeFile(join(workspace, 'input-started'), 'ready');
   const deadline = Date.now() + 8000;
@@ -63,8 +66,7 @@ try {
   }
   if (mode === 'stop') assert.equal((await call({ action: 'stop' })).details.success, true);
   if (mode === 'abort') controller.abort();
-  const result = await pending;
-  const resultSettledMonotonicMs = Number(process.hrtime.bigint() / 1_000_000n);
+  const { result, resultSettledMonotonicMs } = await pending;
   assert.equal(result.details.status, mode === 'timeout' ? 'timeout' : 'cancelled');
   const native = result.details.result;
   assert.equal(native.inputCleanup.state, 'verified');
