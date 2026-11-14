@@ -6,8 +6,11 @@ import { createExecution, normalizeParams, type AuditWriter, type ToolResult } f
 import { DEFAULT_APPROVAL_TIMEOUT_MS, type ApprovalProvider } from './approval.js';
 export type { ApprovalChallenge, ApprovalProvider, ApprovalResolution } from './approval.js';
 export type { ComputerUseAuditEvent } from './audit.js';
-export type DesktopRequest = Omit<ComputerUseParams, 'action' | 'confirm'> & { action: CanonicalAction };
-export type DesktopResult = ToolResult;
+export type DesktopRequestV1 = Omit<ComputerUseParams, 'action' | 'confirm'> & { action: CanonicalAction };
+export type DesktopResultV1 = ToolResult;
+/** Compatibility names track the supported v1 contract until an explicit migration. */
+export type DesktopRequest = DesktopRequestV1;
+export type DesktopResult = DesktopResultV1;
 export type DesktopClientOptions = {
   workspaceDir: string;
   scope: Readonly<{ principalId: string; sessionId?: string }>;

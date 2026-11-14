@@ -2,6 +2,16 @@
 
 The unpublished local candidate exposes the host-neutral `@opencoven/openclaw-desktop-use/sdk` compiled JavaScript entry with TypeScript declarations and `createDesktopClient(options)` and `client.execute(request, { callId, signal? })`. The `/contracts` export supplies the canonical action names and versioned observation, capability and action schemas. The client imports the shared policy, execution, image and capability contracts without loading OpenClaw. All 18 canonical actions use the same pipeline as the plugin.
 
+## Execution contract and version policy
+
+The supported execution contract is v1. Import `DesktopRequestV1`, `DesktopResultV1` and `desktopExecutionContractV1` from `/sdk`; `/contracts` also exports the versioned types, `desktopRequestSchemaV1`, `desktopResultSchemaV1` and `desktopResultDetailsSchemaV1`. The descriptor has `version: 1` and references those schemas. `DesktopRequest` and `DesktopResult` remain compatibility aliases for v1. Schema `$id` values identify the v1 namespace; the schemas are included in the compiled entry and require no repository paths or remote schema fetches. The full result schema describes `{ content, details }`. MCP uses the same request schema and maps `details` to `structuredContent`, preserving the content blocks. The plugin normalizes its documented legacy inputs before entering shared execution.
+
+The full result embeds the details and receipt schemas as JSON Schema resources with their own `$id` values. When compiling several public schemas in one AJV registry, reuse registered resources with `ajv.getSchema(schema.$id) ?? ajv.compile(schema)`; compiling an already registered nested resource as a new root can raise a duplicate-id error. Separate validator instances also work.
+
+Select the execution version through the supported v1 exports, not a model-provided field. Requests cannot negotiate a version, workspace or approval authority; unknown request fields are rejected. MCP wire revisions are negotiated separately and do not select a different desktop execution contract. JSON schemas describe structural validation; the shared executor additionally enforces byte limits, action requirements, targets, trusted permissions, approval and cancellation. A schema-valid request is not permission to execute an effect.
+
+Within v1, existing field meanings and status values remain stable; additive result metadata may be ignored by consumers. Observation and capability receipts retain their own `schemaVersion: 1` checks, and unknown receipt versions must be rejected rather than interpreted as v1. A future incompatible execution contract receives new versioned exports and schema identifiers; a host must explicitly support that version before using it. Breaking changes to existing entry points or compatibility aliases require a documented package release and migration: a new minor version while the package is below 1.0, or a new major version thereafter. An npm package version, MCP wire revision and desktop contract version are distinct identities. Source or local tarball validation does not establish registry publication of that contract.
+
 Construction requires an absolute trusted `workspaceDir`, a scope with `principalId` and optional `sessionId`, an explicit `adapterPath`, and an `auditSink` function. Optional `actionPermissions` must originate from `resolveActionPermissions`; omitted permissions default to observation-only. An explicit trusted `approvalProvider` handles gated operations. Action eligibility never grants approval. Audit failures preserve the completed action outcome and report `AUDIT_WRITE_FAILED`.
 
 Requests contain canonical action parameters only. They reject `confirm`, legacy action names, legacy clipboard `text`, scope/workspace overrides, provider configuration and approval receipts. `callId` is correlation only; repeating it neither grants authority nor deduplicates effects. Every execution is a new operation with its own approval challenge when needed.
@@ -20,7 +30,7 @@ The local fixture qualifier `scripts/qualify-sdk-authorization.mjs` runs the pin
 
 ## Local candidate consumption
 
-These exports are local candidate work; the existing public npm version `0.1.2` does not establish their availability. The package version stays unchanged until the separate release decision. From this checkout, create a tarball and install that exact file into a separate application:
+These exports are local candidate work. This source candidate carries package version `0.1.4`; the published npm `0.1.3` artifact does not contain these SDK/MCP exports. From this checkout, create a tarball and install that exact file into a separate application:
 
 ```sh
 pnpm install --frozen-lockfile --ignore-scripts
@@ -28,7 +38,7 @@ pnpm run check
 mkdir -p /tmp/desktop-use-candidate
 pnpm pack --pack-destination /tmp/desktop-use-candidate
 # In the consuming application:
-npm install /tmp/desktop-use-candidate/opencoven-openclaw-desktop-use-0.1.2.tgz
+npm install /tmp/desktop-use-candidate/opencoven-openclaw-desktop-use-0.1.4.tgz
 ```
 
 ```ts

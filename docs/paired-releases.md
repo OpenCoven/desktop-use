@@ -1,6 +1,6 @@
 # Explicit paired releases
 
-Release `0.1.3` is a preparation candidate, not a published or attested release. A package build, fixture verifier test, hosted native build, publisher attestation, installed host qualification, publication and graphical acceptance are separate evidence classes. The installer refuses an unavailable or unverified public release. Existing npm `0.1.2` does not establish these SDK/MCP exports. No npm lifecycle hook downloads the native adapter or installs desktop helpers.
+Release `0.1.4` is a preparation candidate, not a published or attested release. A package build, fixture verifier test, hosted native build, publisher attestation, installed host qualification, publication and graphical acceptance are separate evidence classes. The installer refuses an unavailable or unverified public release. The separately published npm `0.1.3` artifact does not contain these SDK/MCP exports and is immutable. This replaces the unpublished first-A candidate; no successful A, B or rollback qualification has been established. No npm lifecycle hook downloads the native adapter or installs desktop helpers.
 
 ## Public installation, update and rollback
 
@@ -9,20 +9,20 @@ Prerequisites are Node 22.14 or newer and an independently installed GitHub CLI 
 Download `release.json`, the exact package tarball and your native tarball from the intended release into a private directory. The manifest pins their asset names; the public command takes an explicit version, not `latest`. Use an absolute private install root with an existing parent. The directory and its contents must belong to the current account and exclude group/other access.
 
 ```sh
-coven-desktop-use-install stage --version 0.1.3 --manifest /absolute/downloads/release.json --assets /absolute/downloads --root /absolute/private/desktop-use
-coven-desktop-use-install activate --version 0.1.3 --root /absolute/private/desktop-use
+coven-desktop-use-install stage --version 0.1.4 --manifest /absolute/downloads/release.json --assets /absolute/downloads --root /absolute/private/desktop-use
+coven-desktop-use-install activate --version 0.1.4 --root /absolute/private/desktop-use
 ```
 
 The executable is packaged at `scripts/install-adapter.mjs` and may also be invoked with Node from a trusted checkout. It is administrator tooling, not a model-facing tool. `stage` performs no selection change. It snapshots the manifest and both archives, verifies all three publisher attestations, checks bytes/hashes/entries, extracts into private staging, checks package exports and identity, verifies the native file architecture, and runs the staged binary's JSON `--version`. A source/version/protocol/contract/target mismatch fails before activation. Shell text or `--version --json` output is not the native contract.
 
-`activate` re-verifies the retained attestations, assets, extracted contents and executable identity, then atomically replaces only `<root>/active.json`. It prints the exact `adapterPath`, verified package tarball path, and `hostSynchronization: "pending"`. The pair lives in `<root>/versions/0.1.3`; files and directories are made read-only, and an existing version is never overwritten. This protects against accidental edits, not a hostile process running as the same account. Keep the private root and the installed verifier/Node environment trusted.
+`activate` re-verifies the retained attestations, assets, extracted contents and executable identity, then atomically replaces only `<root>/active.json`. It prints the exact `adapterPath`, verified package tarball path, and `hostSynchronization: "pending"`. The pair lives in `<root>/versions/0.1.4`; files and directories are made read-only, and an existing version is never overwritten. This protects against accidental edits, not a hostile process running as the same account. Keep the private root and the installed verifier/Node environment trusted.
 
 Plugin installation and binary configuration are separate external operations. Use the exact `packagePath` printed by activation with `openclaw plugins install /absolute/path/to/package.tgz --force`. For standalone consumers, use `npm install --ignore-scripts /absolute/path/to/package.tgz` in the intended project. Extraction itself does not install JavaScript dependencies or register a host plugin. The installer neither edits gateway configuration nor restarts a running host, changes PATH, grants privacy permissions or installs Peekaboo/Linux helpers. A package-install or host-reload failure after local activation leaves `hostSynchronization` pending; there is no cross-package transaction.
 
 Discovery remains explicit environment override, then `~/.cargo/bin/coven-desktop-use` when present, then PATH. A Cargo binary therefore shadows a newer PATH binary. Activation reports the actual configured/resolved path and JSON version in the installer's account/environment, and prints a shell-quoted command with the verified absolute binary path:
 
 ```sh
-COVEN_DESKTOP_USE_BIN='/absolute/private/desktop-use/versions/0.1.3/native/coven-desktop-use' openclaw gateway
+COVEN_DESKTOP_USE_BIN='/absolute/private/desktop-use/versions/0.1.4/native/coven-desktop-use' openclaw gateway
 ```
 
 Apply that path deliberately to the actual gateway service's launcher environment; a terminal command does not change a previously running service. The SDK uses its trusted `adapterPath` option; MCP uses trusted configuration `adapterPath`. Their exact values are included in the installer result. Confirm the host's own health response reports the intended path/version after your explicit package/configuration/reload steps. The installer can report an unparseable old binary version as `null`, never as a verified version.
@@ -30,14 +30,14 @@ Apply that path deliberately to the actual gateway service's launcher environmen
 To update, stage the next explicit version and then activate it using the same commands. Previous version directories and receipts remain intact. To roll back, explicitly select a retained version:
 
 ```sh
-coven-desktop-use-install rollback --version 0.1.3 --root /absolute/private/desktop-use
+coven-desktop-use-install rollback --version 0.1.4 --root /absolute/private/desktop-use
 ```
 
 Rollback revalidates that retained pair and updates local selection; reinstall its retained package and restore its explicit path in each affected host yourself. It does not undo desktop effects, files written by desktop actions, grants, helper installations or running-process state. `previousVersion` records the immediately preceding local selection, not a complete host deployment history.
 
 ## Version-pinned Cargo source fallback
 
-If you choose to build the adapter from source, install Rust/Cargo yourself and independently select the same release version and full source commit as the intended package. Obtain the commit from verified release evidence, not an untrusted download or a moving branch. Alternatively, independently verify that the chosen release tag resolves to that full commit. The current `0.1.3` candidate has no created release tag; the placeholders below do not assert that any tag or public release exists.
+If you choose to build the adapter from source, install Rust/Cargo yourself and independently select the same release version and full source commit as the intended package. Obtain the commit from verified release evidence, not an untrusted download or a moving branch. Alternatively, independently verify that the chosen release tag resolves to that full commit. The current `0.1.4` candidate has no created release tag; the placeholders below do not assert that any tag or public release exists.
 
 Use a separate absolute install root so an existing Cargo/PATH adapter is not silently replaced. Replace both placeholders with your verified selection, then build with the checked-in lockfile:
 
@@ -114,7 +114,7 @@ Assembly reads actual archive bytes and identities, computes `bytes`, SHA-256 an
 
 ## Candidate versus public provenance
 
-A public manifest uses `source.tag: "v0.1.3"` and `source.ref: "refs/tags/v0.1.3"`. The public CLI independently derives that ref from its required version and rejects a candidate manifest. Candidate manifests use `tag: null`, the actual `refs/heads/...` or `refs/pull/<number>/merge` source ref, and publication not-run. They do not claim that a tag exists.
+A public manifest uses `source.tag: "v0.1.4"` and `source.ref: "refs/tags/v0.1.4"`. The public CLI independently derives that ref from its required version and rejects a candidate manifest. Candidate manifests use `tag: null`, the actual `refs/heads/...` or `refs/pull/<number>/merge` source ref, and publication not-run. They do not claim that a tag exists.
 
 Trusted Task 2 CI code can import `stageCandidateRelease(options, {sourceCommit, sourceRef})` and `activateCandidateRelease(options, {sourceCommit, sourceRef})` from `scripts/install-adapter.mjs`. Obtain that policy from the job's trusted checkout context, independently of the manifest; use the actual full source SHA and ref of the attestation producer. Options are `{version, root, manifest, assets, target?}` for staging and `{version, root, operation?}` for selection; `operation: "rollback"` labels an explicit retained candidate selection. Both use the real fixed GitHub verifier and reject a manifest not matching the supplied source policy. There is no candidate CLI option. Candidate receipts are marked `candidate: true`, cannot be activated by the public CLI, and remain qualification evidence until the separately authorized public workflow attests tag-bound artifacts.
 
@@ -122,4 +122,4 @@ Unit tests place a deliberately fake `gh` on a child process's private PATH and 
 
 ## Delivery preparation
 
-The tag-aware producer, immutable evidence reconciliation, explicitly gated npm staging/GitHub prerelease path, public download verification and installed native acceptance handoff are documented in [public delivery and installed acceptance](release-delivery.md). The current 0.1.3 source remains blocked by official newer-host qualification; this implementation does not establish publication readiness or #25 completion.
+The tag-aware producer, immutable evidence reconciliation, explicitly gated npm staging/GitHub prerelease path, public download verification and installed native acceptance handoff are documented in [public delivery and installed acceptance](release-delivery.md). The current 0.1.4 source remains blocked by official newer-host qualification; this implementation does not establish publication readiness or #25 completion.

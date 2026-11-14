@@ -30,6 +30,7 @@ import {
   redactComputerUseValue,
   type ComputerUseParams,
   type ComputerUsePolicyContext,
+  type NormalizedAdapterResult,
 } from "../computer-use-policy.js";
 
 const adapterOutcomes = new WeakMap<object, CapabilityOutcome>();
@@ -44,7 +45,7 @@ const DEFAULT_ADAPTER_BIN = "coven-desktop-use";
 export type ToolResult = {
   content: [{ type: "text"; text: string }, ...ObservationImage[]];
   details: Record<string, unknown> & {
-    status: string;
+    status: NormalizedAdapterResult['status'];
     success?: boolean;
     risk?: string;
     reason?: string;
@@ -231,6 +232,24 @@ async function executeAllowedAction(
 }
 
 async function runHealth(ctx: ComputerUsePolicyContext, runAdapter: AdapterRunner, params: ComputerUseParams, permissions: ActionPermissions, discovery: DiscoveryOptions): Promise<ToolResult["details"]> {
+  if (!isActionAllowed(permissions, "doctor")) {
+    // A trusted policy skip is not an adapter response or a failed native probe.
+    const hostEvidence = await discoverCapabilityHost(discovery);
+    const capabilitiesV1 = buildPluginCapabilities(undefined, hostEvidence, permissions, discovery.surface);
+    return {
+      action: "health",
+      agent: COMPUTER_USE_AGENT,
+      healthCheck: COMPUTER_USE_HEALTH_CHECK,
+      auditLog: discovery.auditLogPath,
+      status: "blocked",
+      success: false,
+      code: "ACTION_PROFILE_DENIED",
+      reason: "The doctor probe was not run because doctor is disabled by trusted action permissions.",
+      adapterProbe: { action: "doctor", status: "skipped", code: "ACTION_PROFILE_DENIED" },
+      capabilitiesV1,
+      adapterInvocation: { ...hostEvidence.adapter, version: null, phase: "before-start", processStarted: false, code: "ACTION_PROFILE_DENIED" },
+    };
+  }
   let adapterResult: unknown;
   try {
     adapterResult = await runAdapterWithTransientObservationRetry(["doctor"], { action: "doctor", timeoutMs: params.timeoutMs }, runAdapter, "health");
@@ -242,10 +261,8 @@ async function runHealth(ctx: ComputerUsePolicyContext, runAdapter: AdapterRunne
   return discoveryResult(adapterResult, ctx, permissions, "health", discovery);
 }
 
-async function discoveryResult(adapterResult: unknown, ctx: ComputerUsePolicyContext, permissions: ActionPermissions, action: "health" | "doctor", discovery: DiscoveryOptions): Promise<ToolResult["details"]> {
+async function discoverCapabilityHost(discovery: DiscoveryOptions): Promise<HostEvidence> {
   const adapterBin = discovery.adapterPath ?? resolveAdapterBin();
-  let outcome: CapabilityOutcome = adapterResult && typeof adapterResult === "object" ? adapterOutcomes.get(adapterResult) ?? { phase: "adapter" } : { phase: "output", code: "MALFORMED_OUTPUT" };
-  const normalized = normalizeAdapterResult(adapterResult, { evidence: action === "health" ? { action, adapter: adapterBin } : { action, agentId: ctx.agentId ?? COMPUTER_USE_AGENT.id, sessionKey: ctx.sessionKey } });
   const selected = isAbsolute(adapterBin) || adapterBin.includes("/") ? resolve(adapterBin) : installedBinary(adapterBin);
   const hostName = platform();
   const session = process.env.XDG_SESSION_TYPE?.toLowerCase();
@@ -254,6 +271,14 @@ async function discoveryResult(adapterResult: unknown, ctx: ComputerUsePolicyCon
     adapter: { configuredPath: adapterBin, resolvedPath: selected ? await realpath(selected).catch(() => null) : null }, integrations: {}, observedAtMs: Date.now(),
   };
   hostEvidence.integrations = discoverHostIntegrations(hostName, process.env, installedBinary, hostEvidence.observedAtMs!);
+  return hostEvidence;
+}
+
+async function discoveryResult(adapterResult: unknown, ctx: ComputerUsePolicyContext, permissions: ActionPermissions, action: "health" | "doctor", discovery: DiscoveryOptions): Promise<ToolResult["details"]> {
+  const adapterBin = discovery.adapterPath ?? resolveAdapterBin();
+  let outcome: CapabilityOutcome = adapterResult && typeof adapterResult === "object" ? adapterOutcomes.get(adapterResult) ?? { phase: "adapter" } : { phase: "output", code: "MALFORMED_OUTPUT" };
+  const normalized = normalizeAdapterResult(adapterResult, { evidence: action === "health" ? { action, adapter: adapterBin } : { action, agentId: ctx.agentId ?? COMPUTER_USE_AGENT.id, sessionKey: ctx.sessionKey } });
+  const hostEvidence = await discoverCapabilityHost(discovery);
   let capabilitiesV1;
   let compatibilityError: string | undefined;
   try { capabilitiesV1 = buildPluginCapabilities(adapterResult, hostEvidence, permissions, discovery.surface); }

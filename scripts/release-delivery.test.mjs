@@ -53,11 +53,11 @@ test('evidence collection requires every lane bound to the same immutable manife
 });
 
 test('initial publication needs separate bootstrap intent and cannot claim rollback', () => {
-  const evidence = { source: { commit, ref: context.ref, tag: 'v0.1.3' }, runId: '123', runAttempt: '1', qualification: 'passed', updateRollback: 'not-run', priorCandidate: null };
-  assert.doesNotThrow(() => api.assertDelivery('0.1.3', evidence, { ...context, delivery: 'stage-bootstrap', previousRecordPresent: false }));
-  assert.throws(() => api.assertDelivery('0.1.3', evidence, context));
-  assert.throws(() => api.assertDelivery('0.1.3', { ...evidence, priorCandidate: { version: '0.1.2' } }, { ...context, delivery: 'stage-bootstrap', previousRecordPresent: false }));
-  assert.throws(() => api.assertDelivery('0.1.4', { ...evidence, source: { ...evidence.source, ref: 'refs/tags/v0.1.4', tag: 'v0.1.4' } }, { ...context, ref: 'refs/tags/v0.1.4', delivery: 'stage-bootstrap', previousRecordPresent: false }));
+  const evidence = { source: { commit, ref: 'refs/tags/v0.1.4', tag: 'v0.1.4' }, runId: '123', runAttempt: '1', qualification: 'passed', updateRollback: 'not-run', priorCandidate: null };
+  assert.doesNotThrow(() => api.assertDelivery('0.1.4', evidence, { ...context, ref: 'refs/tags/v0.1.4', delivery: 'stage-bootstrap', previousRecordPresent: false }));
+  assert.throws(() => api.assertDelivery('0.1.4', evidence, { ...context, ref: 'refs/tags/v0.1.4' }));
+  assert.throws(() => api.assertDelivery('0.1.4', { ...evidence, priorCandidate: { version: '0.1.2' } }, { ...context, ref: 'refs/tags/v0.1.4', delivery: 'stage-bootstrap', previousRecordPresent: false }));
+  assert.throws(() => api.assertDelivery('0.1.3', { ...evidence, source: { ...evidence.source, ref: 'refs/tags/v0.1.3', tag: 'v0.1.3' } }, { ...context, ref: 'refs/tags/v0.1.3', delivery: 'stage-bootstrap', previousRecordPresent: false }));
 });
 
 test('public rollback requires independently selected tag-bound previous version and source', () => {
@@ -70,20 +70,20 @@ test('public rollback requires independently selected tag-bound previous version
 });
 
 test('bootstrap cannot proceed when a committed previous qualification record exists', () => {
-  const evidence = { source: { commit, ref: context.ref, tag: 'v0.1.3' }, runId: '123', runAttempt: '1', qualification: 'passed', updateRollback: 'not-run', priorCandidate: null };
-  assert.throws(() => api.assertDelivery('0.1.3', evidence, { ...context, delivery: 'stage-bootstrap', previousRecordPresent: true }));
+  const evidence = { source: { commit, ref: 'refs/tags/v0.1.4', tag: 'v0.1.4' }, runId: '123', runAttempt: '1', qualification: 'passed', updateRollback: 'not-run', priorCandidate: null };
+  assert.throws(() => api.assertDelivery('0.1.4', evidence, { ...context, ref: 'refs/tags/v0.1.4', delivery: 'stage-bootstrap', previousRecordPresent: true }));
 });
 
 // These are nonexecutable archive parser fixtures, never native qualification evidence.
 async function assemblyFixture(t) {
-  const f = await fixture(); t.after(() => rm(f.root, { recursive: true, force: true }));
+  const f = await fixture('0.1.4'); t.after(() => rm(f.root, { recursive: true, force: true }));
   await rm(f.manifestPath);
   for (const lane of NATIVE_MATRIX) {
     const binary = Buffer.alloc(32);
     const linux = lane.platform === 'linux';
     if (linux) { binary.set([127, 69, 76, 70, 2, 1]); binary.writeUInt16LE(lane.arch === 'arm64' ? 183 : 62, 18); }
     else { binary.writeUInt32LE(0xfeedfacf, 0); binary.writeUInt32LE(lane.arch === 'arm64' ? 0x0100000c : 0x01000007, 4); }
-    const id = { ...identity(), ok: true, version: '0.1.3', target: lane.target };
+    const id = { ...identity('0.1.4'), ok: true, version: '0.1.4', target: lane.target };
     const entries = [{ path: 'coven-desktop-use', data: binary, mode: 0o755 }, { path: 'release-identity.json', data: JSON.stringify(id) }];
     const bytes = tar(entries), asset = `native-${lane.target}.tar.gz`;
     await writeFile(join(f.root, asset), bytes);
@@ -95,11 +95,11 @@ async function assemblyFixture(t) {
 
 test('actual assembler and reconciliation CLIs preserve immutable tag bytes and complete lane index', async t => {
   const f = await assemblyFixture(t);
-  const env = { ...process.env, GITHUB_REPOSITORY: 'OpenCoven/desktop-use', GITHUB_SHA: commit, GITHUB_REF: 'refs/tags/v0.1.3', GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '1' };
+  const env = { ...process.env, GITHUB_REPOSITORY: 'OpenCoven/desktop-use', GITHUB_SHA: commit, GITHUB_REF: 'refs/tags/v0.1.4', GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '1' };
   execFileSync(process.execPath, ['scripts/release-candidate.mjs', f.root], { env });
   const original = await readFile(f.manifestPath);
   const manifest = JSON.parse(original);
-  assert.equal(manifest.source.tag, 'v0.1.3');
+  assert.equal(manifest.source.tag, 'v0.1.4');
   assert.equal(manifest.artifacts.length, 4);
   const binding = { runId: '123', runAttempt: '1', sourceCommit: commit, sourceRef: env.GITHUB_REF, manifestSha256: api.sha256(original), packageSha256: manifest.package.sha256 };
   const receipts = join(f.root, 'receipts'); await mkdir(receipts);
@@ -132,7 +132,7 @@ test('actual assembler and reconciliation CLIs preserve immutable tag bytes and 
     const git = join(f.root, 'git');
     await writeFile(git, `#!${process.execPath}
 const a=process.argv.slice(2);
-if(a[0]==='rev-parse' && ['HEAD','refs/tags/v0.1.3^{commit}'].includes(a[1])) console.log('${commit}');
+if(a[0]==='rev-parse' && ['HEAD','refs/tags/v0.1.4^{commit}'].includes(a[1])) console.log('${commit}');
 else if(JSON.stringify(a)!==JSON.stringify(['merge-base','--is-ancestor','${commit}','origin/main'])) process.exit(90);
 `);
     await chmod(git, 0o755);
@@ -148,14 +148,14 @@ if(a[0]==='api') {
  else process.exit(91);
 } else {
  if(a[0]!=='attestation'||a[1]!=='verify'||process.env.FIXTURE_BAD_PROVENANCE==='1') process.exit(92);
- for(const [flag,value] of [['--repo','OpenCoven/desktop-use'],['--signer-workflow','OpenCoven/desktop-use/.github/workflows/release.yml'],['--source-digest','${commit}'],['--source-ref','refs/tags/v0.1.3'],['--predicate-type','https://slsa.dev/provenance/v1'],['--format','json']]) if(a[a.indexOf(flag)+1]!==value) process.exit(93);
+ for(const [flag,value] of [['--repo','OpenCoven/desktop-use'],['--signer-workflow','OpenCoven/desktop-use/.github/workflows/release.yml'],['--source-digest','${commit}'],['--source-ref','refs/tags/v0.1.4'],['--predicate-type','https://slsa.dev/provenance/v1'],['--format','json']]) if(a[a.indexOf(flag)+1]!==value) process.exit(93);
  if(!a.includes('--deny-self-hosted-runners')) process.exit(94);
  fs.appendFileSync(${JSON.stringify(verifierLog)},JSON.stringify(a)+'\\n');
  console.log('[{"fixtureOnly":true}]');
 }
 `);
     const transport = join(f.root, 'registry-fixture.mjs');
-    await writeFile(transport, "globalThis.fetch = async url => { if(url !== 'https://registry.npmjs.org/@opencoven%2fopenclaw-desktop-use/0.1.3') throw new Error('Unexpected registry request'); return { status: 404 }; };\n");
+    await writeFile(transport, "globalThis.fetch = async url => { if(url !== 'https://registry.npmjs.org/@opencoven%2fopenclaw-desktop-use/0.1.4') throw new Error('Unexpected registry request'); return { status: 404 }; };\n");
     const preflightEnv = { ...env, PATH: `${f.root}:${process.env.PATH}`, GITHUB_EVENT_NAME: 'workflow_dispatch', RELEASE_DELIVERY: 'stage-bootstrap' };
     const args = ['--import', transport, 'scripts/release-prepublish.mjs', output];
     const result = JSON.parse(execFileSync(process.execPath, args, { env: preflightEnv, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
@@ -169,6 +169,6 @@ if(a[0]==='api') {
 
 test('assembler rejects mismatching version tag without writing a manifest', async t => {
   const f = await assemblyFixture(t);
-  assert.throws(() => execFileSync(process.execPath, ['scripts/release-candidate.mjs', f.root], { env: { ...process.env, GITHUB_REPOSITORY: 'OpenCoven/desktop-use', GITHUB_SHA: commit, GITHUB_REF: 'refs/tags/v0.1.4', GITHUB_RUN_ID: '123' }, stdio: 'pipe' }));
+  assert.throws(() => execFileSync(process.execPath, ['scripts/release-candidate.mjs', f.root], { env: { ...process.env, GITHUB_REPOSITORY: 'OpenCoven/desktop-use', GITHUB_SHA: commit, GITHUB_REF: 'refs/tags/v0.1.3', GITHUB_RUN_ID: '123' }, stdio: 'pipe' }));
   await assert.rejects(readFile(f.manifestPath), { code: 'ENOENT' });
 });

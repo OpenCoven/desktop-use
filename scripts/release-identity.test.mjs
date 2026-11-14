@@ -10,7 +10,7 @@ test('package identity reflects current full source and refuses to call dirty so
 });
 test('native --version preserves JSON semantics and adds actual source/target/protocol identity',()=>{
  const out=JSON.parse(execFileSync('cargo',['run','--quiet','--','--version'],{encoding:'utf8',env:{...process.env,CARGO_BUILD_JOBS:'2'}}));
- assert.equal(out.ok,true);assert.equal(out.version,'0.1.3');assert.equal(out.releaseVersion,out.version);assert.equal(out.source.commit,execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim());assert.equal(out.adapterProtocolVersion,1);assert.equal(out.contracts.observation,1);assert.match(out.target,/^(aarch64|x86_64)-(apple-darwin|unknown-linux-gnu)$/);
+ assert.equal(out.ok,true);assert.equal(out.version,'0.1.4');assert.equal(out.releaseVersion,out.version);assert.equal(out.source.commit,execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim());assert.equal(out.adapterProtocolVersion,1);assert.equal(out.contracts.observation,1);assert.match(out.target,/^(aarch64|x86_64)-(apple-darwin|unknown-linux-gnu)$/);
 });
 test('a nested or unrelated checkout cannot borrow a parent repository source identity',async t=>{
  const {mkdtemp,mkdir,rm}=await import('node:fs/promises');await mkdir('target',{recursive:true});const root=await mkdtemp('target/release25-identity-');t.after(()=>rm(root,{recursive:true,force:true}));

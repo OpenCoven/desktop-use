@@ -162,7 +162,7 @@ Legacy plugin inputs add a `deprecation` string to result details and the JSON t
 
 ### Installation
 
-For the explicit paired release installer, provenance requirements, updates, rollback and Cargo shadow diagnostics, see [paired releases](docs/paired-releases.md). Version `0.1.3` is currently a preparation candidate; public installation requires actual tag-bound attestations.
+For the explicit paired release installer, provenance requirements, updates, rollback and Cargo shadow diagnostics, see [paired releases](docs/paired-releases.md). Version `0.1.4` is currently a preparation candidate; public installation requires actual tag-bound attestations.
 
 For source development, this unpinned command builds the repository's current default branch; it does not select the source of a paired release. For a version-pinned source fallback, use the [Cargo fallback procedure](docs/paired-releases.md#version-pinned-cargo-source-fallback).
 
@@ -256,7 +256,7 @@ Omit `allowedActions` to use the preset. When supplied, it intersects the preset
 
 The plugin snapshots permissions at registration; direct tool factories accept immutable snapshots from `resolveActionPermissions`. Reload the plugin or gateway to apply configuration changes. Model arguments cannot supply or widen this configuration. The model schema lists only eligible actions and the deprecated aliases whose canonical actions remain eligible. Alias normalization also precedes hook and execution permission checks, so `confirm:true` cannot override a denial. These eligibility settings retain all existing risk approvals, target checks, and scoped Stop behavior; they are not an OS sandbox or a grant of gateway authorization. Observation-only still requires approval for an explicit capture destination that can replace a file or a read outside the workspace.
 
-A hook denial is a gateway rejection before execution and does not produce an adapter execution audit record. Direct executor denials return `status: "blocked"`, `success: false`, and `code: "ACTION_PROFILE_DENIED"` through the existing redacted audit stream. Health labels its permission summary as `adapter-eligibility` with gateway authorization `not-reported`.
+A hook denial is a gateway rejection before execution and does not produce an adapter execution audit record. Direct executor denials return `status: "blocked"`, `success: false`, and `code: "ACTION_PROFILE_DENIED"` through the existing redacted audit stream. Health labels its permission summary as `adapter-eligibility` with gateway authorization `not-reported`. Health uses a doctor probe when doctor is eligible. With health enabled but doctor disabled, health retains local agent, health-check, audit, and permission metadata and returns `blocked` with `ACTION_PROFILE_DENIED` and `adapterProbe: { action: "doctor", status: "skipped", code: "ACTION_PROFILE_DENIED" }`; it runs no adapter probe and does not establish backend health.
 
 ## Execution bounds, stop, and privacy
 
@@ -294,4 +294,4 @@ The host-neutral desktop client also has a local stdio MCP connector and a separ
 
 ## Standalone SDK and local MCP candidate
 
-The local unpublished candidate adds compiled JavaScript and TypeScript declarations at `@opencoven/openclaw-desktop-use/sdk` and `/contracts`, plus the `coven-desktop-use-mcp` executable and compiled approval-host/embedding examples. Standalone consumers require Node `>=22.14.0` and need neither OpenClaw nor tsx. Install the exact locally packed tarball using [the client guide](docs/desktop-client.md#local-candidate-consumption); existing public npm `0.1.2` does not establish these exports. See [the MCP guide](docs/mcp.md) for local stdio, the explicit terminal review UI and the two tested protocol revisions. Native desktop, release and publication acceptance remain separate.
+The local unpublished candidate adds compiled JavaScript and TypeScript declarations at `@opencoven/openclaw-desktop-use/sdk` and `/contracts`, plus the `coven-desktop-use-mcp` executable and compiled approval-host/embedding examples. Standalone consumers require Node `>=22.14.0` and need neither OpenClaw nor tsx. Install the exact locally packed tarball using [the client guide](docs/desktop-client.md#local-candidate-consumption); the published npm `0.1.3` artifact does not contain these SDK/MCP exports. See [the MCP guide](docs/mcp.md) for local stdio, the explicit terminal review UI and the two tested protocol revisions. Native desktop, release and publication acceptance remain separate.

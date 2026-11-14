@@ -2,7 +2,7 @@
   "id": "opencoven-desktop-use",
   "name": "OpenCoven Desktop Use",
   "description": "Registers the computer_use and legacy desktop_use tools for the dedicated OpenCoven computer-use agent.",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "activation": {
     "onStartup": true
   },

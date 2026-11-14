@@ -26,7 +26,7 @@ export function assertDelivery(version, evidence, context) {
   for (const key of ['runId', 'runAttempt']) assert.equal(evidence[key], context[key]);
   assert.equal(evidence.qualification, 'passed');
   if (context.delivery === 'stage-bootstrap') {
-    assert.equal(version, '0.1.3', 'Bootstrap is only the first paired version');
+    assert.equal(version, '0.1.4', 'Bootstrap is only the first paired version');
     assert.equal(context.previousRecordPresent, false, 'Bootstrap forbids any previous qualification record');
     assert.equal(evidence.priorCandidate, null);
     assert.equal(evidence.updateRollback, 'not-run');

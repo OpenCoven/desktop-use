@@ -4,7 +4,8 @@ import { test } from "node:test";
 import Ajv2020 from "ajv/dist/2020.js";
 import { buildPluginCapabilities, discoverCapabilityControls, repairHintsForCapabilities, type HostEvidence } from "./capabilities.js";
 import { resolveActionPermissions } from "./action-permissions.js";
-import { createComputerUseTool, normalizeParams } from "./plugin-tool.js";
+import type { ComputerUseAuditEvent } from "./computer-use-audit.js";
+import { createComputerUseTool, createDesktopUseTool, normalizeParams } from "./plugin-tool.js";
 
 const fixture = async (name: string) => JSON.parse(await readFile(new URL(`../contracts/v1/fixtures/capabilities/${name}.json`, import.meta.url), "utf8")).report;
 const host: HostEvidence = { environment: { platform: "linux", session: null }, adapter: { configuredPath: "coven-desktop-use", resolvedPath: "/fixture/adapter" }, integrations: {}, observedAtMs: 1700000000001 };
@@ -35,7 +36,7 @@ test("plugin normalization preserves backend facts and overlays trusted authorit
     assert.equal(result.actions.click.policy.gatewayPolicy, "not-reported");
     assert.ok(!result.actions.click.surfaces.includes("sdk"));
     assert.equal(result.adapter?.resolvedPath, "/fixture/adapter");
-    assert.equal(result.adapter?.version, "0.1.3");
+    assert.equal(result.adapter?.version, "0.1.4");
     assert.equal(result.actionPermissions?.snapshotId, permissions.snapshotId);
   }
 });
@@ -270,4 +271,65 @@ test('empty backend and host limit intersections disable variants and their fina
   assert.ok(scroll.variants.every(variant => !variant.enabled && variant.reasonCodes.includes('LIMITS_DISJOINT')));
   assert.equal(scroll.variants[0].parameters.amount.minimum, 51);
   assert.equal(scroll.variants[0].parameters.amount.maximum, 50);
+});
+
+test("health-only discovery reports unverified native capabilities without probing or expanding trusted eligibility", async () => {
+  const schema = JSON.parse(await readFile(new URL("../contracts/v1/capabilities.schema.json", import.meta.url), "utf8"));
+  const validate = new Ajv2020.default({ strict: true }).compile(schema);
+  for (const factory of [createComputerUseTool, createDesktopUseTool]) for (const confirm of [false, true]) {
+    const permissions = resolveActionPermissions({ allowedActions: ["health"] });
+    const snapshot = JSON.stringify(permissions);
+    const audit: ComputerUseAuditEvent[] = [];
+    const tool = factory({ actionPermissions: permissions,
+      ctx: { agentId: "health-capability-fixture", sessionKey: "health-only", agentDir: "/tmp/health-capability-fixture/agent" },
+      runAdapter: async () => { assert.fail("An intentionally skipped doctor probe must never start or retry an adapter"); },
+      appendAuditEvent: async event => { audit.push(event); } });
+    const parameters = JSON.stringify(tool.parameters);
+    const health = await tool.execute("health-capability-discovery", { action: "health", confirm, reason: "private-capability-diagnostic" });
+    assert.equal(health.details.status, "blocked");
+    assert.equal(health.details.success, false);
+    assert.equal(health.details.action, "health");
+    assert.equal(health.details.code, "ACTION_PROFILE_DENIED");
+    assert.deepEqual(health.details.adapterProbe, { action: "doctor", status: "skipped", code: "ACTION_PROFILE_DENIED" });
+    const report = health.details.capabilitiesV1 as any;
+    assert.equal(validate(report), true, JSON.stringify(validate.errors));
+    assert.equal(report.schemaVersion, 1);
+    assert.equal(report.producer.surface, "plugin");
+    assert.deepEqual(report.actionPermissions, { profile: "full", allowedActions: ["health", "stop"], snapshotId: permissions.snapshotId });
+    assert.equal(report.adapter.version, null);
+    for (const action of ["doctor", "inspect", "screenshot", "click", "type-text", "keypress", "scroll", "focus"]) {
+      const capability = report.actions[action];
+      assert.equal(capability.state, "unverified", action);
+      assert.deepEqual(capability.reasonCodes, ["ADAPTER_CAPABILITIES_NOT_REPORTED"], action);
+      assert.equal(capability.policy.profile, "denied", action);
+      assert.equal(capability.policy.gatewayPolicy, "not-reported", action);
+      assert.ok(capability.evidence.some((entry: any) => entry.kind === "actual-action" && entry.status === "not-run"), action);
+      assert.ok(!capability.evidence.some((entry: any) => entry.kind === "binary" && entry.status === "passed"), action);
+    }
+    assert.equal(report.actions.shell.state, "available", "local implementation support remains separate from trusted denial");
+    assert.equal(report.actions.shell.policy.profile, "denied");
+    assert.deepEqual(discoverCapabilityControls(report).filter(control => control.enabled).map(control => control.action), ["health", "stop"]);
+    assert.deepEqual(health.details.actionPermissions, { scope: "adapter-eligibility", ...report.actionPermissions, gatewayAuthorization: "not-reported" });
+    const invocation = health.details.adapterInvocation as any;
+    assert.equal(invocation.phase, "before-start");
+    assert.equal(invocation.processStarted, false);
+    assert.equal(invocation.code, "ACTION_PROFILE_DENIED");
+    assert.equal(invocation.version, null);
+    assert.equal(health.details.permissionFlow, undefined);
+    assert.equal(health.details.requiresApproval, undefined);
+    assert.equal(health.details.approvalPrompt, undefined);
+    assert.equal(health.details.repairHints, undefined);
+    assert.doesNotMatch(JSON.stringify(health.details), /MALFORMED_OUTPUT|CAPABILITY_SCHEMA_(?:INVALID|UNSUPPORTED)|Screen Recording|Accessibility|Install coven|private-capability-diagnostic/);
+    assert.deepEqual(audit[0].result, { status: "blocked", success: false, code: "ACTION_PROFILE_DENIED" });
+    assert.equal(audit[0].action, "health");
+    assert.equal(audit[0].approvalId, undefined);
+    assert.doesNotMatch(JSON.stringify(audit), /private-capability-diagnostic|capabilitiesV1/);
+    assert.deepEqual(JSON.parse(health.content[0].text), JSON.parse(JSON.stringify(health.details)));
+    assert.equal((await tool.execute("health-capability-stop", { action: "stop" })).details.status, "success");
+    for (const action of ["doctor", "permissions"]) assert.equal((await tool.execute(`health-denied-${action}`, { action, confirm: true })).details.code, "ACTION_PROFILE_DENIED");
+    assert.deepEqual(tool.parameters.properties.action.enum, ["health", "stop"]);
+    assert.equal(JSON.stringify(tool.parameters), parameters);
+    assert.equal(JSON.stringify(permissions), snapshot);
+    assert.ok(Object.isFrozen(permissions) && Object.isFrozen(permissions.allowedActions));
+  }
 });

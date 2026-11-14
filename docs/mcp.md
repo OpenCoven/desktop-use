@@ -2,6 +2,8 @@
 
 The MCP connector maps `computer_use` to the host-neutral `DesktopClient`, preserving all 18 canonical action families, shared validation, image receipts, policy, audit and cancellation. It serves local stdio only. Model requests cannot supply `confirm`, workspace or principal identity, approval decisions, secrets or broker configuration. The only listed tool is `computer_use`. Capabilities identify the consumer as `mcp`; installed helpers and protocol success do not establish desktop acceptance.
 
+The connector consumes the public execution v1 request and structured-result schemas described in [the execution contract and version policy](desktop-client.md#execution-contract-and-version-policy). Its negotiated MCP wire revision is independent of that desktop contract. Both supported wire revisions preserve the SDK's `content` and map its `details` to `structuredContent`.
+
 ## Trusted startup
 
 Create an absolute workspace and a separate, existing state directory owned by the current OS user with mode `0700`. Supply an absolute configuration filename owned by that user and not writable by group or others. The connector requires an absolute adapter executable path and principal identity; it does not derive authority from MCP client metadata. The audit file is opened without following symlinks, requires mode `0600` and one link, and cannot silently fall back to unaudited startup. Never put the private state directory inside a model-writable workspace.
@@ -18,7 +20,7 @@ Create an absolute workspace and a separate, existing state directory owned by t
 
 Omitting `actionProfile` chooses `observation-only`. A trusted host can explicitly set `"actionProfile": "full"`; this broadens eligibility and still requires separate approval for gated effects. `approvalTimeoutMs` is a trusted integer from 1 through 300000, defaults to 300000, and is separate from the action timeout.
 
-Install the exact local candidate tarball as described in [the client guide](desktop-client.md#local-candidate-consumption), then run `./node_modules/.bin/coven-desktop-use-mcp --config /absolute/config.json`. Run `./node_modules/.bin/coven-desktop-use-mcp --help` for startup syntax; help uses stderr so stdout remains protocol-only. This candidate is unpublished; existing public npm `0.1.2` is not evidence of these exports. With no broker, observations remain usable and gated operations return an explicit `needsApproval` result with no effect. Stdout contains only MCP messages; sanitized diagnostics use stderr.
+Install the exact local candidate tarball as described in [the client guide](desktop-client.md#local-candidate-consumption), then run `./node_modules/.bin/coven-desktop-use-mcp --config /absolute/config.json`. Run `./node_modules/.bin/coven-desktop-use-mcp --help` for startup syntax; help uses stderr so stdout remains protocol-only. This candidate is unpublished; the published npm `0.1.3` artifact does not contain these SDK/MCP exports. With no broker, observations remain usable and gated operations return an explicit `needsApproval` result with no effect. Stdout contains only MCP messages; sanitized diagnostics use stderr.
 
 ## Separate reference host
 

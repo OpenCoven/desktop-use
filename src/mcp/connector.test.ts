@@ -26,6 +26,8 @@ async function fixture(t: any, era: 'modern' | 'legacy', extra = {}) {
 for (const era of ['modern', 'legacy'] as const) {
   test(`${era} official SDK wire advertises canonical schema, truthful capabilities and structured results`, async t => {
     const { client } = await fixture(t, era);
+    const manifest = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8'));
+    assert.equal(client.getServerVersion()?.version, manifest.version, 'MCP initialization must identify the actual package version');
     const { tools } = await client.listTools();
     assert.deepEqual(tools.map(tool => tool.name), ['computer_use']);
     const schema = tools[0].inputSchema as any;
@@ -37,6 +39,31 @@ for (const era of ['modern', 'legacy'] as const) {
     assert.equal(Object.keys(details.capabilitiesV1.actions).length, 18);
     assert.deepEqual(JSON.parse((result.content as any[])[0].text), details);
     assert.equal(details.capabilitiesV1.actions['file-write'].policy.profile, 'denied');
+  });
+  test(`${era} health-only wire preserves skipped native evidence and trusted MCP adapter identity`, async t => {
+    let approvals = 0;
+    const permissions = resolveActionPermissions({ allowedActions: ['health'] });
+    const snapshot = JSON.stringify(permissions);
+    const { client, audits } = await fixture(t, era, { actionPermissions: permissions, approvalProvider: () => { approvals++; return 'allowed'; } });
+    const { tools } = await client.listTools();
+    assert.equal((tools[0].inputSchema as any).properties.action.enum.length, 18);
+    const result = await client.callTool({ name: 'computer_use', arguments: { action: 'health', reason: 'private-mcp-health' } });
+    const details = result.structuredContent as any;
+    assert.equal(result.isError, true); assert.equal(details.status, 'blocked');
+    assert.deepEqual(details.adapterProbe, { action: 'doctor', status: 'skipped', code: 'ACTION_PROFILE_DENIED' });
+    assert.equal(details.capabilitiesV1.schemaVersion, 1); assert.equal(details.capabilitiesV1.producer.surface, 'mcp');
+    assert.deepEqual(details.capabilitiesV1.actionPermissions, permissions);
+    assert.equal(details.capabilitiesV1.actions.doctor.state, 'unverified');
+    assert.equal(details.adapterInvocation.configuredPath, '/missing/fixture-adapter');
+    assert.equal(details.adapterInvocation.phase, 'before-start'); assert.equal(details.adapterInvocation.processStarted, false);
+    assert.equal(details.repairHints, undefined); assert.equal(details.permissionFlow, undefined);
+    assert.deepEqual(JSON.parse((result.content as any[])[0].text), details);
+    assert.doesNotMatch(JSON.stringify(result), /private-mcp-health|ENOENT|MALFORMED_OUTPUT|CAPABILITY_SCHEMA_|Screen Recording|Accessibility|Install coven/);
+    assert.equal(((await client.callTool({ name: 'computer_use', arguments: { action: 'stop' } })).structuredContent as any).status, 'success');
+    assert.equal(((await client.callTool({ name: 'computer_use', arguments: { action: 'doctor' } })).structuredContent as any).code, 'ACTION_PROFILE_DENIED');
+    assert.equal(approvals, 0); assert.equal(JSON.stringify(permissions), snapshot);
+    assert.deepEqual((audits[0] as any).result, { status: 'blocked', success: false, code: 'ACTION_PROFILE_DENIED' });
+    assert.doesNotMatch(JSON.stringify(audits), /private-mcp-health|capabilitiesV1|approvalId/);
   });
   test(`${era} rejects model authority, aliases and malformed values without effects or private diagnostics`, async t => {
     const { client, root, audits } = await fixture(t, era, { actionPermissions: resolveActionPermissions() });
