@@ -52,7 +52,8 @@ def app(state_path, session, title):
         return True
 
     def key(widget, event):
-        state['keys'].append({'name': Gdk.keyval_name(event.keyval), 'text': event.string})
+        state['keys'].append({'name': Gdk.keyval_name(event.keyval), 'text': event.string,
+                              'serverTimeMs': event.time, 'receivedMonotonicMs': time.monotonic_ns() // 1_000_000})
         label.set_text('Fixture 21 | clicks %d | keys %d' % (len(state['clicks']), len(state['keys'])))
         save()
         return True
