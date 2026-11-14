@@ -10,6 +10,7 @@ const REAP: Duration = Duration::from_millis(40);
 // Distinct from every one-byte acknowledgement, including an ACK that arrives
 // just after cancellation interrupted its original read.
 const REPORT: u8 = 0xd1;
+const POINTER_REPORT: u8 = 0xd2;
 static PARENT_GONE: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn parent_died(_: libc::c_int) {
@@ -139,7 +140,11 @@ fn write_child(fd: RawFd, data: &[u8]) -> bool {
     true
 }
 fn write_report(fd: RawFd, mut report: [u8; 8]) -> bool {
-    report[0] = REPORT;
+    report[0] = if report[0] == 2 {
+        POINTER_REPORT
+    } else {
+        REPORT
+    };
     write_child(fd, &report)
 }
 fn wait_pipe(fd: RawFd, events: libc::c_short) {
@@ -209,6 +214,16 @@ unsafe fn child(command: RawFd, reply: RawFd, lifetime: Duration, owner: libc::p
             break;
         }
         match kind[0] {
+            b'P' => {
+                let mut button = [0];
+                if !read_exact(command, &mut button) {
+                    break;
+                }
+                let ready = context.begin_pointer(button[0]);
+                if !write_child(reply, &[if ready { b'A' } else { b'U' }]) {
+                    break;
+                }
+            }
             b'H' => {
                 let mut bytes = [0; 4];
                 if !read_exact(command, &mut bytes) {
@@ -552,8 +567,17 @@ impl PrivateChild {
             if !self.read(&mut head, deadline, false) {
                 return None;
             }
-            if head[0] == REPORT {
-                let mut report = [1, 0, 0, 0, 0, 0, 0, 0];
+            if head[0] == REPORT || head[0] == POINTER_REPORT {
+                let mut report = [
+                    if head[0] == POINTER_REPORT { 2 } else { 1 },
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ];
                 return self
                     .read(&mut report[1..], deadline, false)
                     .then_some(report);
@@ -620,13 +644,29 @@ fn timeout_report() -> serde_json::Value {
     serde_json::json!({"schemaVersion":1,"state":"unverified","reasonCode":"X11_GUARD_TIMEOUT"})
 }
 fn project_report(report: [u8; 8]) -> serde_json::Value {
-    if report[0] != 1 || ![1, 2, 3].contains(&report[1]) {
+    if ![1, 2].contains(&report[0])
+        || ![1, 2, 3].contains(&report[1])
+        || report[0] == 2
+            && (report[2] > 5
+                || report[4] > 5
+                || [3, 5, 6, 7].iter().any(|index| report[*index] != 0)
+                || report[1] == 3 && report[2..].iter().any(|value| *value != 0))
+    {
         return serde_json::json!({"schemaVersion":1,"state":"unverified","reasonCode":"X11_CLEANUP_FAILED"});
     }
     if report[1] == 3 {
         return serde_json::json!({"schemaVersion":1,"state":"not-needed"});
     }
-    let mut value = serde_json::json!({"schemaVersion":1,"state":if report[1]==1 {"verified"} else {"unverified"},"releasedKeys":report[2],"restoredKeys":report[3],"restoredButtons":report[4],"restoredLock":report[5]!=0,"restoredGroup":report[6]!=0,"restoredMappings":report[7]});
+    let state = if report[1] == 1 {
+        "verified"
+    } else {
+        "unverified"
+    };
+    let mut value = if report[0] == 2 {
+        serde_json::json!({"schemaVersion":1,"state":state,"releasedButtons":report[2],"restoredButtons":report[4]})
+    } else {
+        serde_json::json!({"schemaVersion":1,"state":state,"releasedKeys":report[2],"restoredKeys":report[3],"restoredButtons":report[4],"restoredLock":report[5]!=0,"restoredGroup":report[6]!=0,"restoredMappings":report[7]})
+    };
     if report[1] == 2 {
         value["reasonCode"] = serde_json::json!("X11_STATE_CHANGED");
     }
@@ -654,6 +694,10 @@ mod tests {
 
     // Exercise actual owned IPC and waitpid without requiring an X server.
     unsafe fn synthetic_child(block_cleanup: bool) -> PrivateChild {
+        synthetic_child_report(block_cleanup, [0xd1, 1, 1, 0, 0, 0, 0, 0])
+    }
+
+    unsafe fn synthetic_child_report(block_cleanup: bool, report: [u8; 8]) -> PrivateChild {
         let (mut command, mut reply) = ([0; 2], [0; 2]);
         assert_eq!(libc::pipe2(command.as_mut_ptr(), libc::O_CLOEXEC), 0);
         assert_eq!(libc::pipe2(reply.as_mut_ptr(), libc::O_CLOEXEC), 0);
@@ -673,7 +717,7 @@ mod tests {
                     libc::pause();
                 }
             }
-            write_child(reply[1], &[0xd1, 1, 1, 0, 0, 0, 0, 0]);
+            write_child(reply[1], &report);
             libc::_exit(0);
         }
         libc::setpgid(pid, pid);
@@ -699,6 +743,57 @@ mod tests {
         assert!(child.settled);
         assert_eq!(report["state"], "verified");
         assert_eq!(report["releasedKeys"], 1);
+    }
+
+    #[test]
+    fn pending_activation_ack_does_not_shift_pointer_cleanup_report() {
+        let mut child = unsafe { synthetic_child_report(false, [0xd2, 1, 1, 0, 0, 0, 0, 0]) };
+        let report = child.finish(true);
+        assert!(child.settled);
+        assert_eq!(report["state"], "verified");
+        assert_eq!(report["releasedButtons"], 1);
+        assert!(report.get("releasedKeys").is_none());
+    }
+
+    #[test]
+    fn pointer_cleanup_projection_rejects_invalid_counts_and_keyboard_flags() {
+        for bad in [
+            [2, 1, 6, 0, 0, 0, 0, 0],
+            [2, 1, 0, 0, 6, 0, 0, 0],
+            [2, 1, 0, 1, 0, 0, 0, 0],
+            [2, 1, 0, 0, 0, 1, 0, 0],
+            [2, 1, 0, 0, 0, 0, 1, 0],
+            [2, 1, 0, 0, 0, 0, 0, 1],
+            [2, 3, 1, 0, 0, 0, 0, 0],
+        ] {
+            assert_eq!(
+                project_report(bad),
+                serde_json::json!({"schemaVersion":1,"state":"unverified","reasonCode":"X11_CLEANUP_FAILED"})
+            );
+        }
+        assert_eq!(
+            project_report([2, 1, 5, 0, 5, 0, 0, 0]),
+            serde_json::json!({"schemaVersion":1,"state":"verified","releasedButtons":5,"restoredButtons":5})
+        );
+    }
+
+    #[test]
+    fn pointer_report_writer_preserves_kind_without_expanding_the_frame() {
+        use std::io::Read;
+        use std::os::fd::FromRawFd;
+        let mut pipe = [0; 2];
+        assert_eq!(
+            unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC) },
+            0
+        );
+        let mut reader = unsafe { std::fs::File::from_raw_fd(pipe[0]) };
+        assert!(write_report(pipe[1], [2, 1, 1, 0, 0, 0, 0, 0]));
+        unsafe {
+            libc::close(pipe[1]);
+        }
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, [0xd2, 1, 1, 0, 0, 0, 0, 0]);
     }
 
     #[test]

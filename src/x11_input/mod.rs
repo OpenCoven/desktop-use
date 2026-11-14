@@ -153,6 +153,21 @@ impl Guard {
             None
         }
     }
+    pub(crate) fn button(&mut self, button: u8, deadline: Instant) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            (1..=5).contains(&button)
+                && self
+                    .child
+                    .as_mut()
+                    .is_some_and(|child| child.activate(&[b'P', button], deadline))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (button, deadline);
+            false
+        }
+    }
     pub(crate) fn end_logical(&mut self) -> serde_json::Value {
         #[cfg(target_os = "linux")]
         if let Some(child) = &mut self.child {

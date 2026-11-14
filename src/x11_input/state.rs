@@ -14,6 +14,8 @@ pub(super) struct Snapshot {
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct Scope {
+    pub button_release_candidates: BTreeSet<u8>,
+    pub button_restore_candidates: BTreeSet<u8>,
     // Only the imminent helper unit may authorize a new key release.
     pub release_candidates: BTreeSet<u8>,
     // Earlier helper units may have cleared/touched these preheld keys.
@@ -25,6 +27,7 @@ pub(super) struct Scope {
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(super) struct Compensation {
+    pub release_buttons: Vec<u8>,
     pub release: Vec<u8>,
     pub restore: Vec<u8>,
     pub restore_buttons: Vec<u8>,
@@ -35,6 +38,38 @@ pub(super) struct Compensation {
 
 pub(super) fn compensation(initial: &Snapshot, now: &Snapshot, scope: &Scope) -> Compensation {
     let mut result = Compensation::default();
+    if scope
+        .button_release_candidates
+        .iter()
+        .chain(&scope.button_restore_candidates)
+        .any(|button| !(1..=5).contains(button))
+    {
+        result.unverified = true;
+        return result;
+    }
+    result.release_buttons = scope
+        .button_release_candidates
+        .iter()
+        .filter(|button| {
+            now.buttons & (1 << (**button - 1)) != 0 && initial.buttons & (1 << (**button - 1)) == 0
+        })
+        .copied()
+        .collect();
+    let missing_buttons: Vec<u8> = scope
+        .button_restore_candidates
+        .iter()
+        .filter(|button| {
+            initial.buttons & (1 << (**button - 1)) != 0 && now.buttons & (1 << (**button - 1)) == 0
+        })
+        .copied()
+        .collect();
+    if !missing_buttons.is_empty() {
+        if initial.pointer == now.pointer {
+            result.restore_buttons = missing_buttons;
+        } else {
+            result.unverified = true;
+        }
+    }
     result.release = scope
         .release_candidates
         .intersection(&now.down)
@@ -112,6 +147,152 @@ mod tests {
     use super::*;
     fn set(keys: &[u8]) -> BTreeSet<u8> {
         keys.iter().copied().collect()
+    }
+
+    #[test]
+    fn releases_only_the_new_current_button_and_preserves_unrelated_buttons() {
+        let initial = Snapshot {
+            buttons: 0b00100,
+            ..Snapshot::default()
+        };
+        let now = Snapshot {
+            buttons: 0b01101,
+            ..initial.clone()
+        };
+        let scope = Scope {
+            button_release_candidates: set(&[1]),
+            ..Scope::default()
+        };
+        let plan = compensation(&initial, &now, &scope);
+        assert_eq!(plan.release_buttons, [1]);
+        assert!(plan.restore_buttons.is_empty());
+        assert!(plan.release.is_empty() && plan.restore.is_empty());
+        assert!(!plan.unverified);
+    }
+
+    #[test]
+    fn a_preheld_intended_button_is_never_released() {
+        let initial = Snapshot {
+            buttons: 1,
+            ..Snapshot::default()
+        };
+        let now = Snapshot {
+            buttons: 0b00101,
+            ..initial.clone()
+        };
+        let scope = Scope {
+            button_release_candidates: set(&[1]),
+            ..Scope::default()
+        };
+        assert!(compensation(&initial, &now, &scope)
+            .release_buttons
+            .is_empty());
+    }
+
+    #[test]
+    fn absent_current_button_intent_cannot_release_unrelated_input() {
+        let now = Snapshot {
+            buttons: 1,
+            ..Snapshot::default()
+        };
+        assert!(compensation(&Snapshot::default(), &now, &Scope::default())
+            .release_buttons
+            .is_empty());
+    }
+
+    #[test]
+    fn restores_only_the_touched_preheld_button_at_the_unchanged_pointer() {
+        let initial = Snapshot {
+            buttons: 0b00101,
+            pointer: (20, 30),
+            ..Snapshot::default()
+        };
+        let mut now = Snapshot {
+            buttons: 0,
+            ..initial.clone()
+        };
+        let scope = Scope {
+            button_restore_candidates: set(&[1]),
+            ..Scope::default()
+        };
+        assert_eq!(compensation(&initial, &now, &scope).restore_buttons, [1]);
+        now.pointer.0 += 1;
+        let plan = compensation(&initial, &now, &scope);
+        assert!(plan.restore_buttons.is_empty());
+        assert!(plan.unverified);
+    }
+
+    #[test]
+    fn pointer_compensation_does_not_restore_unrelated_keyboard_lock_or_group() {
+        let initial = Snapshot {
+            down: set(&[50]),
+            modifiers: set(&[50]),
+            locked_mods: 2,
+            locked_group: 1,
+            ..Snapshot::default()
+        };
+        let now = Snapshot {
+            down: set(&[53]),
+            buttons: 1,
+            locked_group: 3,
+            ..Snapshot::default()
+        };
+        let scope = Scope {
+            button_release_candidates: set(&[1]),
+            ..Scope::default()
+        };
+        let plan = compensation(&initial, &now, &scope);
+        assert_eq!(plan.release_buttons, [1]);
+        assert!(plan.release.is_empty() && plan.restore.is_empty());
+        assert!(!plan.restore_lock && plan.restore_group.is_none());
+    }
+
+    #[test]
+    fn invalid_button_candidates_fail_closed_without_releasing_input() {
+        let now = Snapshot {
+            buttons: 31,
+            ..Snapshot::default()
+        };
+        let scope = Scope {
+            button_release_candidates: set(&[0, 6, 255]),
+            ..Scope::default()
+        };
+        let plan = compensation(&Snapshot::default(), &now, &scope);
+        assert!(plan.release_buttons.is_empty());
+        assert!(plan.unverified);
+    }
+
+    #[test]
+    fn an_already_released_intended_button_needs_no_extra_release() {
+        let scope = Scope {
+            button_release_candidates: set(&[1]),
+            ..Scope::default()
+        };
+        assert!(
+            compensation(&Snapshot::default(), &Snapshot::default(), &scope)
+                .release_buttons
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn intended_pointer_motion_does_not_prevent_releasing_a_new_button() {
+        let initial = Snapshot {
+            pointer: (20, 30),
+            ..Snapshot::default()
+        };
+        let now = Snapshot {
+            pointer: (80, 60),
+            buttons: 1,
+            ..Snapshot::default()
+        };
+        let scope = Scope {
+            button_release_candidates: set(&[1]),
+            ..Scope::default()
+        };
+        let plan = compensation(&initial, &now, &scope);
+        assert_eq!(plan.release_buttons, [1]);
+        assert!(!plan.unverified);
     }
 
     #[test]

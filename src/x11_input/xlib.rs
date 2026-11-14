@@ -156,6 +156,7 @@ pub(super) struct Context {
     scratch: Option<u8>,
     scratch_symbols: BTreeSet<u64>,
     logical_active: bool,
+    pointer_active: bool,
     last_report: [u8; 8],
 }
 impl Drop for Context {
@@ -215,6 +216,7 @@ impl Context {
             scratch: None,
             scratch_symbols: BTreeSet::new(),
             logical_active: false,
+            pointer_active: false,
             last_report: [1, 3, 0, 0, 0, 0, 0, 0],
         };
         result.initial = result.snapshot()?;
@@ -232,15 +234,28 @@ impl Context {
                     && row.first() == Some(&0)
             })
             .map(|(index, _)| result.mapping.low + index as u8);
-        // Restoring a held lock-toggle key can toggle another locked modifier.
-        // Keep such rare initial states explicitly unqualified.
-        for entry in result.entries() {
-            if result.initial.down.contains(&entry.code) && [0xff7f, 0xff14].contains(&entry.symbol)
-            {
-                return None;
-            }
-        }
+        // Keyboard-only qualification happens in begin_logical. A pointer
+        // transaction never restores or otherwise changes keyboard state.
         Some(result)
+    }
+
+    pub(super) unsafe fn begin_pointer(&mut self, button: u8) -> bool {
+        if self.logical_active || !(1..=5).contains(&button) {
+            return false;
+        }
+        let Some(initial) = self.pointer_snapshot() else {
+            return false;
+        };
+        self.initial = initial;
+        self.previous_scope = Scope::default();
+        self.scope = Scope::default();
+        self.scope.button_release_candidates.insert(button);
+        if self.initial.buttons & (1 << (button - 1)) != 0 {
+            self.scope.button_restore_candidates.insert(button);
+        }
+        self.pointer_active = true;
+        self.logical_active = true;
+        true
     }
 
     pub(super) unsafe fn begin_logical(&mut self, clear: bool) -> Option<bool> {
@@ -285,6 +300,7 @@ impl Context {
         self.previous_scope = self.scope.clone();
         self.scratch_symbols.clear();
         self.confident = true;
+        self.pointer_active = false;
         self.logical_active = true;
         if !clear {
             return Some(false);
@@ -408,6 +424,30 @@ impl Context {
             locked_group: state.locked_group,
             base_group: state.base_group,
             latched_group: state.latched_group,
+        })
+    }
+
+    unsafe fn pointer_snapshot(&self) -> Option<Snapshot> {
+        let display = (*self.xdo).display;
+        let (mut root, mut child, mut rx, mut ry, mut wx, mut wy, mut mask) = (0, 0, 0, 0, 0, 0, 0);
+        if (self.api.pointer)(
+            display,
+            (self.api.root)(display),
+            &mut root,
+            &mut child,
+            &mut rx,
+            &mut ry,
+            &mut wx,
+            &mut wy,
+            &mut mask,
+        ) == 0
+        {
+            return None;
+        }
+        Some(Snapshot {
+            buttons: ((mask >> 8) & 31) as u8,
+            pointer: (rx, ry),
+            ..Snapshot::default()
         })
     }
     unsafe fn add_symbol(&mut self, symbol: c_ulong) -> bool {
@@ -547,6 +587,7 @@ impl Context {
     }
     pub(super) fn complete_unit(&mut self) {
         self.scope.release_candidates.clear();
+        self.scope.button_release_candidates.clear();
         self.scope.temporary_groups.clear();
     }
     pub(super) fn not_started(&mut self) {
@@ -556,6 +597,9 @@ impl Context {
 
     // Only safe counts cross the private channel. No key ids, mapping or text.
     pub(super) unsafe fn cleanup(&mut self) -> [u8; 8] {
+        if self.pointer_active {
+            return self.cleanup_pointer();
+        }
         let mut report = [1, 1, 0, 0, 0, 0, 0, 0];
         let Some(current) = self.snapshot() else {
             report[1] = 2;
@@ -680,6 +724,36 @@ impl Context {
                 })
                 .unwrap_or(false);
         }
+        if !okay {
+            report[1] = 2;
+        }
+        report
+    }
+
+    unsafe fn cleanup_pointer(&mut self) -> [u8; 8] {
+        let mut report = [2, 1, 0, 0, 0, 0, 0, 0];
+        let Some(current) = self.pointer_snapshot() else {
+            report[1] = 2;
+            return report;
+        };
+        let plan = compensation(&self.initial, &current, &self.scope);
+        let display = (*self.xdo).display;
+        let mut okay = !plan.unverified;
+        let mut expected = current.buttons;
+        for button in &plan.release_buttons {
+            okay &= (self.api.button)(display, c_uint::from(*button), 0, 0) != 0;
+            expected &= !(1 << (button - 1));
+        }
+        for button in &plan.restore_buttons {
+            okay &= (self.api.button)(display, c_uint::from(*button), 1, 0) != 0;
+            expected |= 1 << (button - 1);
+        }
+        (self.api.sync)(display, 0);
+        okay &= self
+            .pointer_snapshot()
+            .is_some_and(|after| after.buttons == expected && after.pointer == current.pointer);
+        report[2] = plan.release_buttons.len() as u8;
+        report[4] = plan.restore_buttons.len() as u8;
         if !okay {
             report[1] = 2;
         }
