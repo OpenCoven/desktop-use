@@ -94,3 +94,6 @@ Source/schema checks and fixtures do not establish publication, official-host qu
 
 
 The current Linux full-control continuation adds four labelled colored landmarks, an actual editable Entry and an overflowing scroll viewport. Updated positive clients require all four landmark colors in received PNG/JPEG pixels, an exact change in the editable value, and an actual bounded viewport-offset change through approved native actions. Key counts and wheel-event counts cannot substitute for those control effects. These changes have file-only verifier tests; the frozen earlier ea/b114 fixture/image and its diagnostic receipts retain their original identities. Fresh native installed-client and independent UI qualification is required before claiming the new controls pass.
+
+
+The macOS fixture also draws four labelled corner landmarks outside the existing target, text field and scroll area. Its pixel verifier checks their independent content coordinates through the full decorated-window mapping after ICC conversion, with the declared 16-level sRGB tolerance. Synthetic PNG/JPEG regressions cover Retina scale, negative desktop origin, missing landmarks and incorrect landmark geometry. The prior compiled fixture and native receipts retain their old hashes; the updated fixture requires separate compilation and actual unlocked-session qualification.

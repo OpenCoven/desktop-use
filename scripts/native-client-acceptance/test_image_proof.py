@@ -16,11 +16,14 @@ class NativeImageProofTests(unittest.TestCase):
     def vector(self):
         image = Image.new('RGB', (640, 512), (20, 40, 80))
         ImageDraw.Draw(image).rectangle((40, 72, 159, 151), fill=(224, 48, 64))
+        landmarks = [{'name': name, 'rect': [x,y,16,16], 'rgb': list(rgb)} for name,x,y,rgb in [('NW',4,4,(40,210,220)),('NE',620,4,(200,60,210)),('SW',4,448,(250,145,30)),('SE',620,448,(225,235,250))]]
+        for marker in landmarks:
+            x,y,w,h = marker['rect']; ImageDraw.Draw(image).rectangle((x,y+32,x+w-1,y+32+h-1),fill=tuple(marker['rgb']))
         stream = io.BytesIO(); image.save(stream, format='PNG'); raw = stream.getvalue()
         result = {'content': [{'type': 'image', 'mimeType': 'image/png', 'data': base64.b64encode(raw).decode()}], 'details': {'observationV1': {
             'primaryImage': {'byteLength': len(raw), 'sha256': hashlib.sha256(raw).hexdigest(), 'mimeType': 'image/png', 'sourceDimensions': {'width': 640, 'height': 512}},
             'actualScope': {'state': 'unavailable'}, 'geometry': {'state': 'available', 'regions': [{'imageRect': {'x': 0, 'y': 0, 'width': 640, 'height': 512}, 'desktopRect': {'x': 120, 'y': 388, 'width': 640, 'height': 512}}]}}}}
-        fixture = {'targetRect': [40, 40, 120, 80], 'desktopRect': {'x': 120, 'y': 420, 'width': 640, 'height': 480}, 'windowFrameRect': {'x': 120, 'y': 388, 'width': 640, 'height': 512}, 'backingScale': 1}
+        fixture = {'targetRect': [40, 40, 120, 80], 'desktopRect': {'x': 120, 'y': 420, 'width': 640, 'height': 480}, 'windowFrameRect': {'x': 120, 'y': 388, 'width': 640, 'height': 512}, 'backingScale': 1, 'fixtureSize': [640,480], 'landmarks': landmarks}
         return result, fixture
 
     def test_real_pixel_geometry_and_client_resize_map_to_independent_target(self):
@@ -29,6 +32,8 @@ class NativeImageProofTests(unittest.TestCase):
         self.assertEqual(value['desktopPoint'], [220, 500])
         self.assertTrue(value['clientResize']['normalizedMappingPreserved'])
         self.assertFalse(value['effectVerified'])
+        self.assertEqual(len(value['landmarks']),4)
+        self.assertEqual(value['landmarks'][0]['desktopPoint'],[132,432])
 
     def test_wrong_mapping_cannot_pass_from_helper_success(self):
         result, fixture = self.vector()
@@ -60,6 +65,36 @@ class NativeImageProofTests(unittest.TestCase):
         receipt['primaryImage'].update({'byteLength': len(raw), 'sha256': hashlib.sha256(raw).hexdigest(), 'sourceDimensions': {'width': 1280, 'height': 960}})
         receipt['geometry']['regions'] = [{'imageRect': {'x': 0, 'y': 0, 'width': 1280, 'height': 960}, 'desktopRect': {'x': 0, 'y': 0, 'width': 1280, 'height': 960}}]
         with self.assertRaises(AssertionError): proof.inspect_image(result, fixture)
+
+    def test_missing_landmark_cannot_pass_from_a_correct_target(self):
+        result,fixture=self.vector();fixture['landmarks'].pop()
+        with self.assertRaises(AssertionError):proof.inspect_image(result,fixture)
+
+    def test_wrong_landmark_geometry_cannot_pass_from_a_correct_target(self):
+        result,fixture=self.vector();fixture['landmarks'][0]['rect'][0]+=30
+        with self.assertRaises(AssertionError):proof.inspect_image(result,fixture)
+
+    def test_retina_mapping_with_decoration_and_negative_origin(self):
+        result,fixture=self.vector()
+        original=Image.open(io.BytesIO(base64.b64decode(result['content'][0]['data'])))
+        image=original.resize((1280,1024),Image.Resampling.NEAREST)
+        stream=io.BytesIO();image.save(stream,format='PNG');raw=stream.getvalue()
+        result['content'][0]['data']=base64.b64encode(raw).decode()
+        receipt=result['details']['observationV1'];receipt['primaryImage'].update(byteLength=len(raw),sha256=hashlib.sha256(raw).hexdigest(),sourceDimensions={'width':1280,'height':1024})
+        receipt['geometry']['regions'][0]['imageRect'].update(width=1280,height=1024)
+        receipt['geometry']['regions'][0]['desktopRect']['x']=-300
+        fixture['windowFrameRect']['x']=-300;fixture['desktopRect']['x']=-300;fixture['backingScale']=2
+        value=proof.inspect_image(result,fixture)
+        self.assertEqual(value['landmarks'][0]['imagePoint'],[24,88])
+        self.assertEqual(value['landmarks'][0]['desktopPoint'],[-288,432])
+        self.assertEqual(value['deliveredPixelsPerPoint'],2)
+
+    def test_jpeg_landmarks_use_declared_color_tolerance(self):
+        result,fixture=self.vector();image=Image.open(io.BytesIO(base64.b64decode(result['content'][0]['data'])))
+        stream=io.BytesIO();image.save(stream,format='JPEG',quality=95);raw=stream.getvalue()
+        result['content'][0].update(data=base64.b64encode(raw).decode(),mimeType='image/jpeg')
+        result['details']['observationV1']['primaryImage'].update(byteLength=len(raw),sha256=hashlib.sha256(raw).hexdigest(),mimeType='image/jpeg')
+        value=proof.inspect_image(result,fixture);self.assertEqual(len(value['landmarks']),4);self.assertEqual(value['colorTolerance'],16)
 
 
 if __name__ == '__main__': unittest.main()

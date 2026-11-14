@@ -8,6 +8,12 @@ final class FixtureView: NSView, NSTextFieldDelegate {
     let status = NSTextField(labelWithString: "")
     let field = NSTextField(string: "")
     let scroll = NSScrollView()
+    let landmarks: [(name: String, rect: NSRect, rgb: [CGFloat], label: NSPoint)] = [
+        ("NW", NSRect(x: 4, y: 4, width: 16, height: 16), [40, 210, 220], NSPoint(x: 24, y: 1)),
+        ("NE", NSRect(x: 620, y: 4, width: 16, height: 16), [200, 60, 210], NSPoint(x: 592, y: 1)),
+        ("SW", NSRect(x: 4, y: 448, width: 16, height: 16), [250, 145, 30], NSPoint(x: 24, y: 445)),
+        ("SE", NSRect(x: 620, y: 448, width: 16, height: 16), [225, 235, 250], NSPoint(x: 592, y: 445)),
+    ]
     let stateURL: URL
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
@@ -50,6 +56,12 @@ final class FixtureView: NSView, NSTextFieldDelegate {
         NSRect(x: 40, y: 40, width: 120, height: 80).fill()
         NSColor(srgbRed: 240/255, green: 210/255, blue: 40/255, alpha: 1).setFill()
         NSRect(x: 40, y: 130, width: 120, height: 20).fill()
+        for marker in landmarks {
+            NSColor(srgbRed: marker.rgb[0]/255, green: marker.rgb[1]/255, blue: marker.rgb[2]/255, alpha: 1).setFill()
+            marker.rect.fill()
+            (marker.name as NSString).draw(at: marker.label, withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: 12, weight: .bold), .foregroundColor: NSColor.white])
+        }
+
     }
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
@@ -68,6 +80,9 @@ final class FixtureView: NSView, NSTextFieldDelegate {
     func persist() {
         status.stringValue = "Clicks: \(clicks) | Keys: \(keyEvents)\nInput: \(field.stringValue) | Scroll: \(scrollOffset)"
         var state: [String: Any] = ["ready": true, "pid": ProcessInfo.processInfo.processIdentifier, "clicks": clicks, "keys": keyEvents, "text": field.stringValue, "scrollOffset": scrollOffset, "fixtureSize": [640, 480], "targetRect": [40, 40, 120, 80], "windowNumber": window?.windowNumber ?? 0]
+        state["landmarks"] = landmarks.map { marker in
+            ["name": marker.name, "rect": [marker.rect.minX, marker.rect.minY, marker.rect.width, marker.rect.height], "rgb": marker.rgb] as [String: Any]
+        }
         if let window, let screen = NSScreen.screens.first {
             let frame = window.convertToScreen(bounds)
             state["desktopRect"] = ["x": frame.minX, "y": screen.frame.maxY-frame.maxY, "width": frame.width, "height": frame.height]

@@ -9,6 +9,24 @@ from pathlib import Path
 from PIL import Image, ImageCms
 
 
+def verify_landmarks(picture, fixture, extent, tolerance):
+    landmarks = fixture.get('landmarks', [])
+    assert len(landmarks) == 4 and {marker['name'] for marker in landmarks} == {'NW', 'NE', 'SW', 'SE'}, 'four labelled fixture landmarks required'
+    content, desktop, image = fixture['desktopRect'], extent['desktopRect'], extent['imageRect']
+    proofs = []
+    for marker in landmarks:
+        x,y,width,height = marker['rect']
+        assert width > 0 and height > 0 and x >= 0 and y >= 0 and x+width <= fixture['fixtureSize'][0] and y+height <= fixture['fixtureSize'][1]
+        expected = [content['x']+x+width/2, content['y']+y+height/2]
+        point = [image[axis]+(expected[k]-desktop[axis])*image[size]/desktop[size] for k,(axis,size) in enumerate([('x','width'),('y','height')])]
+        px,py = map(round,point)
+        assert 0 <= px < picture.width and 0 <= py < picture.height
+        sample = picture.getpixel((px,py))
+        assert max(abs(a-b) for a,b in zip(sample,marker['rgb'])) <= tolerance, 'landmark pixels contradict the independent fixture coordinates'
+        proofs.append({'name':marker['name'],'imagePoint':point,'desktopPoint':expected,'sampleSRGB':sample})
+    return proofs
+
+
 def inspect_image(result, fixture, expected='initial'):
     details = result.get('details', result.get('structuredContent', result))
     receipt = details['observationV1']
@@ -57,6 +75,7 @@ def inspect_image(result, fixture, expected='initial'):
     target = fixture['targetRect']
     expected_point = [fixture['desktopRect']['x']+target[0]+target[2]/2, fixture['desktopRect']['y']+target[1]+target[3]/2]
     assert max(abs(a-b) for a,b in zip(mapped, expected_point)) <= 2, (mapped, expected_point)
+    landmarks = verify_landmarks(picture, fixture, extent, tolerance)
     # A real consumer resize of these received pixels retains the normalized
     # position. This is client-resize evidence, not a gateway-history claim.
     resized = picture.resize((320, 256), Image.Resampling.LANCZOS)
@@ -66,7 +85,7 @@ def inspect_image(result, fixture, expected='initial'):
     recovered = [resized_point[0]/resized.width*picture.width, resized_point[1]/resized.height*picture.height]
     assert max(abs(a-b) for a,b in zip(point, recovered)) < 1e-8
     return {'sha256': primary['sha256'], 'mimeType': image['mimeType'], 'byteLength': len(raw), 'dimensions': picture.size,
-            'colorManaged': bool(icc), 'colorTolerance': tolerance, 'targetPixelBounds': box, 'imagePoint': point, 'desktopPoint': mapped,
+            'colorManaged': bool(icc), 'landmarks': landmarks, 'colorTolerance': tolerance, 'targetPixelBounds': box, 'imagePoint': point, 'desktopPoint': mapped,
             'independentExpectedDesktopPoint': expected_point, 'geometryState': geometry['state'], 'actualScope': receipt['actualScope'],
             'independentWindowExtentVerified': True, 'windowFrameRect': frame, 'deliveredPixelsPerPoint': scale,
             'clientResize': {'dimensions': resized.size, 'targetPoint': resized_point, 'sampleSRGB': sample, 'normalizedMappingPreserved': True},
