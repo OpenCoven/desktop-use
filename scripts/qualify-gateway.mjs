@@ -82,6 +82,14 @@ const model = createServer(async (req, res) => {
     await save("model-tool-schemas.json", modelSchemas);
     const currentToolResults = messages.slice(userIndex + 1).filter(m => m.role === "tool");
     const finished = plan.replaySourceCase ? true : currentToolResults.length > 0;
+    if (plan.calls) {
+      const responseIndex = plan.responses ?? 0;
+      assert.ok(responseIndex < 3, "Restricted fixture exceeded batch, Stop and completion provider responses");
+      const expectedIds = responseIndex === 0 ? [] : plan.calls.map(call => batchCallId(call.name));
+      if (responseIndex === 2) expectedIds.push(batchCallId(callName("allowed", "stop")));
+      assert.deepEqual(currentToolResults.map(message => message.tool_call_id).sort(), expectedIds.sort(), "Restricted provider response must retain each preceding tool result exactly once before Stop/completion");
+      assert.equal(finished, responseIndex > 0, "Restricted provider must not repeat the batch after lost/truncated history");
+    }
     if (plan.replaySourceCase) {
       assert.equal(currentToolResults.length, 0, "Replay turn must not create a tool result");
       assert.equal(plan.responses ?? 0, 0, "Replay is a single no-tool provider response");
@@ -109,7 +117,8 @@ const model = createServer(async (req, res) => {
     if (stopAfterBatch) plan.stopSent = true;
     plan.responses = (plan.responses ?? 0) + 1;
     if (plan.calls) assert.ok(plan.responses <= (plan.stopAfterBatch ? 3 : 2), "Restricted fixture must finish its bounded response sequence");
-    requests.push({ case: marker, url: req.url, tools: (body.tools ?? []).map(t => t.function?.name), finished });
+    requests.push({ case: marker, url: req.url, tools: (body.tools ?? []).map(t => t.function?.name), finished,
+      ...(plan.calls ? { responseIndex: plan.responses, currentToolResultIds: currentToolResults.map(message => message.tool_call_id), emitted: !finished ? "batch" : stopAfterBatch ? "stop" : "complete" } : {}) });
     await save("model-requests.json", requests);
     if (!finished) plan.onModelRequest?.();
     const toolCall = { index: 0, id: `call_${marker}`, type: "function", function: { name: plan.tool ?? COMPUTER_USE_TOOL_NAME, arguments: JSON.stringify(plan.args) } };
@@ -427,6 +436,12 @@ try {
   }
   const secret = "qualification-private-content-4c925ce0";
   if (profile !== "full") {
+    // Keep the complete vocabulary turn separate from already-qualified image
+    // history, within the same gateway, agent, workspace and trusted profile.
+    const restrictedSession = "agent:computer-use:restricted-matrix";
+    await rpc("sessions.patch", { key: restrictedSession, label: "restricted-matrix" });
+    const restrictedInitialHistory = await rpc("chat.history", { sessionKey: restrictedSession, limit: 100 });
+    assert.equal(restrictedInitialHistory.messages?.length ?? 0, 0, "Restricted matrix must start in a fresh owned session");
     // Restricted lanes exercise the actual packed plugin config and provider schema.
     // The unavailable adapter precludes graphical effects even for a regression.
     const fixtures = {
@@ -444,8 +459,19 @@ try {
     assert.equal(new Set([...calls.map(call => batchCallId(call.name)), batchCallId(callName("allowed", "stop"))]).size, calls.length + 1, "Each batched tool-call id must be unique");
     // A single real agent turn avoids rebuilding the unchanged provider catalog
     // for each vocabulary item. Every tool call keeps its own id and receipt.
-    const batch = await runCase("restricted-matrix", { action: "stop" }, gatedActions.length ? "deny" : "none", session, COMPUTER_USE_TOOL_NAME,
+    const batch = await runCase("restricted-matrix", { action: "stop" }, gatedActions.length ? "deny" : "none", restrictedSession, COMPUTER_USE_TOOL_NAME,
       { calls, stopAfterBatch: true, approvalCalls });
+    const providerSequence = requests.filter(request => request.case === "restricted-matrix");
+    assert.deepEqual(providerSequence.map(request => ({ finished: request.finished, emitted: request.emitted })), [
+      { finished: false, emitted: "batch" }, { finished: true, emitted: "stop" }, { finished: true, emitted: "complete" },
+    ], "Restricted model must emit one batch, then separate Stop, then complete");
+    const expectedModelCalls = [...calls.map(call => ({ id: batchCallId(call.name), action: call.args.action })), { id: batchCallId(callName("allowed", "stop")), action: "stop" }];
+    const actualModelCalls = batch.history.messages.filter(message => message.role === "assistant").flatMap(message => message.content?.filter(block => block.type === "toolCall") ?? []).map(call => ({ id: call.id, action: call.arguments?.action }));
+    assert.deepEqual(actualModelCalls, expectedModelCalls, "Actual restricted assistant history must emit every compatible action exactly once with Stop last");
+    const actualResultIds = batch.history.messages.filter(message => message.role === "toolResult").map(message => message.toolCallId);
+    assert.deepEqual(actualResultIds.sort(), expectedModelCalls.map(call => call.id).sort(), "Actual restricted history must contain one result for every call, including Stop");
+    const sequenceReceipt = { sessionKey: restrictedSession, imageSessionKey: session, sameAgentWorkspace: true, initialHistoryMessages: 0, providerSequence, actualModelCalls, toolResults: actualResultIds.length, distinctCallIds: new Set(actualModelCalls.map(call => call.id)).size, separateStopLast: actualModelCalls.at(-1)?.action === "stop" };
+    await save("restricted-sequence.json", sequenceReceipt);
     const resultFor = async (kind, action) => {
       const name = callName(kind, action);
       const message = batch.history.messages?.find(message => message.role === "toolResult" && message.toolCallId === batchCallId(name));
@@ -455,7 +481,7 @@ try {
     };
     const allowed = [];
     for (const action of allowedActions) {
-      const details = ["health", "doctor"].includes(legacyActions[action] ?? action) ? await structuredDiscoveryReplay("restricted-matrix", batch, { action, ...fixtures[legacyActions[action] ?? action] }, COMPUTER_USE_TOOL_NAME, session, batchCallId(callName("allowed", action))) : JSON.parse(await resultFor("allowed", action));
+      const details = ["health", "doctor"].includes(legacyActions[action] ?? action) ? await structuredDiscoveryReplay("restricted-matrix", batch, { action, ...fixtures[legacyActions[action] ?? action] }, COMPUTER_USE_TOOL_NAME, restrictedSession, batchCallId(callName("allowed", action))) : JSON.parse(await resultFor("allowed", action));
       assert.equal(details.status, ["health", "doctor", "inspect", "screenshot"].includes(legacyActions[action] ?? action) ? "error" : "success");
       if (action === "health") {
         assert.deepEqual(details.actionPermissions.allowedActions, profileActions);
@@ -478,7 +504,7 @@ try {
     // shell/file/clipboard/launch families must still meet the trusted hook ceiling.
     const direct = [];
     for (const action of ["shell", "file-write", "clipboard-write", "browser-open"].filter(action => !profileActions.includes(action))) {
-      const result = await httpInvoke(COMPUTER_USE_TOOL_NAME, { action, ...fixtures[action], confirm: true });
+      const result = await httpInvoke(COMPUTER_USE_TOOL_NAME, { action, ...fixtures[action], confirm: true }, restrictedSession);
       assert.equal(result.status, 403, `Authenticated HTTP must refuse ${action}`);
       assert.match(result.body.error.message, /trusted.*action permissions/);
       await save(`restricted-denied-${action}-direct.json`, result);
@@ -498,7 +524,7 @@ try {
     assert.ok(!records.some(record => record.toolCallId?.startsWith("callrestricteddenied")), "Schema/hook denials never reach executor audit");
     assert.ok(records.every(record => profileActions.includes(record.action)), "Only eligible actions reached executor audit");
     await save("audit-summary.json", { records: records.length, privateContentAbsent: true, outcomes: records.map(record => ({ action: record.action, status: record.result.status })) });
-    await save("restricted-summary.json", { profile, allowed, denied, direct, retainedApprovals: gatedActions, batchedModelTurn: true, legacyStop: true, legacyDirectDenied: true, excludedFilesAbsent: true,
+    await save("restricted-summary.json", { profile, sequence: sequenceReceipt, allowed, denied, direct, retainedApprovals: gatedActions, batchedModelTurn: true, legacyStop: true, legacyDirectDenied: true, excludedFilesAbsent: true,
       audit: "Existing executor stream only; host schema/hook denials do not execute or create adapter audit records.", nativeEffects: false, liveProvider: false });
     console.log(`Gateway ${profile} qualification checkpoint: ${root}`);
   } else {
