@@ -92,7 +92,11 @@ final class FixtureView: NSView, NSTextFieldDelegate {
         controlTimeline?.record(kind, textUtf16Length: field.stringValue.utf16.count, scrollOffset: scrollOffset, keyCount: keyEvents, clickCount: clicks)
     }
     func persist() {
-        status.stringValue = "Clicks: \(clicks) | Keys: \(keyEvents)\nInput: \(field.stringValue) | Scroll: \(scrollOffset)"
+        if controlTimeline != nil {
+            status.stringValue = "Clicks: \(clicks) | Keys: \(keyEvents)\nInput length: \(field.stringValue.utf16.count) | Scroll: \(scrollOffset)"
+        } else {
+            status.stringValue = "Clicks: \(clicks) | Keys: \(keyEvents)\nInput: \(field.stringValue) | Scroll: \(scrollOffset)"
+        }
         if controlTimeline != nil { stateWriter.request() } else { writeState() }
     }
     func flushPendingState() {

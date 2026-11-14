@@ -52,6 +52,64 @@ function observation(state) {
   return { value, published };
 }
 
+function textGrowth(events, previousLength) {
+  return events.filter(event => {
+    const grew = event.kind === 'text' && event.textUtf16Length > previousLength;
+    previousLength = event.textUtf16Length;
+    return grew;
+  });
+}
+
+export function proveMacActiveBoundary({ baseline, first, second, helperFirst, helperSecond, expectedHelperPath,
+  pendingFirst, pendingSecond, firstObservedNs, secondObservedNs, minimumActiveNs = '25000000', maximumStateAgeNs = '250000000' }) {
+  const initial = observation(baseline), earlier = observation(first), later = observation(second);
+  for (const state of [first, second]) {
+    assert.equal(state.pid, baseline.pid, 'active fixture PID changed');
+    assert.equal(state.windowNumber, baseline.windowNumber, 'active fixture window changed');
+  }
+  assert.deepEqual(earlier.value.events.slice(0, initial.value.events.length), initial.value.events, 'active baseline prefix changed');
+  assert.deepEqual(later.value.events.slice(0, earlier.value.events.length), earlier.value.events, 'active observation prefix changed');
+  assert.equal(pendingFirst, true, 'call must be unsettled at the first observation');
+  assert.equal(pendingSecond, true, 'call must remain unsettled at the second observation');
+  assert.ok(typeof expectedHelperPath === 'string' && expectedHelperPath.startsWith('/'), 'expected owned helper path is required');
+  for (const helper of [helperFirst, helperSecond]) {
+    assert.ok(helper && typeof helper === 'object', 'actual owned helper must be observed');
+    integer(helper.pid, 'helper PID', 2);
+    integer(helper.parent, 'helper parent', 2);
+    integer(helper.birthSeconds, 'helper birth seconds', 1);
+    integer(helper.birthMicroseconds, 'helper birth microseconds');
+    assert.ok(helper.birthMicroseconds < 1_000_000, 'helper birth microseconds are invalid');
+    assert.equal(helper.path, expectedHelperPath, 'observed helper executable differs from prepared bytes');
+    assert.ok([2, 3].includes(helper.status), 'stopped, zombie or unknown helper cannot prove active work');
+  }
+  for (const key of ['pid', 'parent', 'birthSeconds', 'birthMicroseconds', 'path']) {
+    assert.equal(helperSecond[key], helperFirst[key], 'active owned helper identity changed');
+  }
+  const firstAt = nanoseconds(firstObservedNs, 'first active observation');
+  const secondAt = nanoseconds(secondObservedNs, 'second active observation');
+  const required = nanoseconds(minimumActiveNs, 'minimum active interval');
+  const maximumAge = nanoseconds(maximumStateAgeNs, 'maximum state age');
+  assert.ok(required > 0n && maximumAge > 0n, 'active interval bounds must be positive');
+  assert.ok(secondAt > firstAt && secondAt - firstAt >= required, 'active observation interval is too short');
+  for (const [at, snapshot] of [[firstAt, earlier], [secondAt, later]]) {
+    assert.ok(snapshot.published <= at && at - snapshot.published <= maximumAge, 'active state is stale or published after acquisition');
+  }
+  const firstEvents = earlier.value.events.slice(initial.value.events.length);
+  const secondEvents = later.value.events.slice(earlier.value.events.length);
+  assert.ok(firstEvents.every(event => nanoseconds(event.continuousNs, 'callback clock') >= initial.published), 'new growth predates active baseline');
+  const firstGrowth = textGrowth(firstEvents, baseline.text.length);
+  const secondGrowth = textGrowth(secondEvents, first.text.length);
+  assert.ok(firstGrowth.length && secondGrowth.length, 'actual text growth is required at both observations');
+  const firstGrowthAt = nanoseconds(firstGrowth.at(-1).continuousNs, 'first text growth');
+  const secondGrowthAt = nanoseconds(secondGrowth.at(-1).continuousNs, 'second text growth');
+  assert.ok(firstAt - firstGrowthAt <= maximumAge, 'first text growth is stale');
+  assert.ok(secondGrowthAt > firstAt && secondAt - secondGrowthAt <= maximumAge, 'second text growth was merely buffered or is stale');
+  const growthSpan = secondGrowthAt - firstGrowthAt;
+  assert.ok(growthSpan >= required, 'actual text growth interval is too short');
+  return { activeObservedNs: secondObservedNs, growthSpanNs: String(growthSpan),
+    actualTextGrowthCallbacks: firstGrowth.length + secondGrowth.length, observationSpanNs: String(secondAt - firstAt) };
+}
+
 export function verifyMacClockBracket({ platform, uvVersion, beforeNs, probeNs, afterNs }) {
   assert.equal(platform, 'darwin', 'clock preflight requires Darwin');
   // Audit another libuv implementation before qualifying its clock. This is a
@@ -78,12 +136,7 @@ export function proveMacNoLateControls({ before, after, returnedNs, observedActi
   assert.deepEqual(prefix, initial.value.events, 'control history prefix changed');
   const events = final.value.events.slice(initial.value.events.length);
   assert.ok(events.every(event => nanoseconds(event.continuousNs, 'callback clock') >= initial.published), 'new callbacks predate baseline publication');
-  let previousLength = before.text.length;
-  const typed = events.filter(event => {
-    const grew = event.kind === 'text' && event.textUtf16Length > previousLength;
-    previousLength = event.textUtf16Length;
-    return grew;
-  });
+  const typed = textGrowth(events, before.text.length);
   assert.ok(typed.some(event => nanoseconds(event.continuousNs, 'callback clock') <= active), 'actual text input must precede the active-work observation');
   const late = events.filter(event => nanoseconds(event.continuousNs, 'callback clock') >= returned);
   assert.equal(late.length, 0, 'actual control changes occurred at or after promise return');

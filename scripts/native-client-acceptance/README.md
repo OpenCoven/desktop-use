@@ -44,10 +44,22 @@ The observer's Foundation tests and JavaScript proof tests need no fixture launc
 swiftc -parse-as-library scripts/native-client-acceptance/ControlObservation.swift scripts/native-client-acceptance/control-observation-tests.swift -o /owned/new-tests/control-observation-tests
 /owned/new-tests/control-observation-tests
 node --test scripts/native-client-acceptance/mac-control-proof.test.mjs
+node --test scripts/native-client-acceptance/mac-active-boundary.test.mjs
 python3 scripts/native-client-acceptance/test_mac_owned_processes.py
+python3 -B scripts/native-client-acceptance/test_mac_process_table.py
+python3 -B scripts/native-client-acceptance/test_mac_continuous_clock.py
+clang -fsyntax-only scripts/native-client-acceptance/mac-process-abi-check.c
 ```
 
-`mac_owned_processes.py` provides read-only ownership logic for the separate coordinator. It accepts a process-table interface and registers only a complete descendant traversal of a bound root, checking executable and microsecond birth identities plus parent relationships before and after acquisition. Previously bound descendants remain tracked after reparenting; PID reuse cannot transfer ownership. An executable change on the same process raises an unresolved-ownership error, and a zombie remains unreaped. The current pure tests use an injected table; they do not qualify a real macOS process-table backend, cleanup signaling or an active-input runner.
+`proveMacActiveBoundary` separately requires two fresh observations with actual text-growth callbacks spanning at least 25 ms, the same live helper with its exact prepared executable and birth identity, an unsettled call, stable fixture identity/focus and complete ordered history. Pending approval, one completed bulk edit, stale callbacks, stopped/zombie helpers and changed helper identities cannot qualify this boundary. Its observations come from the separate coordinator; the Node consumer must independently reject a cancellation trigger received after its call settled. The scalar observer UI displays input length for independent pixel observations.
+
+`mac_owned_processes.py` provides read-only ownership logic for the separate coordinator. It registers only a complete descendant traversal of a bound root, checking executable and microsecond birth identities plus parent relationships before and after acquisition. Previously bound descendants remain tracked after reparenting; PID reuse cannot transfer ownership. An executable change on the same process raises an unresolved-ownership error, and a zombie remains unreaped. The Darwin backend reads only requested process metadata and direct child lists through `libproc`; denied, short or ambiguous reads fail visibly instead of reporting an empty tree. SDK layout checks are independent of the injected binding tests. Birth bracketing around an executable lookup is not an atomic process snapshot: revalidate executable and birth before cleanup or acceptance decisions, and retain ambiguity on change. This API never signals a process or proves reaping by itself.
+
+The optional integration below launches only an isolated Python child of the test process. It verifies actual process birth, the exact kernel-reported interpreter image, ancestry and absence after explicit child wait/reaping. Framework Python launchers can re-exec `Python.app`, so comparing to the launcher pathname is insufficient. The child has no desktop actions or descendants, exits after two seconds, and readiness/wait/cleanup are bounded. This process-only test does not qualify AppKit callbacks, desktop cancellation or an active-input runner.
+
+```sh
+NATIVE_ACCEPTANCE_OWNED_PROCESS_TEST=yes python3 -B scripts/native-client-acceptance/test_mac_process_table.py
+```
 
 Negative probes require a stable live fixture PID and actual fixture input focus before and after cases, plus a real image through their own configured client/connector. Stale state, changed focus or an unavailable backend fails the probe. Linux also binds the recorded fixture PID to its running command and active X11 window, requires the explicit owned X11 flag/session, and forwards that display to the connector; unrelated environment values are not forwarded. Configure-event tracking keeps the GTK fixture's reported origin current after window-manager placement.
 
