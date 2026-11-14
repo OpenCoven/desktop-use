@@ -6,7 +6,7 @@ import { withOwnedObservation, type ObservationImage } from "../observation.js";
 import { ACTION_PROFILE_DENIED_REASON, isActionAllowed, resolveActionPermissions, validateActionPermissions, type ActionPermissions } from "../action-permissions.js";
 import { installedBinary, planHostAction, discoverHostIntegrations } from "../host-actions.js";
 import { CleanupFailure, FileActionError, listDirectory, readRegularFile, writeRegularFile } from "../file-actions.js";
-import { runProcess, ProcessFailure } from "../process-runner.js";
+import { runProcess, ProcessFailure, validatedInputCleanup } from "../process-runner.js";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { realpath } from "node:fs/promises";
@@ -528,6 +528,7 @@ async function runAdapterBinary(args: string[], params: ComputerUseParams, signa
     const code = error instanceof ProcessFailure || error instanceof FileActionError ? error.code : "BACKEND_ERROR";
     const failure = { ok: false, code, error: "Adapter execution failed; raw diagnostics withheld.",
       ...(["ETIMEDOUT", "CANCELLED"].includes(code) ? error instanceof ProcessFailure && error.progress ? error.progress : { progressUnknown: true } : {}),
+      ...(["type-text", "keypress"].includes(normalizeComputerUseAction(params.action)) && ["ETIMEDOUT", "CANCELLED"].includes(code) ? { inputCleanup: error instanceof ProcessFailure && error.inputCleanup ? error.inputCleanup : { schemaVersion: 1, state: "unverified", reasonCode: "ADAPTER_RESULT_UNAVAILABLE" } } : {}),
       ...(code === "ENOENT" ? { hint: missingAdapterHint(adapterBin, surface), adapterSetup: adapterSetupGuide(adapterBin, surface) } : {}) };
     adapterOutcomes.set(failure, error instanceof ProcessFailure ? processOutcome(error) : { phase: "process", code });
     return failure;
@@ -539,12 +540,16 @@ function redactTypeDiagnostics(value: unknown): unknown {
   if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, code: "MALFORMED_OUTPUT" };
   const record = value as Record<string, unknown>;
   const fields: Record<string, unknown> = {};
-  for (const key of ["ok", "supported", "requiresConfirmation", "timedOut", "cancelled", "partial", "progressUnknown"]) {
+  for (const key of ["ok", "supported", "requiresConfirmation", "timedOut", "cancelled", "partial", "progressUnknown", "inputMayHaveStarted"]) {
     if (typeof record[key] === "boolean") fields[key] = record[key];
   }
   for (const key of ["exitCode", "completedSteps", "totalSteps", "failedStep"]) {
     if (Number.isSafeInteger(record[key])) fields[key] = record[key];
   }
+  if (Number.isSafeInteger(record.completedInputCharacters) && (record.completedInputCharacters as number) >= 0 && (record.completedInputCharacters as number) <= 1_000_000) fields.completedInputCharacters = record.completedInputCharacters;
+  const inputCleanup = validatedInputCleanup(record.inputCleanup);
+  if (inputCleanup) fields.inputCleanup = inputCleanup;
+  else if (record.inputCleanup !== undefined || record.code === "CANCELLED" || record.code === "ETIMEDOUT") fields.inputCleanup = { schemaVersion: 1, state: "unverified", reasonCode: "ADAPTER_RESULT_UNAVAILABLE" };
   if (["peekaboo", "xdotool", "ydotool", "wtype", "linux"].includes(String(record.backend))) fields.backend = record.backend;
   const codes = ["ENOENT", "EACCES", "ETIMEDOUT", "CANCELLED", "OUTPUT_LIMIT", "PROCESS_ERROR", "MALFORMED_OUTPUT", "BACKEND_ERROR", "PERMISSION_ERROR"];
   if (typeof record.code === "string") fields.code = codes.includes(record.code) ? record.code : "BACKEND_ERROR";

@@ -5,6 +5,7 @@ mod geometry;
 mod linux_capabilities;
 mod observation;
 mod process;
+mod x11_input;
 use std::cell::Cell;
 use std::env;
 use std::ffi::OsString;
@@ -1344,7 +1345,7 @@ fn x11_type_text(text: &str, clear: bool, press_return: bool) -> String {
             args: vec!["key".into(), "Return".into()],
         });
     }
-    run_linux_steps(steps, "xdotool", true, &[])
+    run_x11_keyboard_steps(steps, true)
 }
 
 fn wayland_type_text(text: &str, clear: bool, press_return: bool) -> String {
@@ -1463,7 +1464,7 @@ fn x11_keypress(keys: &[&str]) -> String {
             ],
         });
     }
-    run_linux_steps(steps, "xdotool", false, &[])
+    run_x11_keyboard_steps(steps, false)
 }
 
 fn wayland_keypress(keys: &[&str]) -> String {
@@ -1860,6 +1861,167 @@ struct LinuxStep {
     args: Vec<OsString>,
 }
 
+fn run_x11_keyboard_steps(steps: Vec<LinuxStep>, typed: bool) -> String {
+    let helper = resolve_path_binary("xdotool").unwrap_or_default();
+    let mut guard = x11_input::Guard::prepare(Path::new(&helper), deadline());
+    if !guard.available() {
+        let raw = run_linux_steps(steps, "xdotool", typed, &[]);
+        let mut result: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let failed = result["ok"] != true;
+        let cleanup = guard.finish(failed);
+        if failed {
+            result["inputCleanup"] = cleanup;
+        }
+        return result.to_string();
+    }
+    let mut characters = 0usize;
+    let mut input_started = false;
+    let raw = run_linux_steps_with(steps, "xdotool", &[], |step| {
+        if let Err(error) = process::check(deadline()) {
+            return process_failure_json("xdotool", &error);
+        }
+        let clear = step.args.iter().any(|arg| arg == "--clearmodifiers");
+        let Some(changed) = guard.begin_logical(clear, deadline()) else {
+            // Clearing can have started even if cancellation interrupted its ACK.
+            input_started |= clear;
+            let error = process::check(deadline())
+                .err()
+                .unwrap_or(process::Failure::Io(std::io::ErrorKind::Other));
+            return process_failure_json("xdotool", &error);
+        };
+        input_started |= changed;
+        let atomic_args: Vec<OsString> = step
+            .args
+            .iter()
+            .filter(|arg| *arg != "--clearmodifiers")
+            .cloned()
+            .collect();
+        let entry = if step.args.first().is_some_and(|arg| arg == "type") {
+            let text = step
+                .args
+                .last()
+                .and_then(|arg| arg.to_str())
+                .unwrap_or_default();
+            let last = json_obj(vec![
+                ("ok", "true".into()),
+                ("supported", "true".into()),
+                ("platform", json_string(env::consts::OS)),
+                ("backend", json_string("xdotool")),
+                ("exitCode", "0".into()),
+                ("stdoutRedacted", "true".into()),
+            ]);
+            // Keep one real external helper for a bounded chunk. Its private
+            // script receives generated positional references, never raw input.
+            // Arm each imminent scalar before sending that one fixed frame.
+            let values: Vec<char> = text.chars().collect();
+            let mut offset = 0;
+            loop {
+                let (mut writer, count) = match x11_input::TextHelper::start(
+                    Path::new(&helper),
+                    &values[offset..],
+                    deadline(),
+                ) {
+                    Ok(prepared) => prepared,
+                    Err(error) => return process_failure_json("xdotool", &error),
+                };
+                for character in &values[offset..offset + count] {
+                    if let Err(error) = process::check(deadline()) {
+                        return process_failure_json("xdotool", &error);
+                    }
+                    if !guard.text(*character, false, deadline()) {
+                        let error = process::check(deadline())
+                            .err()
+                            .unwrap_or(process::Failure::Io(std::io::ErrorKind::Other));
+                        guard.not_started();
+                        return process_failure_json("xdotool", &error);
+                    }
+                    let mut sent = false;
+                    let outcome = writer.text(*character, deadline(), &mut || {
+                        sent = true;
+                    });
+                    input_started |= sent;
+                    if !sent {
+                        guard.not_started();
+                    }
+                    if let Err(error) = outcome {
+                        return process_failure_json("xdotool", &error);
+                    }
+                    guard.completed();
+                    characters += 1;
+                }
+                if let Err(error) = writer.finish(deadline()) {
+                    return process_failure_json("xdotool", &error);
+                }
+                offset += count;
+                if offset == values.len() {
+                    break;
+                }
+            }
+            last
+        } else {
+            if let Err(error) = process::check(deadline()) {
+                return process_failure_json("xdotool", &error);
+            }
+            let keys = step
+                .args
+                .last()
+                .and_then(|arg| arg.to_str())
+                .unwrap_or_default();
+            if !guard.keys(keys, false, deadline()) {
+                let error = process::check(deadline())
+                    .err()
+                    .unwrap_or(process::Failure::Io(std::io::ErrorKind::Other));
+                guard.not_started();
+                return process_failure_json("xdotool", &error);
+            }
+            let mut started = false;
+            let result = run_linux_command_observed(
+                step.program,
+                atomic_args,
+                "xdotool",
+                typed,
+                &[],
+                &mut || {
+                    started = true;
+                },
+            );
+            input_started |= started;
+            if !started {
+                guard.not_started();
+            }
+            if serde_json::from_str::<serde_json::Value>(&result).unwrap()["ok"] == true {
+                guard.completed();
+            }
+            result
+        };
+        let mut value: serde_json::Value = serde_json::from_str(&entry).unwrap();
+        if value["ok"] == true {
+            let cleanup = guard.end_logical();
+            if cleanup["state"] == "unverified" {
+                value["ok"] = serde_json::json!(false);
+                value["code"] = serde_json::json!("X11_CLEANUP_FAILED");
+                value["error"] =
+                    serde_json::json!("X11 input state could not be verified after execution.");
+                value["partial"] = serde_json::json!(input_started);
+            }
+            value["inputCleanup"] = cleanup;
+        }
+        value.to_string()
+    });
+    let mut result: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let failed = result["ok"] != true;
+    let cleanup = guard.finish(failed);
+    if typed {
+        result["completedInputCharacters"] = serde_json::json!(characters);
+    }
+    result["inputMayHaveStarted"] = serde_json::json!(input_started);
+    if failed {
+        result["partial"] = serde_json::json!(result["partial"] == true || input_started);
+    }
+    result["inputCleanup"] = cleanup;
+    result.to_string()
+}
+
 fn run_linux_command(
     program: &str,
     args: Vec<OsString>,
@@ -1867,9 +2029,27 @@ fn run_linux_command(
     redact_type_text: bool,
     extra_fields: &[(&'static str, String)],
 ) -> String {
+    run_linux_command_observed(
+        program,
+        args,
+        backend_label,
+        redact_type_text,
+        extra_fields,
+        &mut || {},
+    )
+}
+
+fn run_linux_command_observed(
+    program: &str,
+    args: Vec<OsString>,
+    backend_label: &str,
+    redact_type_text: bool,
+    extra_fields: &[(&'static str, String)],
+    on_started: &mut dyn FnMut(),
+) -> String {
     let mut cmd = Command::new(program);
     cmd.args(&args);
-    match process::run(&mut cmd, deadline()) {
+    match process::run_observed(&mut cmd, deadline(), on_started) {
         Ok(output) => {
             let ok = output.status.success();
             let mut fields = vec![
@@ -1904,17 +2084,28 @@ fn run_linux_steps(
     redact_type_text: bool,
     extra_fields: &[(&'static str, String)],
 ) -> String {
-    let mut completed = 0;
-    let mut entries = Vec::new();
-    let mut failure = None;
-    for (index, step) in steps.iter().enumerate() {
-        let entry = run_linux_command(
+    run_linux_steps_with(steps, backend_label, extra_fields, |step| {
+        run_linux_command(
             step.program,
             step.args.clone(),
             backend_label,
             redact_type_text,
             &[],
-        );
+        )
+    })
+}
+
+fn run_linux_steps_with(
+    steps: Vec<LinuxStep>,
+    backend_label: &str,
+    extra_fields: &[(&'static str, String)],
+    mut execute: impl FnMut(&LinuxStep) -> String,
+) -> String {
+    let mut completed = 0;
+    let mut entries = Vec::new();
+    let mut failure = None;
+    for (index, step) in steps.iter().enumerate() {
+        let entry = execute(step);
         let result: serde_json::Value = serde_json::from_str(&entry).unwrap();
         let ok = result["ok"] == true;
         entries.push(entry);

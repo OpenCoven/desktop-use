@@ -1,6 +1,28 @@
 import { spawn } from "node:child_process";
 
-export type ActionProgress = { completedSteps: number; totalSteps: number; failedStep?: number; partial: boolean };
+export type ActionProgress = { completedSteps: number; totalSteps: number; failedStep?: number; completedInputCharacters?: number; inputMayHaveStarted?: boolean; partial: boolean };
+
+export type InputCleanup = { schemaVersion: 1; state: "verified" | "unverified" | "not-needed"; reasonCode?: string; releasedKeys?: number; restoredKeys?: number; restoredButtons?: number; restoredMappings?: number; restoredLock?: boolean; restoredGroup?: boolean };
+
+export function validatedInputCleanup(value: unknown): InputCleanup | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (record.schemaVersion !== 1 || typeof record.state !== "string" || !["verified", "unverified", "not-needed"].includes(record.state)) return undefined;
+  const reasons = ["X11_GUARD_UNAVAILABLE", "X11_GUARD_TIMEOUT", "X11_PLAN_UNVERIFIED", "X11_STATE_CHANGED", "X11_CLEANUP_FAILED", "ADAPTER_RESULT_UNAVAILABLE"];
+  if (record.state === "unverified" ? typeof record.reasonCode !== "string" || !reasons.includes(record.reasonCode) : record.reasonCode !== undefined) return undefined;
+  const result: InputCleanup = { schemaVersion: 1, state: record.state as InputCleanup["state"], ...(record.reasonCode === undefined ? {} : { reasonCode: record.reasonCode as string }) };
+  for (const [key, limit] of [["releasedKeys", 256], ["restoredKeys", 256], ["restoredButtons", 5], ["restoredMappings", 1]] as const) {
+    if (record[key] === undefined) continue;
+    if (!Number.isSafeInteger(record[key]) || (record[key] as number) < 0 || (record[key] as number) > limit) return undefined;
+    result[key] = record[key] as number;
+  }
+  for (const key of ["restoredLock", "restoredGroup"] as const) {
+    if (record[key] === undefined) continue;
+    if (typeof record[key] !== "boolean") return undefined;
+    result[key] = record[key];
+  }
+  return result;
+}
 
 function validatedProgress(output: Buffer): ActionProgress | undefined {
   try {
@@ -9,14 +31,17 @@ function validatedProgress(output: Buffer): ActionProgress | undefined {
     const { completedSteps, totalSteps, failedStep } = record;
     if (!Number.isSafeInteger(completedSteps) || !Number.isSafeInteger(totalSteps) || totalSteps < 1 || completedSteps < 0 || completedSteps > totalSteps) return undefined;
     if (failedStep !== undefined && (!Number.isSafeInteger(failedStep) || failedStep < 0 || failedStep >= totalSteps || failedStep !== completedSteps)) return undefined;
-    return { completedSteps, totalSteps, ...(failedStep !== undefined ? { failedStep } : {}), partial: completedSteps > 0 && completedSteps < totalSteps };
+    const characters = record.completedInputCharacters;
+    if (characters !== undefined && (!Number.isSafeInteger(characters) || characters < 0 || characters > 1_000_000)) return undefined;
+    if (record.inputMayHaveStarted !== undefined && typeof record.inputMayHaveStarted !== "boolean") return undefined;
+    return { completedSteps, totalSteps, ...(failedStep !== undefined ? { failedStep } : {}), ...(characters === undefined ? {} : { completedInputCharacters: characters }), ...(record.inputMayHaveStarted === undefined ? {} : { inputMayHaveStarted: record.inputMayHaveStarted }), partial: completedSteps > 0 && completedSteps < totalSteps || failedStep !== undefined && (characters > 0 || record.inputMayHaveStarted === true) };
   } catch { return undefined; }
 }
 
 export type ProcessLifecycle = "not-started" | "spawn-failed" | "started" | "unknown";
 
 export class ProcessFailure extends Error {
-  constructor(readonly code: string, readonly exitCode?: number | null, readonly progress?: ActionProgress, readonly lifecycle: ProcessLifecycle = "unknown") {
+  constructor(readonly code: string, readonly exitCode?: number | null, readonly progress?: ActionProgress, readonly lifecycle: ProcessLifecycle = "unknown", readonly inputCleanup?: InputCleanup) {
     super(`Helper execution failed (${code}); raw arguments and diagnostics withheld.`);
     this.name = "ProcessFailure";
   }
@@ -67,7 +92,11 @@ export function runProcess(file: string, args: string[], options: ProcessOptions
       child.stderr?.destroy();
       if (error) {
         const progress = options.reportProgress && ["ETIMEDOUT", "CANCELLED"].includes(error.code) ? validatedProgress(out) : undefined;
-        reject(new ProcessFailure(error.code, error.exitCode, progress, started ? "started" : "spawn-failed"));
+        let inputCleanup: InputCleanup | undefined;
+        if (options.reportProgress && ["ETIMEDOUT", "CANCELLED"].includes(error.code)) {
+          try { inputCleanup = validatedInputCleanup(JSON.parse(out.toString("utf8"))?.inputCleanup); } catch { /* incomplete native output carries no cleanup proof */ }
+        }
+        reject(new ProcessFailure(error.code, error.exitCode, progress, started ? "started" : "spawn-failed", inputCleanup));
       }
       else resolve({ stdout: out.toString("utf8"), stderr: err.toString("utf8") });
     };

@@ -67,3 +67,22 @@ test("runner distinguishes cancellation after observed child readiness", async t
   for (let tries=0;;tries++) { if (await readFile(marker,"utf8").catch(()=>"") === "ready") break; assert.ok(tries < 100); await new Promise(r=>setTimeout(r,10)); }
   controller.abort(); await assert.rejects(pending, (e:any) => { assert.equal(e.code,"CANCELLED"); assert.equal(e.lifecycle,"started"); return true; });
 });
+
+test("cancellation preserves bounded native cleanup confidence without raw state", async t => {
+  const { mkdtemp, readFile, rm } = await import("node:fs/promises"); const { join } = await import("node:path"); const { tmpdir } = await import("node:os");
+  const root = await mkdtemp(join(tmpdir(), "desktopuse-cleanup-")); t.after(() => rm(root, { recursive: true, force: true }));
+  const marker = join(root, "ready"), controller = new AbortController();
+  const payload = { ok: false, code: "CANCELLED", completedSteps: 0, totalSteps: 1, failedStep: 0, completedInputCharacters: 3, partial: true, inputCleanup: { schemaVersion: 1, state: "verified", releasedKeys: 1, privateState: "private-cleanup-diagnostic" } };
+  const script = `process.on('SIGTERM',()=>process.stdout.write(${JSON.stringify(JSON.stringify(payload))},()=>process.exit(0)));require('fs').writeFileSync(${JSON.stringify(marker)},'ready');setInterval(()=>{},1000);`;
+  const pending = runProcess(node, ["-e", script], { timeoutMs: 2000, signal: controller.signal, reportProgress: true }); pending.catch(() => {});
+  try {
+    for (let tries=0;;tries++) { if (await readFile(marker,"utf8").catch(()=>"") === "ready") break; assert.ok(tries < 100); await new Promise(resolve=>setTimeout(resolve,10)); }
+    controller.abort();
+    await assert.rejects(pending, (error: any) => {
+      assert.equal(error.code, "CANCELLED"); assert.equal(error.lifecycle, "started");
+      assert.deepEqual(error.inputCleanup, { schemaVersion: 1, state: "verified", releasedKeys: 1 });
+      assert.equal(error.progress.completedInputCharacters, 3); assert.equal(error.progress.partial, true);
+      assert.ok(!JSON.stringify(error).includes("private-cleanup-diagnostic")); return true;
+    });
+  } finally { controller.abort(); await pending.catch(() => {}); }
+});

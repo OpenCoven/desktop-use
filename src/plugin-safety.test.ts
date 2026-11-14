@@ -162,3 +162,31 @@ for (const cancellation of [false,true]) {
   assert.ok(!JSON.stringify(result).includes("private-progress-diagnostic"));
  });
 }
+
+test("typed cleanup confidence retains only versioned enums and bounded counts", async () => {
+  const tool = createComputerUseTool({ approvalProvider: async () => "allowed" as const,
+    runAdapter: async () => ({ ok: false, code: "CANCELLED", backend: "xdotool", inputCleanup: { schemaVersion: 1, state: "verified", releasedKeys: 1, restoredKeys: 0, rawState: "private-cleanup-diagnostic" } }), appendAuditEvent: async () => {},
+  });
+  const result = await tool.execute("cleanup-confidence", { action: "type-text", text: "private-cleanup-diagnostic", confirm: true });
+  assert.equal(result.details.status, "cancelled");
+  assert.deepEqual((result.details.result as any).inputCleanup, { schemaVersion: 1, state: "verified", releasedKeys: 1, restoredKeys: 0 });
+  assert.ok(!JSON.stringify(result).includes("private-cleanup-diagnostic"));
+});
+
+for (const variant of ["missing", "unknown-state", "private-reason", "negative-count", "oversize-count", "unknown-version", "array-state", "array-reason"]) test(`typed cleanup cannot certify ${variant} evidence`, async () => {
+  const cleanup: any = { schemaVersion: 1, state: "verified", releasedKeys: 1 };
+  if (variant === "unknown-state") cleanup.state = "private-cleanup-diagnostic";
+  if (variant === "private-reason") { cleanup.state = "unverified"; cleanup.reasonCode = "private-cleanup-diagnostic"; }
+  if (variant === "negative-count") cleanup.releasedKeys = -1;
+  if (variant === "oversize-count") cleanup.releasedKeys = 257;
+  if (variant === "unknown-version") cleanup.schemaVersion = 2;
+  if (variant === "array-state") cleanup.state = ["verified"];
+  if (variant === "array-reason") { cleanup.state = "unverified"; cleanup.reasonCode = ["X11_STATE_CHANGED"]; }
+  const tool = createComputerUseTool({ approvalProvider: async () => "allowed" as const,
+    runAdapter: async () => ({ ok: false, code: "CANCELLED", ...(variant === "missing" ? {} : { inputCleanup: cleanup }) }), appendAuditEvent: async () => {},
+  });
+  const result = await tool.execute("invalid-cleanup", { action: "type-text", text: "private-cleanup-diagnostic", confirm: true });
+  assert.equal(result.details.status, "cancelled");
+  assert.deepEqual((result.details.result as any).inputCleanup, { schemaVersion: 1, state: "unverified", reasonCode: "ADAPTER_RESULT_UNAVAILABLE" });
+  assert.ok(!JSON.stringify(result).includes("private-cleanup-diagnostic"));
+});
