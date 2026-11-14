@@ -41,7 +41,7 @@ for (const era of ['modern', 'legacy'] as const) {
     let approvals = 0;
     const permissions = resolveActionPermissions({ allowedActions: ['health'] });
     const snapshot = JSON.stringify(permissions);
-    const { client, root, audits } = await fixture(t, era, { actionPermissions: permissions, approvalProvider: () => { approvals++; return 'allowed'; } });
+    const { client, audits } = await fixture(t, era, { actionPermissions: permissions, approvalProvider: () => { approvals++; return 'allowed'; } });
     const { tools } = await client.listTools();
     assert.equal((tools[0].inputSchema as any).properties.action.enum.length, 18);
     const result = await client.callTool({ name: 'computer_use', arguments: { action: 'health', reason: 'private-mcp-health' } });
