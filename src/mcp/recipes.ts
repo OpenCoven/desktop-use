@@ -23,7 +23,7 @@ const harnesses: RecipeHarness[] = [
 function literalPath(value: string): string {
   // These harnesses expand configuration expressions after parsing JSON/TOML/YAML.
   // Refuse expressions instead of silently pointing a recipe at a different file.
-  if (!isAbsolute(value) || /[\u0000-\u001f\u007f]|\$\{|\{(?:env|file):/i.test(value)) throw new StartupError('RECIPE_INVALID');
+  if (!isAbsolute(value) || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]|\$\{|\{(?:env|file):/i.test(value)) throw new StartupError('RECIPE_INVALID');
   return value;
 }
 

@@ -7,6 +7,15 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 const main = fileURLToPath(new URL('../../dist/src/mcp/main.js', import.meta.url));
+const dist = fileURLToPath(new URL('../../dist/', import.meta.url));
+const manifest = fileURLToPath(new URL('../../package.json', import.meta.url));
+
+test('invalid startup arguments are classified without loading execution dependencies', () => {
+  // Only this package's compiled files are readable; the MCP runtime is deliberately unavailable.
+  const r = spawnSync(process.execPath, ['--permission', `--allow-fs-read=${dist}`, `--allow-fs-read=${manifest}`, main, '--unknown', 'private-startup-canary34'], { encoding: 'utf8', timeout: 10000 });
+  assert.equal(r.status, 1); assert.equal(r.stdout, '');
+  assert.equal(r.stderr, 'Desktop MCP startup unavailable [ARGUMENTS_INVALID].\n');
+});
 const cases = [
   ['arguments', 'ARGUMENTS_INVALID'], ['missing-config', 'CONFIG_UNAVAILABLE'],
   ['malformed-config', 'CONFIG_INVALID'], ['public-config', 'CONFIG_UNSAFE'],

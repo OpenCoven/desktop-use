@@ -11,12 +11,13 @@ try {
     process.stderr.write('Usage: coven-desktop-use-mcp --config /absolute/private/config.json [--approval-socket /private/approval.sock --approval-secret-fd 3]\nLocal stdio MCP; stdout is reserved for protocol messages. Node >=22.14.0.\nPrint-only setup: coven-desktop-use-mcp recipe --harness <id> [--config /absolute/config.json] [--workspace /absolute/workspace] [--state /absolute/private/state] [--adapter /absolute/bin/coven-desktop-use]\nHarness ids: claude, codex, copilot, opencode, hermes, coven-code, grok, gemini, cursor, generic. Recipe mode emits JSON to stdout and does not start MCP or create files.\n');
   } else {
     const { readStartupConfig, startupArguments } = await import('./config.js');
-    const { createBrokerProvider } = await import('./broker.js');
-    const { serveDesktopStdio } = await import('./server.js');
     const args = startupArguments(process.argv.slice(2));
     const options = await readStartupConfig(args.get('--config')!);
     cleanup = () => options.close();
+    const { createBrokerProvider } = await import('./broker.js');
     const broker = args.has('--approval-socket') ? await createBrokerProvider({ socketPath: args.get('--approval-socket')!, secretFd: Number(args.get('--approval-secret-fd')) }).catch(() => { throw new StartupError('APPROVAL_DESCRIPTOR_UNAVAILABLE'); }) : undefined;
+    cleanup = async () => { broker?.close(); await options.close(); };
+    const { serveDesktopStdio } = await import('./server.js');
     const handle = serveDesktopStdio({ ...options, approvalProvider: broker?.provider }, { diagnostic: () => { process.stderr.write('MCP transport error; diagnostics withheld.\n'); void cleanup?.(); } });
     let closing = false;
     cleanup = async () => { if (closing) return; closing = true; await handle.close(); broker?.close(); await options.close(); process.stdin.destroy(); };

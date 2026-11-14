@@ -71,6 +71,14 @@ test('recipe JSON and TOML preserve literal spaces, quotes, backslashes and Unic
   }
 });
 
+for (const flag of ['--config', '--workspace', '--state', '--adapter']) test(`Hermes recipe refuses YAML control and line-separator characters in ${flag}`, () => {
+  for (const character of ['\u0080', '\u0085', '\u0090', '\u009f', '\u2028', '\u2029']) {
+    const r = run(['--harness', 'hermes', flag, `/absolute/yaml-canary-34/a${character}b`]);
+    assert.equal(r.status, 1, `Unsafe YAML character U+${character.charCodeAt(0).toString(16)} must not select a different trusted path.`);
+    assert.equal(r.stdout, ''); assert.equal(r.stderr, 'Desktop MCP startup unavailable [RECIPE_INVALID].\n');
+  }
+});
+
 for (const args of [[], ['--harness', 'unknown'], ['--harness', 'claude', '--harness', 'codex'], ['--harness', 'claude', '--output', '/tmp/forbidden34'], ['--harness', 'claude', '--config', 'relative34'], ['--harness', 'claude', '--config', '/absolute/\npath-canary-34'], ['--harness', 'grok', '--config', '/absolute/${SECRET34}/config'], ['--harness', 'opencode', '--config', '/absolute/{file:path-canary-34}/config']]) {
   test(`invalid recipe input fails without stdout or leaking arguments: ${JSON.stringify(args.slice(0, 2))}`, () => {
     const r = run(args); assert.equal(r.status, 1); assert.equal(r.stdout, '');
