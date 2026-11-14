@@ -11,7 +11,7 @@ spec.loader.exec_module(fixture)
 
 class StateWriteCoalescerTests(unittest.TestCase):
     def writer(self, schedule, write):
-        return fixture.IdleStateWriter(schedule, write)
+        return fixture.StateWriter(schedule, write)
 
     def test_event_burst_writes_one_complete_ordered_receipt(self):
         pending = []
@@ -62,6 +62,27 @@ class StateWriteCoalescerTests(unittest.TestCase):
         self.assertEqual(len(pending), 1)
         pending.pop(0)()
         self.assertEqual(writes, ['saved', 'saved'])
+
+    def test_shutdown_flushes_pending_receipt_once(self):
+        pending, writes = [], []
+        writer = self.writer(pending.append, lambda: writes.append('saved'))
+        writer.request()
+        writer.flush_pending()
+        writer.flush_pending()
+        self.assertEqual(writes, ['saved'])
+        self.assertFalse(pending.pop(0)())
+        self.assertEqual(writes, ['saved'])
+
+    def test_publication_timer_has_input_priority_and_a_bounded_delay(self):
+        class GLib:
+            PRIORITY_DEFAULT = 0
+            calls = []
+            @classmethod
+            def timeout_add(cls, milliseconds, callback, **kwargs):
+                cls.calls.append((milliseconds, callback, kwargs))
+        callback = lambda: False
+        fixture.schedule_state_write(GLib, callback)
+        self.assertEqual(GLib.calls, [(16, callback, {'priority': GLib.PRIORITY_DEFAULT})])
 
 
 if __name__ == '__main__':

@@ -8,21 +8,30 @@ import signal
 import time
 
 
-class IdleStateWriter:
+def schedule_state_write(GLib, callback):
+    # Default-priority timer cannot starve behind continuously ready GTK input.
+    return GLib.timeout_add(16, callback, priority=GLib.PRIORITY_DEFAULT)
+
+
+class StateWriter:
     """Write complete history once after a burst, without delaying event capture."""
-    def __init__(self, idle_add, write):
-        self.idle_add = idle_add
+    def __init__(self, schedule, write):
+        self.schedule = schedule
         self.write = write
         self.pending = False
 
     def request(self):
         if not self.pending:
             self.pending = True
-            self.idle_add(self.flush)
+            self.schedule(self.flush)
+
+    def flush_pending(self):
+        if self.pending:
+            self.pending = False
+            self.write()
 
     def flush(self):
-        self.pending = False
-        self.write()
+        self.flush_pending()
         return False
 
 
@@ -54,15 +63,17 @@ def app(state_path, session, title):
     Gtk.StyleContext.add_provider_for_screen(window.get_screen(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
     def save():
-        state['size'] = [area.get_allocated_width(), area.get_allocated_height()]
-        if session == 'x11':
-            _, x, y = window.get_window().get_origin()
-            state['origin'] = [x, y]
+        native_window = window.get_window()
+        if native_window is not None:
+            state['size'] = [area.get_allocated_width(), area.get_allocated_height()]
+            if session == 'x11':
+                _, x, y = native_window.get_origin()
+                state['origin'] = [x, y]
         temp = state_path.with_suffix('.tmp')
         temp.write_text(json.dumps(state))
         temp.replace(state_path)
 
-    writer = IdleStateWriter(GLib.idle_add, save)
+    writer = StateWriter(lambda callback: schedule_state_write(GLib, callback), save)
 
     def click(widget, event):
         state['clicks'].append({'x': event.x+20, 'y': event.y+20, 'button': event.button})
@@ -99,7 +110,11 @@ def app(state_path, session, title):
         window.fullscreen()
     window.present()
     GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, lambda: (Gtk.main_quit(), False)[1])
-    Gtk.main()
+    try:
+        Gtk.main()
+    finally:
+        # Persist captured events even when destroy/SIGTERM beats the timer.
+        writer.flush_pending()
 
 
 if __name__ == '__main__':
