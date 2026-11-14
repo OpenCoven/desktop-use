@@ -6,6 +6,7 @@ import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+import { proveTextEffect, proveScrollEffect } from './linux-control-proof.mjs';
 import { createDesktopClient, resolveActionPermissions } from '@opencoven/openclaw-desktop-use/sdk';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
@@ -52,7 +53,7 @@ for (const surface of ['sdk', 'mcp-modern', 'mcp-legacy']) {
   try {
     const health = await call({ action: 'health' }); assert.equal(health.details.capabilitiesV1.schemaVersion, 1);
     await call({ action: 'focus', windowTitle: 'DesktopuseInstalledClient' });
-    let decodedPoint;
+    let decodedPoint, controlPoints;
     for (const format of ['png', 'jpg']) {
       const capture = await call({ action: 'screenshot', mode: 'screen', format });
       const images = capture.content.filter(c => c.type === 'image'); assert.equal(images.length, 1);
@@ -64,7 +65,8 @@ for (const surface of ['sdk', 'mcp-modern', 'mcp-legacy']) {
       const decoded = spawnSync('python3', ['/owned/linux-image-proof.py', file, statePath, JSON.stringify(receipt)], { encoding: 'utf8', timeout: 20_000 });
       assert.equal(decoded.status, 0, decoded.stderr);
       const pixelProof = JSON.parse(decoded.stdout);
-      if (format === 'png') decodedPoint = pixelProof.desktopPoint;
+      if (format === 'png') { decodedPoint = pixelProof.desktopPoint; controlPoints = pixelProof.controlDesktopPoints; }
+      assert.equal(pixelProof.landmarks.length, 4);
       cases.push({ action: 'screenshot', mimeType: images[0].mimeType, byteLength: bytes.length, sha256: receipt.primaryImage.sha256, dimensions: receipt.primaryImage.sourceDimensions, geometry: receipt.geometry, pixelProof });
     }
     const before = await state();
@@ -77,7 +79,27 @@ for (const surface of ['sdk', 'mcp-modern', 'mcp-legacy']) {
     await new Promise(resolve => setTimeout(resolve, 200));
     assert.equal((await state()).keys.length, before.keys.length+1);
     cases.push({ action: 'click', observedFixtureEffect: true }, { action: 'keypress', observedFixtureEffect: true });
+    const privateText = `native-${surface}-editable-proof`;
+    assert.ok(controlPoints?.textEntry && controlPoints?.scrollRegion);
+    await call({ action: 'click', coords: controlPoints.textEntry.map(Math.round).join(',') }, 'focus-editable');
+    const beforeText = await state();
+    await call({ action: 'type-text', text: privateText, clear: true });
+    const waitForState = async predicate => {
+      const deadline = Date.now()+2_000;
+      while (Date.now()<deadline) { const current = await state(); if (predicate(current)) return current; await new Promise(resolve=>setTimeout(resolve,50)); }
+      throw new Error('NATIVE_FIXTURE_CONTROL_EFFECT_TIMEOUT');
+    };
+    const afterText = await waitForState(s=>s.text===privateText);
+    cases.push({ action:'type-text', ...proveTextEffect(beforeText, afterText, privateText) });
+    await call({ action:'click', coords:controlPoints.scrollRegion.map(Math.round).join(',') }, 'focus-scroll-region');
+    // Reset through the same approved native surface; never mutate fixture state to manufacture motion.
+    await call({ action:'scroll', direction:'up', amount:30 }, 'reset-scroll-region');
+    const beforeScroll = await waitForState(s=>s.scrollOffset===0);
+    await call({ action:'scroll', direction:'down', amount:3 });
+    const afterScroll = await waitForState(s=>s.scrollOffset>beforeScroll.scrollOffset);
+    cases.push({ action:'scroll', ...proveScrollEffect(beforeScroll, afterScroll) });
     const auditText = surface === 'sdk' ? JSON.stringify(audit) : await readFile(join(privateState, 'audit.jsonl'), 'utf8');
+    assert.equal(auditText.includes(privateText), false, 'Typed control contents must stay out of durable audit');
     assert.doesNotMatch(auditText, /"(?:nonce|mac|approvalId|screenshot_raw)"|base64/);
     receipts.push({ surface, success: true, decisionSource: surface === 'sdk' ? 'scripted-trusted-host' : 'scripted-operator-through-real-terminal-broker', cases });
   } finally { await close(); }

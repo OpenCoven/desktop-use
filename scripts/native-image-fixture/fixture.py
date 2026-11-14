@@ -39,7 +39,7 @@ def app(state_path, session, title):
     import gi
     gi.require_version('Gtk', '3.0')
     from gi.repository import Gtk, Gdk, GLib
-    state = {'clicks': [], 'keys': [], 'ready': False, 'pid': os.getpid()}
+    state = {'clicks': [], 'keys': [], 'ready': False, 'pid': os.getpid(), 'text': '', 'scrollOffset': 0, 'landmarks': [], 'controls': {}}
     window = Gtk.Window(title=title)
     window.set_decorated(False)
     window.set_default_size(640, 480)
@@ -58,9 +58,48 @@ def app(state_path, session, title):
     area.put(yellow, 20, 140)
     label = Gtk.Label(label='Fixture 21 | clicks 0 | keys 0')
     area.put(label, 170, 45)
+    entry = Gtk.Entry()
+    entry.set_placeholder_text('Editable fixture input')
+    entry.set_size_request(430, 34)
+    area.put(entry, 170, 100)
+    scroll = Gtk.ScrolledWindow()
+    scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+    scroll.set_size_request(430, 230)
+    rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+    for index in range(1, 31):
+        row = Gtk.Label(label='Scrollable row %02d' % index)
+        row.set_size_request(380, 28)
+        rows.pack_start(row, False, False, 0)
+    scroll.add(rows)
+    scroll_adjustment = scroll.get_vadjustment()
+    area.put(scroll, 170, 180)
+    effect_label = Gtk.Label(label='Text: 0 chars | Scroll offset: 0')
+    area.put(effect_label, 170, 420)
+    landmark_widgets = []
+    landmark_css = []
+    for name, x, y, rgb, label_x in [
+        ('NW', 4, 4, (40, 210, 220), 24),
+        ('NE', 620, 4, (200, 60, 210), 580),
+        ('SW', 4, 448, (250, 145, 30), 24),
+        ('SE', 620, 448, (225, 235, 250), 580),
+    ]:
+        marker = Gtk.EventBox()
+        marker.set_name('landmark-'+name)
+        marker.set_size_request(16, 16)
+        area.put(marker, x, y)
+        area.put(Gtk.Label(label=name), label_x, y-3)
+        landmark_widgets.append((name, marker, rgb))
+        landmark_css.append('#landmark-%s { background: rgb(%d,%d,%d); }' % (name, *rgb))
     css = Gtk.CssProvider()
     css.load_from_data(b'#fixture-background { background: rgb(20,40,80); } #fixture-target { background: rgb(224,48,64); } #fixture-target.clicked { background: rgb(32,192,96); } #fixture-reference { background: rgb(240,210,40); } label { color: white; font-size: 22px; }')
     Gtk.StyleContext.add_provider_for_screen(window.get_screen(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    markers_css = Gtk.CssProvider()
+    markers_css.load_from_data(' '.join(landmark_css).encode())
+    Gtk.StyleContext.add_provider_for_screen(window.get_screen(), markers_css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+    def rect(widget):
+        allocation = widget.get_allocation()
+        return [allocation.x, allocation.y, allocation.width, allocation.height]
 
     def save():
         native_window = window.get_window()
@@ -69,6 +108,14 @@ def app(state_path, session, title):
             if session == 'x11':
                 _, x, y = native_window.get_origin()
                 state['origin'] = [x, y]
+        state['text'] = entry.get_text()
+        adjustment = scroll_adjustment
+        state['scrollOffset'] = adjustment.get_value()
+        state['scrollUpper'] = adjustment.get_upper()
+        state['scrollPageSize'] = adjustment.get_page_size()
+        if native_window is not None:
+            state['controls'] = {'textEntry': rect(entry), 'scrollRegion': rect(scroll)}
+            state['landmarks'] = [{'name': name, 'rect': rect(widget), 'rgb': list(rgb)} for name, widget, rgb in landmark_widgets]
         temp = state_path.with_suffix('.tmp')
         temp.write_text(json.dumps(state))
         temp.replace(state_path)
@@ -87,7 +134,14 @@ def app(state_path, session, title):
                               'serverTimeMs': event.time, 'receivedMonotonicMs': time.monotonic_ns() // 1_000_000})
         label.set_text('Fixture 21 | clicks %d | keys %d' % (len(state['clicks']), len(state['keys'])))
         writer.request()
-        return True
+        return False
+
+    def controls_changed(*_):
+        effect_label.set_text('Text: %d chars | Scroll offset: %d' % (len(entry.get_text()), scroll_adjustment.get_value()))
+        writer.request()
+
+    entry.connect('changed', controls_changed)
+    scroll_adjustment.connect('value-changed', controls_changed)
 
     def ready():
         state['ready'] = True
