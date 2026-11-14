@@ -6,6 +6,33 @@ import { join } from "node:path";
 import { createComputerUseTool } from "./plugin-tool.js";
 import { ProcessFailure } from "./process-runner.js";
 
+for (const [backend, tool, hint] of [
+  ["x11-click", "xdotool", "Install with: sudo apt install xdotool"],
+  ["wayland-click", "ydotool", "Install with: sudo apt install ydotool, then enable ydotoold (see setup guide)."],
+] as const) test(`click retains safe recovery guidance for missing ${tool}`, async () => {
+  const runAdapter = async () => ({ ok: false, supported: true, platform: "linux", backend,
+    error: `Missing required tool: ${tool}.`, hint: "private-helper-diagnostic", verificationCommand: "private-helper-diagnostic" });
+  const action = createComputerUseTool({ approvalProvider: async () => "allowed" as const, runAdapter, appendAuditEvent: async () => {} });
+  const result = await action.execute("missing-click-helper", { action: "click", coords: "20,30", confirm: true });
+  assert.equal(result.details.success, false);
+  assert.deepEqual(result.details.result, { ok: false, supported: true, platform: "linux", backend, code: "ENOENT",
+    missingTool: tool, error: `Missing required tool: ${tool}.`, hint, verificationCommand: "coven-desktop-use doctor" });
+  assert.ok(!JSON.stringify(result).includes("private-helper-diagnostic"));
+});
+
+for (const payload of [
+  { backend: "x11-click", error: "Missing required tool: private-helper-diagnostic." },
+  { backend: "private-helper-diagnostic", error: "Missing required tool: xdotool." },
+  { backend: "x11-click", error: "Missing required tool: xdotool. private-helper-diagnostic" },
+]) test(`click withholds unrecognized dependency diagnostics: ${payload.backend}`, async () => {
+  const action = createComputerUseTool({ approvalProvider: async () => "allowed" as const,
+    runAdapter: async () => ({ ok: false, supported: true, platform: "linux", ...payload, hint: "private-helper-diagnostic", verificationCommand: "private-helper-diagnostic" }), appendAuditEvent: async () => {} });
+  const result = await action.execute("unknown-click-helper", { action: "click", coords: "20,30", confirm: true });
+  assert.ok(!JSON.stringify(result).includes("private-helper-diagnostic"));
+  assert.equal((result.details.result as any).missingTool, undefined);
+  assert.equal((result.details.result as any).hint, undefined);
+});
+
 for (const code of ["CANCELLED", "ETIMEDOUT"]) for (const double of [false, true]) test(`interrupted ${double ? "double" : "single"} click reports missing cleanup proof for ${code}`, async () => {
   const tool = createComputerUseTool({ approvalProvider: async () => "allowed" as const, runAdapter: async () => { throw new ProcessFailure(code, null, undefined, "started"); }, appendAuditEvent: async () => {} });
   const result = await tool.execute("pointer-interruption", { action: "click", coords: "20,30", double, confirm: true });

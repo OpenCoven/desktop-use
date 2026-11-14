@@ -1258,7 +1258,7 @@ fn x11_click(x: i32, y: i32, button: u32, times: u32) -> String {
     // These requests share the helper's X connection and remain ordered.
     // --sync instead waits for departure from the old position, so a click
     // already at its destination cannot progress without unrelated motion.
-    let mut guard = x11_input::Guard::prepare(Path::new(&helper), deadline());
+    let mut guard = x11_input::Guard::prepare_pointer(Path::new(&helper), deadline());
     let qualified = guard.available();
     let mut input_started = false;
     let raw = if qualified && !guard.button(button as u8, deadline()) {

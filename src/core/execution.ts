@@ -555,6 +555,17 @@ function redactTypeDiagnostics(value: unknown): unknown {
   if (typeof record.backend === "string" && ["peekaboo", "xdotool", "ydotool", "wtype", "linux"].includes(record.backend)) fields.backend = record.backend;
   const codes = ["ENOENT", "EACCES", "ETIMEDOUT", "CANCELLED", "OUTPUT_LIMIT", "PROCESS_ERROR", "MALFORMED_OUTPUT", "BACKEND_ERROR", "PERMISSION_ERROR", "COORDINATES_OUT_OF_RANGE", "POINTER_MAPPING_UNVERIFIED", "X11_CLEANUP_FAILED"];
   if (typeof record.code === "string") fields.code = codes.includes(record.code) ? record.code : "BACKEND_ERROR";
+  // Rebuild known dependency advice; backend-supplied hints may contain input.
+  const missingClickTool = record.backend === "x11-click" ? "xdotool" : record.backend === "wayland-click" ? "ydotool" : undefined;
+  if (missingClickTool && record.platform === "linux" && record.ok === false && record.supported === true
+      && record.error === `Missing required tool: ${missingClickTool}.`) {
+    fields.backend = record.backend;
+    fields.code = "ENOENT";
+    fields.missingTool = missingClickTool;
+    fields.error = `Missing required tool: ${missingClickTool}.`;
+    fields.hint = missingClickTool === "xdotool" ? "Install with: sudo apt install xdotool" : "Install with: sudo apt install ydotool, then enable ydotoold (see setup guide).";
+    fields.verificationCommand = "coven-desktop-use doctor";
+  }
   if (Array.isArray(record.steps)) fields.steps = record.steps.map(redactTypeDiagnostics);
   if (typeof record.adapter === "string") { fields.adapter = "adapter"; fields.result = redactTypeDiagnostics(record.result); }
   if (explicitMacPermissionFailure(value)) fields.permissionError = "PERMISSION_ERROR";

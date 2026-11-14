@@ -174,7 +174,7 @@ impl Drop for Context {
 }
 
 impl Context {
-    pub(super) unsafe fn open() -> Option<Self> {
+    pub(super) unsafe fn open(pointer_only: bool) -> Option<Self> {
         let api = Api::load()?;
         let version = (api.version)();
         if version.is_null() || CStr::from_ptr(version).to_bytes() != b"3.20160805.1" {
@@ -234,8 +234,17 @@ impl Context {
                     && row.first() == Some(&0)
             })
             .map(|(index, _)| result.mapping.low + index as u8);
-        // Keyboard-only qualification happens in begin_logical. A pointer
-        // transaction never restores or otherwise changes keyboard state.
+        // Reject held lock-toggle keys before announcing keyboard readiness,
+        // preserving the original unqualified helper fallback before input.
+        // Pointer transactions never restore or otherwise change keyboard state.
+        if !pointer_only
+            && result.entries().iter().any(|entry| {
+                result.initial.down.contains(&entry.code)
+                    && [0xff7f, 0xff14].contains(&entry.symbol)
+            })
+        {
+            return None;
+        }
         Some(result)
     }
 

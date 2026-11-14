@@ -15,6 +15,11 @@ from owned_process_guard import install_recovery_handlers, begin_recovery
 from owned_trace_stop import OwnedTraceStop, TraceUnavailable
 
 
+def completed_state_qualified(outcome, *, expected_buttons, observed_buttons, keyboard_preserved, helper_reaped, preheld_button):
+    expected_restorations = 1 if preheld_button == 1 else 0
+    return helper_reaped and observed_buttons == expected_buttons and keyboard_preserved and outcome.get('ok') is True and outcome.get('cleanupState') == 'verified' and outcome.get('releasedButtons') == 0 and outcome.get('restoredButtons') == expected_restorations
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for field in ['adapter', 'adapter-sha256', 'fixture-state', 'fixture-script', 'fixture-sha256', 'display', 'lease-expires', 'receipt']:
@@ -26,6 +31,8 @@ def main():
     parser.add_argument('--server-pid', type=int, required=True)
     parser.add_argument('--fixture-window', type=int, required=True)
     args = parser.parse_args()
+    if not args.complete_click and not args.trace_owned_helper:
+        parser.error('cancellation requires --trace-owned-helper')
     assert not (args.complete_click and args.trace_owned_helper)
     assert sys.platform == 'linux' and os.environ.get('NATIVE_OWNED_DISPOSABLE_DISPLAY') == 'yes'
     lease = datetime.datetime.fromisoformat(args.lease_expires.replace('Z', '+00:00')).timestamp()
@@ -172,17 +179,6 @@ def main():
                     report['helperDetachedBeforeCancellation'] = True
                     held = pid
                     break
-                if pointer()['buttons'] & 1:
-                    try: os.kill(pid, signal.SIGSTOP)
-                    except ProcessLookupError: continue
-                    if pointer()['buttons'] & 1:
-                        time.sleep(.025)
-                        after = identity(pid)
-                        if after and after['start'] == born['start'] and pointer()['buttons'] & 1:
-                            held = pid; break
-                    after = identity(pid)
-                    if after and after['start'] == born['start']:
-                        os.kill(pid, signal.SIGCONT)
             if held: break
             time.sleep(.001)
         if held:
@@ -222,7 +218,7 @@ def main():
             time.sleep(.1)
             now=pointer();outcome=report.get('safeNativeOutcome',{})
             report.update(expectedFinalButtonMask=expected_buttons,observedFinalButtonMask=now['buttons'],preheldButtonPreserved=bool(now['buttons']&expected_buttons),keyboardStatePreserved=keymap()==original_keys,helperReaped=bool(helpers) and all(identity(pid) is None for pid in helpers))
-            report['qualified']=report['helperReaped'] and now['buttons']==expected_buttons and report['keyboardStatePreserved'] and outcome.get('ok') is True and outcome.get('cleanupState')=='verified' and outcome.get('releasedButtons')==0 and outcome.get('restoredButtons')==1
+            report['qualified']=completed_state_qualified(outcome, expected_buttons=expected_buttons, observed_buttons=now['buttons'], keyboard_preserved=report['keyboardStatePreserved'], helper_reaped=report['helperReaped'], preheld_button=args.preheld_button)
         else:
             report['unqualifiedReason'] = 'ACTUAL_HELD_BUTTON_NOT_OBSERVED'
         # Do not persist raw native output or a fixture input payload.

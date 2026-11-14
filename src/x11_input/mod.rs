@@ -108,6 +108,12 @@ impl Guard {
         let _ = (command, deadline);
     }
     pub(crate) fn prepare(helper: &Path, deadline: Instant) -> Self {
+        Self::prepare_for(helper, deadline, false)
+    }
+    pub(crate) fn prepare_pointer(helper: &Path, deadline: Instant) -> Self {
+        Self::prepare_for(helper, deadline, true)
+    }
+    fn prepare_for(helper: &Path, deadline: Instant, pointer_only: bool) -> Self {
         #[cfg(target_os = "linux")]
         {
             let qualified = helper.canonicalize().ok().as_deref()
@@ -120,7 +126,7 @@ impl Guard {
                 });
             Self {
                 child: if qualified {
-                    guard::PrivateChild::start(deadline)
+                    guard::PrivateChild::start(deadline, pointer_only)
                 } else {
                     None
                 },
@@ -128,7 +134,7 @@ impl Guard {
         }
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = (helper, deadline);
+            let _ = (helper, deadline, pointer_only);
             Self {}
         }
     }

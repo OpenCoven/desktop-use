@@ -157,7 +157,13 @@ fn wait_pipe(fd: RawFd, events: libc::c_short) {
         libc::poll(&mut ready, 1, 1);
     }
 }
-unsafe fn child(command: RawFd, reply: RawFd, lifetime: Duration, owner: libc::pid_t) -> ! {
+unsafe fn child(
+    command: RawFd,
+    reply: RawFd,
+    lifetime: Duration,
+    owner: libc::pid_t,
+    pointer_only: bool,
+) -> ! {
     libc::setpgid(0, 0);
     libc::prctl(libc::PR_SET_NAME, c"coven-x11-guard".as_ptr(), 0, 0, 0);
     libc::signal(libc::SIGTERM, libc::SIG_DFL);
@@ -200,7 +206,7 @@ unsafe fn child(command: RawFd, reply: RawFd, lifetime: Duration, owner: libc::p
         write_child(reply, b"U");
         libc::_exit(0);
     }
-    let Some(mut context) = Context::open() else {
+    let Some(mut context) = Context::open(pointer_only) else {
         write_child(reply, b"U");
         libc::_exit(0);
     };
@@ -353,7 +359,7 @@ unsafe fn child(command: RawFd, reply: RawFd, lifetime: Duration, owner: libc::p
 }
 
 impl PrivateChild {
-    pub(super) fn start(deadline: Instant) -> Option<Self> {
+    pub(super) fn start(deadline: Instant, pointer_only: bool) -> Option<Self> {
         if crate::process::check(deadline).is_err() {
             return None;
         }
@@ -380,6 +386,7 @@ impl PrivateChild {
                     reply[1],
                     deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(200),
                     owner,
+                    pointer_only,
                 );
             }
             libc::close(command[0]);

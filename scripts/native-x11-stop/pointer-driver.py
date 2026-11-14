@@ -63,6 +63,8 @@ def main():
     parser.add_argument('--server-pid', type=int, required=True)
     parser.add_argument('--fixture-window', type=int, required=True)
     args = parser.parse_args()
+    if not args.trace_owned_helper:
+        parser.error('cancellation requires --trace-owned-helper')
     assert sys.platform == 'linux' and os.environ.get('NATIVE_OWNED_DISPOSABLE_DISPLAY') == 'yes'
     lease = datetime.datetime.fromisoformat(args.lease_expires.replace('Z', '+00:00')).timestamp()
     assert time.time() + 30 < lease < time.time() + 1200
@@ -210,17 +212,6 @@ def main():
                     report['helperDetachedBeforeCancellation'] = True
                     held = pid
                     break
-                if pointer()['buttons'] & 1:
-                    try: os.kill(pid, signal.SIGSTOP)
-                    except ProcessLookupError: continue
-                    if pointer()['buttons'] & 1:
-                        time.sleep(.025)
-                        after = identity(pid)
-                        if after and after['start'] == born['start'] and pointer()['buttons'] & 1:
-                            held = pid; break
-                    after = identity(pid)
-                    if after and after['start'] == born['start']:
-                        os.kill(pid, signal.SIGCONT)
             if held: break
             time.sleep(.001)
         if held:
