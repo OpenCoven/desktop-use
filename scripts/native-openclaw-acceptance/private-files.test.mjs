@@ -8,13 +8,14 @@ import { removeOwnedPrivateFiles } from './private-files.mjs';
 test('cleanup removes host-generated credential backups and retains only unrelated metadata', async () => {
   const root = await mkdtemp(join(tmpdir(), 'native21-private-files-'));
   try {
-    const secretFiles = ['openclaw.json', 'openclaw.json.last-good', 'openclaw.json.bak', 'openclaw.json.bak.4', 'openclaw.json.bak.before-write', 'openclaw.json.clobbered.2026-11-14', 'openclaw.json.rejected.2026-11-14', 'console.log', 'gateway.jsonl'];
+    const secretFiles = ['openclaw.json', 'openclaw.json.last-good', 'openclaw.json.bak', 'openclaw.json.bak.4', 'openclaw.json.bak.before-write', 'openclaw.json.clobbered.2026-11-14', 'openclaw.json.rejected.2026-11-14', 'openclaw.json.123.00000000-0000-4000-8000-000000000000.tmp', 'console.log', 'gateway.jsonl'];
     for (const name of secretFiles) await writeFile(join(root, name), 'disposable-credential');
     await mkdir(join(root, 'state')); await writeFile(join(root, 'state', 'private'), 'private-input');
     await writeFile(join(root, 'receipt.json'), '{"success":false}');
     await writeFile(join(root, 'openclaw.json.notes'), 'unrelated');
+    await writeFile(join(root, 'openclaw.json.notes.tmp'), 'unrelated');
     assert.equal(await removeOwnedPrivateFiles(root), true);
-    assert.deepEqual((await readdir(root)).sort(), ['openclaw.json.notes', 'receipt.json']);
+    assert.deepEqual((await readdir(root)).sort(), ['openclaw.json.notes', 'openclaw.json.notes.tmp', 'receipt.json']);
     assert.equal(await removeOwnedPrivateFiles(root), true, 'cleanup is idempotent');
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -25,6 +26,7 @@ test('cleanup unlinks a private backup symlink without following it outside the 
     const root = join(parent, 'owned'), external = join(parent, 'external');
     await mkdir(root); await mkdir(external); await writeFile(join(external, 'keep'), 'preserved');
     await symlink(external, join(root, 'openclaw.json.last-good'));
+    await symlink(external, join(root, 'openclaw.json.123.00000000-0000-4000-8000-000000000000.tmp'));
     assert.equal(await removeOwnedPrivateFiles(root), true);
     assert.equal(await readFile(join(external, 'keep'), 'utf8'), 'preserved');
     assert.deepEqual(await readdir(root), []);
