@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { McpServer } from '@modelcontextprotocol/server';
 import { serveStdio, StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import type { Readable, Writable } from 'node:stream';
@@ -5,11 +6,13 @@ import { createDesktopClient, type DesktopClientOptions, type DesktopResult } fr
 import { COMPUTER_USE_TOOL_NAME } from '../tool-names.js';
 import { requestContract, resultContract, createJsonSchemaValidator } from './schema.js';
 
+const packageVersion: string = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version;
+
 export function serveDesktopStdio(options: DesktopClientOptions, streams: { input?: Readable; output?: Writable; diagnostic?: () => void } = {}) {
   const client = createDesktopClient({ ...options, surface: 'mcp' });
   const pending = new Set<Promise<DesktopResult>>();
   const handle = serveStdio(() => {
-    const server = new McpServer({ name: 'coven-desktop-use', version: '0.1.2' }, { jsonSchemaValidator: createJsonSchemaValidator() });
+    const server = new McpServer({ name: 'coven-desktop-use', version: packageVersion }, { jsonSchemaValidator: createJsonSchemaValidator() });
     server.registerTool(COMPUTER_USE_TOOL_NAME, { description: 'Desktop observation and explicitly approved actions. Approval decisions belong to the separate trusted host.', inputSchema: requestContract, outputSchema: resultContract }, async (request, ctx) => {
       const operation = client.execute(request, { callId: String(ctx.mcpReq.id), signal: ctx.mcpReq.signal });
       pending.add(operation);

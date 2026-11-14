@@ -20,7 +20,7 @@ Create an absolute workspace and a separate, existing state directory owned by t
 
 Omitting `actionProfile` chooses `observation-only`. A trusted host can explicitly set `"actionProfile": "full"`; this broadens eligibility and still requires separate approval for gated effects. `approvalTimeoutMs` is a trusted integer from 1 through 300000, defaults to 300000, and is separate from the action timeout.
 
-Install the exact local candidate tarball as described in [the client guide](desktop-client.md#local-candidate-consumption), then run `./node_modules/.bin/coven-desktop-use-mcp --config /absolute/config.json`. Run `./node_modules/.bin/coven-desktop-use-mcp --help` for startup syntax; help uses stderr so stdout remains protocol-only. This candidate is unpublished; existing public npm `0.1.2` is not evidence of these exports. With no broker, observations remain usable and gated operations return an explicit `needsApproval` result with no effect. Stdout contains only MCP messages; sanitized diagnostics use stderr.
+Install the exact local candidate tarball as described in [the client guide](desktop-client.md#local-candidate-consumption), then run `./node_modules/.bin/coven-desktop-use-mcp --config /absolute/config.json`. Run `./node_modules/.bin/coven-desktop-use-mcp --help` for startup syntax; help uses stderr so stdout remains protocol-only. This candidate is unpublished; the published npm `0.1.3` artifact does not contain these SDK/MCP exports. With no broker, observations remain usable and gated operations return an explicit `needsApproval` result with no effect. Stdout contains only MCP messages; sanitized diagnostics use stderr.
 
 ## Separate reference host
 

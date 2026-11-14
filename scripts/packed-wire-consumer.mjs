@@ -7,6 +7,7 @@ import { Client } from '@modelcontextprotocol/client';
 import { PassThrough } from 'node:stream';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 const packed = process.argv[2];
+const packageVersion = JSON.parse(await readFile(join(packed, 'package.json'), 'utf8')).version;
 const main = join(packed, 'dist/src/mcp/main.js');
 const reference = join(packed, 'dist/examples/approval-host/main.js');
 const embedding = join(packed, 'dist/examples/embedded-client.js');
@@ -31,6 +32,7 @@ async function checkHealthOnlyWire(era) {
   const client = new Client({ name: 'packed-health-client', version: '1' }, { jsonSchemaValidator: createJsonSchemaValidator(), ...(era === 'modern' ? { versionNegotiation: { mode: { pin: '2026-07-28' } } } : { supportedProtocolVersions: ['2025-11-25'] }) });
   try {
     await client.connect(new StdioServerTransport(output, input));
+    assert.equal(client.getServerVersion()?.version, packageVersion, 'Compiled MCP handshake must identify the installed package');
     assert.equal(client.getNegotiatedProtocolVersion(), era === 'modern' ? '2026-07-28' : '2025-11-25');
     const health = await client.callTool({ name: 'computer_use', arguments: { action: 'health', reason: 'private-health-wire' } });
     const details = health.structuredContent;
@@ -67,6 +69,7 @@ async function fixture(era, decision, { host = true, expiry = 3000 } = {}) {
   let display = ''; transport.stderr?.on('data', chunk => display += chunk);
   const client = new Client({ name: 'packed-reference-client', version: '1' }, { jsonSchemaValidator: createJsonSchemaValidator(), ...(era === 'modern' ? { versionNegotiation: { mode: { pin: '2026-07-28' } } } : { supportedProtocolVersions: ['2025-11-25'] }) });
   await client.connect(transport);
+  assert.equal(client.getServerVersion()?.version, packageVersion, 'Launched MCP handshake must identify the installed package');
   assert.equal(client.getNegotiatedProtocolVersion(), era === 'modern' ? '2026-07-28' : '2025-11-25');
   return { client, workspace, state, config, display: () => display };
 }

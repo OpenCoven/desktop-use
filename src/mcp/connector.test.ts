@@ -25,6 +25,8 @@ async function fixture(t: any, era: 'modern' | 'legacy', extra = {}) {
 for (const era of ['modern', 'legacy'] as const) {
   test(`${era} official SDK wire advertises canonical schema, truthful capabilities and structured results`, async t => {
     const { client } = await fixture(t, era);
+    const manifest = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8'));
+    assert.equal(client.getServerVersion()?.version, manifest.version, 'MCP initialization must identify the actual package version');
     const { tools } = await client.listTools();
     assert.deepEqual(tools.map(tool => tool.name), ['computer_use']);
     const schema = tools[0].inputSchema as any;

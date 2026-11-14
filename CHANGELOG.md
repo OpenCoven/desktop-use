@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.1.3 - 2026-11-13
+
+- Deliver validated PNG/JPEG image blocks with content hashes and explicit capture/coordinate metadata; reject stale or malformed image artifacts and report unavailable geometry honestly.
+- Add trusted action eligibility profiles and canonical action allowlists, with permission-aware schemas, health probes, alias parity, and an always-available scoped Stop.
+- Advertise only implemented Stop and health controls, document every panel field's producer, and qualify the packaged plugin's policy, approvals, cancellation, and redacted audits through the minimum supported OpenClaw gateway on macOS and Linux.
 
 - Name `computer_use` in the Linux setup guide, tag the deprecated `desktop_use` alias as approval-gated, and keep the packaged agent template and docs in step with the plugin.
 - Deprecate the plugin tool `desktop_use` in favor of `computer_use`, the action inputs `permissions -> doctor`, `see -> inspect`, `capture -> screenshot`, `type -> type-text`, and `press -> keypress`, and the `clipboard-write` field `text` in favor of `clipboardText`. Removal is targeted at **0.2.0**. Legacy inputs remain accepted for this compatibility release and add a `deprecation` string naming replacements to results without changing status, approval, or audit behavior. Prefer the 18 canonical actions while retaining the five deprecated aliases in the bounded 23-value enum for host validation; retain `desktop_use` registration and `openclaw.plugin.json` contracts until the later release.
@@ -17,11 +21,7 @@
 - Avoid echoing raw process exceptions and typed-input error diagnostics in adapter results.
 - Run required checks on macOS and Linux in GitHub Actions, including real adapter fixture-process regressions.
 
-- Added the dedicated OpenCoven `computer_use` agent boundary for OpenClaw with
-  packaged identity/config templates.
-- Added policy classification, approval gating, redacted audit logs, Control UI
-  state metadata, plugin health, scoped host adapters, and transient observation
-  retry behavior.
-- Added focused TypeScript tests for policy, registration, tool execution,
-  audit logging, agent metadata, and unsafe action denial.
+- Added the dedicated OpenCoven `computer_use` agent boundary for OpenClaw with packaged identity/config templates.
+- Added policy classification, approval gating, redacted audit logs, Control UI state metadata, plugin health, scoped host adapters, and transient observation retry behavior.
+- Added focused TypeScript tests for policy, registration, tool execution, audit logging, agent metadata, and unsafe action denial.
 - Thanks @BunsDev
