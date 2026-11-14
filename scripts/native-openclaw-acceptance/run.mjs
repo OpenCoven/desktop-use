@@ -15,6 +15,7 @@ import { verifyHostRuntimeStage, runtimeStageEnvironment } from './runtime-stage
 import { nativeToolCallId } from './call-identity.mjs';
 import { removeOwnedPrivateFiles } from './private-files.mjs';
 import { safeFailure } from './failure.mjs';
+import { assertClickResult } from './click-result.mjs';
 
 const [descriptorPath, mode = '--preflight', outputPath] = process.argv.slice(2);
 assert.ok(descriptorPath && ['--preflight', '--run-owned-fixture'].includes(mode), 'Usage: run.mjs descriptor.json [--preflight | --run-owned-fixture fresh-private-output]');
@@ -91,9 +92,7 @@ const model = createServer(async (req, res) => {
       assert.equal(results.length, 2, 'Exactly one capture and one click result required');
       assert.equal(results[1].tool_call_id, nativeToolCallId(marker, 'click'));
       const status = JSON.parse(messageText(results[1].content));
-      assert.equal(status.status, plan.denied ? 'error' : 'success');
-      assert.equal(status.success, !plan.denied);
-      if (plan.denied) assert.equal(status.result?.error ?? status.error, 'Denied by user');
+      assertClickResult(status, { denied: plan.denied });
       complete = true;
     }
     control.check();
@@ -103,7 +102,7 @@ const model = createServer(async (req, res) => {
     chunk(complete ? { content: 'Native fixture case complete.' } : { tool_calls: [{ index: 0, id, type: 'function', function: { name: 'computer_use', arguments: JSON.stringify(args) } }] });
     chunk({}, complete ? 'stop' : 'tool_calls'); res.end('data: [DONE]\n\n');
   } catch (error) {
-    providerFailure = safeFailure(error, providerPhase);
+    providerFailure ??= safeFailure(error, providerPhase);
     modelFailure = true;
     if (res.destroyed || res.writableEnded) return;
     if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'application/json' });

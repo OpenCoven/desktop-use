@@ -4,7 +4,7 @@ const codes = new Set(['NATIVE21_CONDITION_TIMEOUT','NATIVE21_RPC_TIMEOUT','NATI
 
 export function safeFailure(error, phase) {
   const result = { phase: phases.has(phase) ? phase : 'unknown', errorClass: classes.has(error?.name) ? error.name : 'OtherError', code: codes.has(error?.message) ? error.message : 'WITHHELD' };
-  const site = typeof error?.stack === 'string' && error.stack.match(/\/(run|wire-proof|fixture-lease|linux-fixture-read)\.mjs:(\d{1,6}):(\d{1,6})(?:\)|\s|$)/);
+  const site = typeof error?.stack === 'string' && error.stack.match(/\/(run|wire-proof|click-result|fixture-lease|linux-fixture-read)\.mjs:(\d{1,6}):(\d{1,6})(?:\)|\s|$)/);
   if (site) Object.assign(result, { module: site[1], line: Number(site[2]), column: Number(site[3]) });
   return result;
 }
