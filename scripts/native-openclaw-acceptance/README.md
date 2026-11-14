@@ -1,0 +1,24 @@
+# Native pixels through the packed OpenClaw plugin
+
+This opt-in driver is separate from the release matrix. It uses one explicitly selected official host, one installed packed plugin, a real native adapter and an exclusively handed disposable fixture. It never installs helpers, changes privacy grants, launches the fixture or accesses a live model service. Default preflight only reads selected files.
+
+Prepare a descriptor outside the repository with `schemaVersion:1`, `sourceCommit`, `sourceTree`, `packageVersion`, `pluginRoot`, `packageArchive`, `packageSha256`, `adapter`, `adapterSha256`, `host`, `hostVersion`, `platform`, `fixtureState`, `fixturePid` and `fixtureWindowId`. Paths must be absolute. Preflight derives the complete unique file inventory directly from the hashed package archive and compares every installed file, rejecting extra files outside the separate `node_modules` dependency directory. Supplied inventories cannot authorize omitted or changed executable modules. Source association is an owner handoff; copied byte identities are checked independently. Any embedded package identity must agree. This does not establish public publication or cryptographic provenance.
+
+For macOS include `fixtureBundleId`, `helperExecutable`, `helperSha256`, `helperVersion` and `helperSourceCommit`. An explicit `captureEngine` records its actual setting, for example `cg`; it cannot turn the helper's failed `auto` case into a pass. For Linux set `ownedDisposableDisplay:true` and execute inside the owner's dedicated graphical environment; this is not permission to use the user's desktop.
+
+Native execution additionally requires `hostArchive`, `hostOrigin:"unchanged-official-package"` and a fresh `fixtureLease` object with `acknowledgement:"native-openclaw-fixture-exclusive"`, `ownerThread`, `expiresAt` less than one hour ahead, and the exact `fixturePid`, `fixtureWindowId`, `adapterSha256`, `packageSha256` and `sourceCommit`. The host archive must match the pinned official registry integrity; every installed host file must match that archive. Obtain the lease from the actual fixture owner before running; do not fabricate an acknowledgement. The owner must hold its own native activity during the lease and explicitly authorize the fixture-only scripted input. Lease, fixture identity, counters and geometry are checked again immediately before allowing input. Expiry cancels the workflow.
+
+The fixture state must expose `ready`, `pid`, `windowNumber`, `clicks`, `desktopRect` and `targetRect` with the native client fixture's semantics. Target colors are the fixture's known sRGB red `(224,48,64)` before the first click and green `(32,192,96)` afterward. Pixel decoding converts to sRGB and declares a 16-level channel tolerance. This verifier proves the target position; it is not a general full-frame distortion verifier.
+
+```sh
+node scripts/native-openclaw-acceptance/run.mjs /owned/descriptor.json --preflight
+NATIVE_OPENCLAW_HOST=/owned/official-openclaw node --test scripts/native-openclaw-acceptance/*.test.mjs
+# Only after the explicit final-byte and fixture lease:
+node scripts/native-openclaw-acceptance/run.mjs /owned/descriptor.json --run-owned-fixture /owned/fresh-private-run
+```
+
+The selected host must supply Sharp 0.34.5 and ws; archive inspection uses Python 3.11 or later without extracting or executing archive contents. The fixture must start at zero clicks, so the permitted click creates a directly checked red-to-green transition. The driver starts an isolated loopback model server and gateway, limits the agent to `computer_use`, captures only the fixture, verifies the exact current capture call, timestamp, unreused observation ID, provider-wire image identity and all target edges against independent geometry, and derives a coordinate click from those received pixels. A real approval RPC permits one click; another case supplies forged confirmation but denies the real approval. Fixture counters and fresh after-capture pixels must agree. Decisions are scripted trusted-operator decisions, not human acceptance.
+
+The fresh runtime root is mandatory. Raw provider payloads are never written by the driver. SIGINT, SIGTERM and lease expiry enter bounded cleanup. The driver tracks gateway descendants and their start identities, aborts owned runs, terminates its owned process groups and checks that tracked processes and groups are gone. It checks durable audit and diagnostic files, then removes its own private gateway state, config and logs. Only sanitized metadata receipts remain; cleanup failure preserves incomplete status. Native, virtual display, physical display, source, official-host compatibility and public release gates stay separate.
+
+Current preparation status: focused verifier/preflight tests and syntax checks exist. No native run has been performed by this harness; final source-bound bytes and an explicit fixture lease remain required.
