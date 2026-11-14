@@ -8,6 +8,24 @@ import signal
 import time
 
 
+class IdleStateWriter:
+    """Write complete history once after a burst, without delaying event capture."""
+    def __init__(self, idle_add, write):
+        self.idle_add = idle_add
+        self.write = write
+        self.pending = False
+
+    def request(self):
+        if not self.pending:
+            self.pending = True
+            self.idle_add(self.flush)
+
+    def flush(self):
+        self.pending = False
+        self.write()
+        return False
+
+
 def app(state_path, session, title):
     import gi
     gi.require_version('Gtk', '3.0')
@@ -44,18 +62,20 @@ def app(state_path, session, title):
         temp.write_text(json.dumps(state))
         temp.replace(state_path)
 
+    writer = IdleStateWriter(GLib.idle_add, save)
+
     def click(widget, event):
         state['clicks'].append({'x': event.x+20, 'y': event.y+20, 'button': event.button})
         target.get_style_context().add_class('clicked')
         label.set_text('Fixture 21 | clicks %d | keys %d' % (len(state['clicks']), len(state['keys'])))
-        save()
+        writer.request()
         return True
 
     def key(widget, event):
         state['keys'].append({'name': Gdk.keyval_name(event.keyval), 'text': event.string,
                               'serverTimeMs': event.time, 'receivedMonotonicMs': time.monotonic_ns() // 1_000_000})
         label.set_text('Fixture 21 | clicks %d | keys %d' % (len(state['clicks']), len(state['keys'])))
-        save()
+        writer.request()
         return True
 
     def ready():
@@ -66,7 +86,7 @@ def app(state_path, session, title):
     def configured(*_):
         # A window manager can finish placement after the initial ready event.
         # Persist the applied GDK position before consumers map returned pixels.
-        GLib.idle_add(save)
+        writer.request()
         return False
 
     target.connect('button-press-event', click)
