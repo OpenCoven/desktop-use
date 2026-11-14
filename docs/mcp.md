@@ -22,6 +22,57 @@ Omitting `actionProfile` chooses `observation-only`. A trusted host can explicit
 
 Install the exact local candidate tarball as described in [the client guide](desktop-client.md#local-candidate-consumption), then run `./node_modules/.bin/coven-desktop-use-mcp --config /absolute/config.json`. Run `./node_modules/.bin/coven-desktop-use-mcp --help` for startup syntax; help uses stderr so stdout remains protocol-only. This candidate is unpublished; the published npm `0.1.3` artifact does not contain these SDK/MCP exports. With no broker, observations remain usable and gated operations return an explicit `needsApproval` result with no effect. Stdout contains only MCP messages; sanitized diagnostics use stderr.
 
+## Print-only harness recipes
+
+The compiled candidate can print a harness-native server entry and a separate trusted startup configuration template. Node >=22.14.0 must already be installed. The command uses the absolute Node executable running it and this installed candidate's absolute compiled entry; it does not use a shell, `npx` or `tsx` at runtime.
+
+```sh
+node node_modules/@opencoven/openclaw-desktop-use/dist/src/mcp/main.js recipe --harness codex
+node node_modules/@opencoven/openclaw-desktop-use/dist/src/mcp/main.js recipe --harness claude --config /absolute/private/desktop-use.json --workspace /absolute/workspace --state /absolute/private/state --adapter /absolute/bin/coven-desktop-use
+```
+
+The JSON response contains `configuration.snippet`, `configuration.target`, `startupConfig.value`, its suggested permissions, the Node requirement, checked harness version, source links and qualification limits. Copy the native snippet only into the appropriate harness configuration and save `startupConfig.value` at `startupConfig.path` yourself. The outer recipe response is a receipt/template envelope, not a harness configuration file. Defaults are absolute placeholders that must be replaced. No configuration, state, audit, adapter or broker resource is opened by recipe mode, and the command never creates directories, installs packages or changes settings. Invalid recipe arguments produce a fixed stderr reason code with empty stdout.
+
+Create a canonical, same-user private state directory with mode `0700` outside every model-writable workspace, and a same-user regular connector configuration file with mode `0600`. Ensure the absolute workspace and adapter paths exist before starting the connector. Paths with spaces, quotes, backslashes and Unicode are serialized as literal arguments. Control characters and harness interpolation expressions such as `${VAR}`, `{env:VAR}` and `{file:path}` are rejected, so a harness cannot silently substitute another target after parsing the recipe. The Hermes snippet is JSON-compatible YAML, accepted as a complete YAML mapping; merge it structurally into an existing YAML configuration.
+
+All recipes use server key `coven-desktop-use` and retain the default `observation-only` action profile. No recipe enables a harness auto-approve flag or supplies an approval secret. Broadening the trusted action profile still does not authorize gated effects; those require the existing authenticated broker. Approval routing while a harness owns the terminal remains #33. A harness tool-permission dialog is not desktop approval.
+
+### Recipe evidence, checked 14 November 2026
+
+| Harness id | Checked version | Native shape | Source-derived model-visible name | Evidence |
+| --- | --- | --- | --- | --- |
+| `claude` | 2.1.325 | `.mcp.json`: `mcpServers` | `mcp__coven-desktop-use__computer_use` | Installed version/help and [official MCP/config and naming docs](https://code.claude.com/docs/en/agent-sdk/mcp); recipe only |
+| `codex` | 0.169.0 | `$CODEX_HOME/config.toml`: `mcp_servers` | `computer_use` in namespace `coven-desktop-use`; `mcp__` namespace prefix is feature-dependent | Installed version/help and [pinned schema](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/core/config.schema.json)/[naming implementation](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/codex-mcp/src/tools.rs); recipe only |
+| `copilot` | 1.0.107 | `$COPILOT_HOME/mcp-config.json`: `mcpServers`, `type: local` | `coven-desktop-use-computer_use` | Installed version/help and [official config](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers)/[naming reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference); recipe only |
+| `opencode` | 1.19.5 | `opencode.json`: `mcp.servers`, command array | `coven-desktop-use_computer_use` | [Pinned native schema](https://github.com/anomalyco/opencode/blob/v1.19.5/packages/core/src/config/mcp.ts) and [naming](https://github.com/anomalyco/opencode/blob/v1.19.5/packages/opencode/src/mcp/catalog.ts); binary not installed, recipe only |
+| `hermes` | 0.23.1 | `$HERMES_HOME/config.yaml`: `mcp_servers` | `mcp__coven_desktop_use__computer_use` | [Pinned configuration docs](https://github.com/NousResearch/hermes-agent/blob/v0.23.1/website/docs/user-guide/features/mcp.md) and [naming](https://github.com/NousResearch/hermes-agent/blob/v0.23.1/tools/mcp_tool_schema.py); binary not installed, recipe only |
+| `coven-code` | 0.9.0 | Trusted engine-global `$COVEN_CODE_HOME/settings.json`: `config.mcp_servers` array | `coven-desktop-use_computer_use` | Installed version/help and [pinned config](https://github.com/OpenCoven/coven-code/blob/v0.9.0/docs/configuration.md)/[naming](https://github.com/OpenCoven/coven-code/blob/v0.9.0/src-rust/crates/mcp/src/lib.rs); recipe only |
+| `grok` | No binary version qualified | `$GROK_HOME/config.toml`: `mcp_servers` | Catalog key `coven-desktop-use__computer_use`; a provider may access it through `use_tool` | [Pinned source documentation](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-pager/docs/user-guide/07-mcp-servers.md); **unqualified** |
+| `gemini` | 0.68.0 source only | `.gemini/settings.json`: `mcpServers` | `computer_use`, potentially qualified for a naming collision | [Pinned configuration docs](https://github.com/google-gemini/gemini-cli/blob/v0.68.0/docs/tools/mcp-server.md); **unqualified** |
+| `cursor` | No binary version qualified | `.cursor/mcp.json`: `mcpServers` | Client-selected alias, not observed | [Official MCP docs](https://cursor.com/docs/mcp); **unqualified** |
+| `generic` | No harness version applies | Example `mcpServers` mapping | `computer_use` on the wire; model alias is client-specific | [MCP stdio protocol](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports); native configuration is client-specific, **unqualified** |
+
+The version/help probes use disposable homes and do not exercise a model. Source-derived names are not observed tool aliases and must be confirmed from the selected harness's actual discovery output before writing permission rules. OpenCode's pinned schema uses `mcp.servers`; Coven Code's MCP settings belong in trusted engine-global settings and are discarded from project settings. The six first rows are L0 checked recipes, not claims of supported harness execution. The four remaining rows explicitly stay unqualified. No recipe proves L1 discovery, L2 observations, L3 human approval, L4 lifecycle or L5 native desktop acceptance.
+
+`pnpm run test:packed` installs the actual candidate without development dependencies, generates every recipe, parses its native command representation (including TOML), and launches that compiled command from a different disposable directory through the official MCP client. It verifies the package version, exactly one `computer_use` tool, health and Stop round trips, a policy-denied write with no effect, redacted audit and clean shutdown. This is packed command-shape evidence; the client is not Claude Code, Codex, Copilot or another real harness. Existing packed conformance separately exercises broker decisions and both supported wire revisions. Real harness qualification remains #35, and native desktop acceptance remains separate. The published npm 0.1.3 artifact remains unchanged and does not acquire these candidate entry points.
+
+## Fixed startup diagnostics
+
+An unsuccessful startup emits only `Desktop MCP startup unavailable [REASON].` on stderr, exits with code 1 and emits no protocol stdout. It never prints an underlying exception, path, username, configuration value or secret descriptor contents. Fix the named precondition in the trusted operator environment and restart; there is no unaudited or automatically approved fallback.
+
+| Reason | Operator check |
+| --- | --- |
+| `ARGUMENTS_INVALID` | Use the documented startup flags once each; approval socket and inherited descriptor must be supplied together. |
+| `RECIPE_INVALID` | Select a listed harness id and supply only supported flags with absolute literal paths. |
+| `CONFIG_UNAVAILABLE` | The configuration must be readable at the absolute path and cannot be a symlink. |
+| `CONFIG_UNSAFE` | Use a bounded regular file owned by the current user and not writable by group or others. |
+| `CONFIG_INVALID` | Check the JSON shape, trusted scope/workspace fields and action profile. |
+| `ADAPTER_PATH_INVALID` | Supply an absolute adapter path. Actual executable availability remains an execution/health diagnostic, not a startup probe. |
+| `STATE_DIRECTORY_UNAVAILABLE` | Create a canonical, nonsymlink, same-user private directory with mode `0700`. |
+| `AUDIT_UNAVAILABLE` | The audit destination must be writable and be a same-user regular, single-link file with mode `0600`, never a symlink or FIFO. |
+| `APPROVAL_DESCRIPTOR_UNAVAILABLE` | The separate trusted host must inherit a valid bounded secret descriptor of at least 3; never place secrets in a recipe, argv or environment. |
+| `STARTUP_UNAVAILABLE` | A remaining initialization or resource failure occurred; recheck trusted configuration and installation without exposing private diagnostics. |
+
 ## Separate reference host
 
 Run `node node_modules/@opencoven/openclaw-desktop-use/dist/examples/approval-host/main.js --config /absolute/config.json` as the stdio server command in a local MCP client. This separately launched application creates a short private `/tmp/cdu-*` directory (avoiding Unix socket pathname limits), starts its Unix socket broker, generates an ephemeral secret, and launches the MCP child with that secret through inherited descriptor 3. The secret is never placed in arguments, environment variables, model-visible messages or logs. The host removes its owned socket/directory when the child exits. It does not open a TCP listener.
