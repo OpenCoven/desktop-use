@@ -12,7 +12,7 @@ const setup=async t=>{const f=await fixture();t.after(()=>cleanup(f.root));retur
 test('stages a verified pair without selecting it, then explicitly activates with immutable receipt and pending host steps',async t=>{
  const f=await setup(t); const staged=stage(f); assert.equal(staged.status,0,staged.stderr); const out=JSON.parse(staged.stdout); assert.equal(out.status,'staged');
  await assert.rejects(readFile(join(f.root,'installed','active.json')));
- const verified=(await readFile(join(f.root,'verifier.log'),'utf8')).trim().split('\n').map(JSON.parse); assert.equal(verified.length,3); for(const args of verified) {assert.ok(args.includes('--deny-self-hosted-runners'));assert.ok(args.includes('https://slsa.dev/provenance/v1'));}
+ const verified=(await readFile(join(f.root,'verifier.log'),'utf8')).trim().split('\n').map(JSON.parse); assert.equal(verified.length,3); for(const args of verified) {assert.ok(Array.isArray(args));assert.ok(args.includes('--deny-self-hosted-runners'));const predicateIndex=args.indexOf('--predicate-type');assert.ok(predicateIndex>=0);assert.equal(args[predicateIndex+1],'https://slsa.dev/provenance/v1');}
  const activated=invoke(f,'activate'); assert.equal(activated.status,0,activated.stderr); const active=JSON.parse(activated.stdout);assert.equal(active.status,'selected');assert.equal(active.hostSynchronization,'pending');assert.match(active.configuration.plugin,/COVEN_DESKTOP_USE_BIN=/);
  const receipt=JSON.parse(await readFile(join(f.root,'installed','versions','0.1.3','receipt.json')));assert.equal(receipt.releaseVersion,'0.1.3');assert.equal(receipt.provenance.verifier,'gh');
  assert.notEqual(stage(f).status,0);assert.equal(JSON.parse(await readFile(join(f.root,'installed','active.json'))).releaseVersion,'0.1.3');
