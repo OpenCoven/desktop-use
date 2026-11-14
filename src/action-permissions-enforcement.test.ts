@@ -4,9 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import plugin from "../index.js";
+import { COMPUTER_USE_AGENT, COMPUTER_USE_HEALTH_CHECK } from "./computer-use-agent.js";
 import { COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME } from "./tool-names.js";
 import { resolveActionPermissions } from "./action-permissions.js";
 import { createComputerUseTool, createDesktopUseTool } from "./plugin-tool.js";
+import { ProcessFailure } from "./process-runner.js";
 import { type ComputerUseAuditEvent } from "./computer-use-audit.js";
 
 function register(pluginConfig: unknown, contexts: object[] = [{}]) {
@@ -20,7 +22,7 @@ const deniedRequests = [
   { action: "clipboard-read" }, { action: "clipboard-write", clipboardText: "sensitive-fixture" },
   { action: "browser-open", url: "https://example.invalid" }, { action: "app-launch", app: "fixture" },
   { action: "permissions" }, { action: "see" }, { action: "capture" },
-  { action: "type", text: "sensitive-fixture" }, { action: "press", keys: ["tab"] },
+  { action: "type", text: "sensitive-fixture" }, { action: "press", keys: ["tab"] }, { action: "health" },
 ];
 
 test("executor denies canonical and every legacy action before effects even with confirm true", async t => {
@@ -96,12 +98,92 @@ test("Stop-only tool cancels same-scope work without crossing workspace or sessi
   await active;
 });
 
-test("health labels trusted action eligibility separately from gateway authorization", async () => {
-  const tool = createComputerUseTool({ actionPermissions: resolveActionPermissions({ allowedActions: ["health"] }),
-    runAdapter: async () => ({ ok: true }), appendAuditEvent: async () => {} });
-  const health = await tool.execute("health-eligibility", { action: "health" });
-  assert.deepEqual(health.details.actionPermissions, { scope: "adapter-eligibility", profile: "full", allowedActions: ["health", "stop"],
-    snapshotId: resolveActionPermissions({ allowedActions: ["health"] }).snapshotId, gatewayAuthorization: "not-reported" });
+test("health-only skips its disabled doctor dependency without adapter dispatch or native repair hints", async () => {
+  for (const factory of [createComputerUseTool, createDesktopUseTool]) for (const confirm of [false, true]) {
+    const permissions = resolveActionPermissions({ allowedActions: ["health"] });
+    const snapshot = JSON.stringify(permissions);
+    const audit: ComputerUseAuditEvent[] = [];
+    let calls = 0;
+    const tool = factory({ actionPermissions: permissions,
+      runAdapter: async () => { calls++; assert.fail("Disabled doctor probe reached adapter"); },
+      appendAuditEvent: async event => { audit.push(event); } });
+    const schema = JSON.stringify(tool.parameters);
+    const health = await tool.execute("health-only", { action: "health", confirm, reason: "private-health-diagnostic" });
+    assert.equal(calls, 0, "health must not invoke or retry a disabled doctor probe");
+    assert.equal(health.details.status, "blocked");
+    assert.equal(health.details.success, false);
+    assert.equal(health.details.action, "health");
+    assert.equal(health.details.code, "ACTION_PROFILE_DENIED");
+    assert.match(String(health.details.reason), /doctor.*not run.*disabled.*trusted action permissions/i);
+    assert.deepEqual(health.details.adapterProbe, { action: "doctor", status: "skipped", code: "ACTION_PROFILE_DENIED" });
+    assert.deepEqual(health.details.agent, COMPUTER_USE_AGENT);
+    assert.deepEqual(health.details.healthCheck, COMPUTER_USE_HEALTH_CHECK);
+    assert.ok(typeof health.details.auditLog === "string");
+    assert.deepEqual(health.details.actionPermissions, { scope: "adapter-eligibility", profile: "full", allowedActions: ["health", "stop"],
+      snapshotId: permissions.snapshotId, gatewayAuthorization: "not-reported" });
+    assert.equal(health.details.repairHints, undefined);
+    assert.equal(health.details.permissionFlow, undefined);
+    assert.doesNotMatch(JSON.stringify(health.details), /Screen Recording|Accessibility|COVEN_DESKTOP_USE_BIN|missing.*binary|ENOENT|private-health-diagnostic/);
+    assert.deepEqual(audit[0]?.result, { status: "blocked", success: false, code: "ACTION_PROFILE_DENIED" });
+    assert.equal(audit[0]?.action, "health");
+    assert.ok(!JSON.stringify(audit).includes("private-health-diagnostic"));
+    for (const action of ["doctor", "permissions"]) {
+      const denied = await tool.execute(`denied-${action}`, { action, confirm });
+      assert.equal(denied.details.code, "ACTION_PROFILE_DENIED");
+      assert.equal(denied.details.action, "doctor");
+    }
+    assert.equal(calls, 0);
+    assert.deepEqual(tool.parameters.properties.action.enum, ["health", "stop"]);
+    assert.equal(JSON.stringify(tool.parameters), schema);
+    assert.equal(JSON.stringify(permissions), snapshot);
+    assert.ok(Object.isFrozen(permissions));
+    assert.ok(Object.isFrozen(permissions.allowedActions));
+    assert.deepEqual(JSON.parse(health.content[0].text), health.details);
+  }
+});
+
+test("health with doctor enabled still probes doctor and reports its actual health outcome", async () => {
+  for (const factory of [createComputerUseTool, createDesktopUseTool]) {
+    const calls: { args: string[]; action: string }[] = [];
+    const tool = factory({ actionPermissions: resolveActionPermissions({ allowedActions: ["health", "doctor"] }),
+      runAdapter: async (args, params) => { calls.push({ args, action: params.action }); return { ok: true }; },
+      appendAuditEvent: async () => {} });
+    const health = await tool.execute("health-with-doctor", { action: "health" });
+    assert.deepEqual(calls, [{ args: ["doctor"], action: "doctor" }]);
+    assert.equal(health.details.status, "success");
+    assert.equal(health.details.success, true);
+    assert.equal(health.details.adapterProbe, undefined);
+    assert.ok(Array.isArray(health.details.repairHints));
+  }
+});
+
+test("permitted health keeps the doctor observation retry and cancellation behavior", async () => {
+  for (const factory of [createComputerUseTool, createDesktopUseTool]) {
+    const permissions = resolveActionPermissions({ allowedActions: ["health", "doctor"] });
+    let attempts = 0;
+    const retry = factory({ actionPermissions: permissions, appendAuditEvent: async () => {},
+      runAdapter: async (args, params) => {
+        assert.deepEqual(args, ["doctor"]); assert.equal(params.action, "doctor");
+        return ++attempts === 1 ? { ok: false, code: "EAGAIN" } : { ok: true };
+      } });
+    assert.equal((await retry.execute("health-retry", { action: "health" })).details.status, "success");
+    assert.equal(attempts, 2);
+    let started!: () => void;
+    const ready = new Promise<void>(resolve => started = resolve);
+    const controller = new AbortController();
+    let cancelledAttempts = 0;
+    const cancellable = factory({ actionPermissions: permissions, appendAuditEvent: async () => {},
+      runAdapter: async (_args, _params, signal) => {
+        cancelledAttempts++; started();
+        return new Promise((_resolve, reject) => signal!.addEventListener("abort", () => reject(new ProcessFailure("CANCELLED")), { once: true }));
+      } });
+    const pending = cancellable.execute("health-cancel", { action: "health" }, controller.signal);
+    await ready; controller.abort();
+    const cancelled = await pending;
+    assert.equal(cancelled.details.status, "cancelled");
+    assert.equal((cancelled.details.result as { code: string }).code, "CANCELLED");
+    assert.equal(cancelledAttempts, 1);
+  }
 });
 
 test("Stop hook remains available with an ambiguous authenticated workspace", async () => {

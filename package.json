@@ -19,7 +19,7 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test:ts": "pnpm run build && tsx --test \"src/**/*.test.ts\"",
+    "test:ts": "pnpm run build && tsx --test \"src/**/*.test.ts\" scripts/gateway-action-batches.test.mjs",
     "check": "pnpm run check:contracts && pnpm run typecheck && pnpm run test:ts && pnpm run test:gateway-fixture && pnpm run test:runtime-graphs && pnpm run check:plugin-runtime-imports && node scripts/check-plugin-runtime-imports.mjs --compiled && cargo test",
     "generate:contracts": "tsx scripts/generate-capabilities-contract.ts",
     "check:contracts": "tsx scripts/generate-capabilities-contract.ts --check",

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, realpath, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, realpath, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resolveActionPermissions } from '../action-permissions.js';
@@ -172,4 +172,37 @@ test('same-scope Stop cancels active SDK child processes after trusted approval'
   assert.equal((await client.execute({ action: 'stop' }, { callId: 'stop-active' })).details.cancellationRequested, 1);
   assert.equal((await pending).details.status, 'cancelled');
   assert.throws(() => process.kill(pid, 0));
+});
+
+
+test('SDK health-only skips the configured process with immutable policy and no approval or repair advice', async t => {
+  let approvals = 0;
+  const permissions = resolveActionPermissions({ allowedActions: ['health'] });
+  const snapshot = JSON.stringify(permissions);
+  const { create, options, root, audits } = await fixture(t);
+  const marker = join(root, 'unexpected-doctor');
+  const adapter = join(root, 'configured-adapter.cjs');
+  await writeFile(adapter, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(marker)},'started');console.log('{"ok":true}')`, { mode: 0o700 });
+  const client = create({ ...options, adapterPath: adapter, actionPermissions: permissions, approvalProvider: () => { approvals++; return 'allowed'; } });
+  const health = await client.execute({ action: 'health', reason: 'private-sdk-health' }, { callId: 'health-only' });
+  assert.equal(health.details.status, 'blocked');
+  assert.deepEqual(health.details.adapterProbe, { action: 'doctor', status: 'skipped', code: 'ACTION_PROFILE_DENIED' });
+  const report = health.details.capabilitiesV1 as any;
+  assert.equal(report.schemaVersion, 1); assert.equal(report.producer.surface, 'sdk');
+  assert.deepEqual(report.actionPermissions, { ...permissions });
+  assert.equal(report.actions.doctor.state, 'unverified');
+  assert.equal(report.actions.doctor.policy.profile, 'denied');
+  assert.deepEqual(health.details.adapterInvocation, { configuredPath: adapter, resolvedPath: adapter, version: null, phase: 'before-start', processStarted: false, code: 'ACTION_PROFILE_DENIED' });
+  assert.equal(health.details.repairHints, undefined); assert.equal(health.details.permissionFlow, undefined);
+  assert.doesNotMatch(JSON.stringify(health), /private-sdk-health|MALFORMED_OUTPUT|CAPABILITY_SCHEMA_|Screen Recording|Accessibility|Install coven/);
+  assert.deepEqual(JSON.parse(health.content[0].text), JSON.parse(JSON.stringify(health.details)));
+  assert.equal((await client.execute({ action: 'stop' }, { callId: 'health-stop' })).details.status, 'success');
+  assert.equal((await client.execute({ action: 'doctor' }, { callId: 'doctor-denied' })).details.code, 'ACTION_PROFILE_DENIED');
+  await assert.rejects(readFile(marker)); assert.equal(approvals, 0);
+  assert.equal(JSON.stringify(permissions), snapshot); assert.ok(Object.isFrozen(permissions.allowedActions));
+  assert.deepEqual(audits[0].result, { status: 'blocked', success: false, code: 'ACTION_PROFILE_DENIED' });
+  assert.doesNotMatch(JSON.stringify(audits), /private-sdk-health|capabilitiesV1|approvalId/);
+  const enabled = create({ ...options, adapterPath: adapter, actionPermissions: resolveActionPermissions({ allowedActions: ['health', 'doctor'] }) });
+  assert.equal((await enabled.execute({ action: 'health' }, { callId: 'health-enabled' })).details.status, 'success');
+  assert.equal(await readFile(marker, 'utf8'), 'started');
 });
