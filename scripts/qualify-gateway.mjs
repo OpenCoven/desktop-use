@@ -1,4 +1,5 @@
 import { createCapabilitiesFixture, discoveryCallsForPlan, inspectDiscoveryTransport, correlateDiscoveryReplay, inspectDiscoveryHistory, QUALIFICATION_CONTEXT_TOKENS, DISCOVERY_TRUNCATION_MARKER } from "./gateway-capabilities-fixture.mjs";
+import { assertPackedMetadata } from "./packed-metadata.mjs";
 import { createImageFixture, inspectProviderImage } from "./gateway-image-fixture.mjs";
 import { COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME } from "../src/tool-names.ts";
 import { buildRestrictedBatch, batchCallId, callName } from "./gateway-action-batches.mjs";
@@ -13,6 +14,7 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const fixtureVersion = JSON.parse(await readFile(join(repo, "package.json"), "utf8")).version;
 const pluginRoot = resolve(process.argv[4] ?? repo);
 const profile = process.argv[5] ?? "full";
 const lane = process.argv[6] ?? "complete";
@@ -187,13 +189,14 @@ Object.assign(env, { OPENCLAW_IMAGE_BACKEND: process.env.OPENCLAW_IMAGE_BACKEND 
 await save("action-permissions.json", { profile, trustedConfig: permissionConfigs[profile], expectedActions: profileActions, expectedAliases: visibleAliases });
 await save("adapter-fixture.json", { mode: "synthetic-capture-only-when-harness-enabled", nativePlatform: process.platform, realRustBinary: imageFixture.binary, nonCaptureUnavailable: true, graphicalEffects: false, liveProvider: false });
 // Refuse to start a gateway if this package would escape the explicit state root.
-// Verify byte-identical source, then use the checkout's installed SDK peer for a
+// Verify byte-identical compiled runtime, then use the checkout's installed SDK peer for a
 // dry resolver call with no audit write or gateway/profile initialization.
-for (const file of ["index.ts", "openclaw.plugin.json", "src/computer-use-audit.ts", "src/computer-use-agent.ts", "src/tool-names.ts", "src/action-permissions.ts", "src/computer-use-actions.ts", "src/computer-use-policy.ts", "src/plugin-tool.ts", "src/capabilities.ts", "src/host-actions.ts", "src/observation.ts", "src/file-actions.ts", "contracts/v1/observation.schema.json", "contracts/v1/capabilities.schema.json", "contracts/v1/canonical-actions.json", "contracts/v1/canonical-actions.schema.json"]) {
-  assert.deepEqual(await readFile(join(repo, file)), await readFile(join(pluginRoot, file)), `Packed source differs: ${file}`);
+for (const file of ["index.js", "openclaw.plugin.json", "src/computer-use-audit.ts", "src/computer-use-agent.ts", "src/tool-names.ts", "src/action-permissions.ts", "src/computer-use-actions.ts", "src/computer-use-policy.ts", "src/plugin-tool.ts", "src/capabilities.ts", "src/host-actions.ts", "src/observation.ts", "src/file-actions.ts", "contracts/v1/observation.schema.json", "contracts/v1/capabilities.schema.json", "contracts/v1/canonical-actions.json", "contracts/v1/canonical-actions.schema.json"]) {
+  const runtimeFile = file === "openclaw.plugin.json" ? file : "dist/" + file.replace(/\.ts$/, ".js");
+  assert.deepEqual(await readFile(join(repo, runtimeFile)), await readFile(join(pluginRoot, runtimeFile)), `Packed runtime differs: ${runtimeFile}`);
 }
-// pnpm pack reorders manifest keys; compare its complete JSON value.
-assert.deepEqual(JSON.parse(await readFile(join(repo, "package.json"), "utf8")), JSON.parse(await readFile(join(pluginRoot, "package.json"), "utf8")), "Packed package metadata differs");
+// Compare complete metadata, allowing only pnpm pack's known prepack removal.
+assertPackedMetadata(JSON.parse(await readFile(join(repo, "package.json"), "utf8")), JSON.parse(await readFile(join(pluginRoot, "package.json"), "utf8")));
 const auditProbe = spawnSync(process.execPath, ["--import", createRequire(join(repo, "package.json")).resolve("tsx"), "--input-type=module", "-e",
   "const audit = await import(process.argv[1]); console.log(JSON.stringify(['computer-use','legacy-qualification'].map(agentId => audit.resolveComputerUseAuditLogPath({agentId}))));",
   pathToFileURL(join(repo, "src/computer-use-audit.ts")).href,
@@ -355,7 +358,7 @@ try {
         }
 
         assert.equal(report.adapter.configuredPath, capabilitiesFixture.adapter);
-        assert.equal(report.adapter.version, ["missing-adapter", "schema-unknown"].includes(name) ? null : "0.1.2");
+        assert.equal(report.adapter.version, ["missing-adapter", "schema-unknown"].includes(name) ? null : fixtureVersion);
         assert.equal(JSON.stringify(details.repairHints).includes("Screen Recording"), name === "macos-permission-denied");
         assert.equal(JSON.stringify(details.repairHints).includes("COVEN_DESKTOP_USE_BIN"), name === "missing-adapter");
         if (name === "x11-empty") assert.match(JSON.stringify(details.permissionFlow), /sudo apt install scrot xdotool wmctrl/);

@@ -78,7 +78,7 @@ test("file-write tool preserves committed outcome and reports cleanup limitation
   const root = await fs.realpath(await fixture(t)); const path = join(root, "published");
   const { createComputerUseTool } = await import("./plugin-tool.js");
   const audits: unknown[] = [];
-  const tool = createComputerUseTool({ appendAuditEvent: async event => { audits.push(event); } });
+  const tool = createComputerUseTool({ approvalProvider: async () => "allowed" as const, appendAuditEvent: async event => { audits.push(event); } });
   const originalRm = fs.rm;
   const fault = mock.method(fs, "rm", async (target: any, options: any) => {
     if (String(target).includes(".desktopuse-write-")) throw new Error("private staging cleanup diagnostics");

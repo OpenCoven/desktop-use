@@ -56,7 +56,7 @@ setInterval(() => {}, 1000);
   process.env.COVEN_DESKTOP_USE_BIN = fixture;
   t.after(() => { if (previous === undefined) delete process.env.COVEN_DESKTOP_USE_BIN; else process.env.COVEN_DESKTOP_USE_BIN = previous; });
   const ctx = { workspaceDir: inside, sessionKey: "safety-stop" };
-  const tool = createComputerUseTool({ ctx, appendAuditEvent: async () => {} });
+  const tool = createComputerUseTool({ approvalProvider: async () => "allowed" as const, ctx, appendAuditEvent: async () => {} });
   const active = tool.execute("active", { action: "click", coords: "1,1", confirm: true });
   // File creation can be observed before its PID contents have been published.
   let pid = 0;
@@ -66,7 +66,7 @@ setInterval(() => {}, 1000);
     await new Promise(r => setTimeout(r, 10));
   }
   assert.ok(Number.isSafeInteger(pid) && pid > 0, "helper must publish a positive PID before Stop");
-  const other = createComputerUseTool({ ctx, appendAuditEvent: async () => {} });
+  const other = createComputerUseTool({ approvalProvider: async () => "allowed" as const, ctx, appendAuditEvent: async () => {} });
   await other.execute("stop", { action: "stop" });
   const outcome = await Promise.race([active, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("active call was not cancelled")), 1500).unref())]);
   assert.equal(outcome.details.status, "cancelled");
@@ -90,7 +90,7 @@ test("approved write under symlink parent uses the exact canonical external targ
   const result = await tool.execute("write", { action: "file-write", path: "link/new/leaf.txt", content: "private file contents", confirm: true });
   assert.equal(result.details.status, "needsApproval");
   const canonical = join(await import("node:fs/promises").then(fs => fs.realpath(root)), "new/leaf.txt");
-  const approved = await tool.execute("write-canonical", { action: "file-write", path: canonical, content: "private file contents", confirm: true });
+  const approved = await createComputerUseTool({ ctx: { workspaceDir: inside }, approvalProvider: async () => "allowed" as const, appendAuditEvent: async event => { events.push(event); } }).execute("write-canonical", { action: "file-write", path: canonical, content: "private file contents", confirm: true });
   assert.equal(approved.details.status, "success");
   assert.equal(await readFile(join(root, "new/leaf.txt"), "utf8"), "private file contents");
   assert.ok(!JSON.stringify(events).includes("private file contents"));
@@ -112,19 +112,19 @@ test("malformed adapter output is an error without private diagnostic text", asy
 test("gateway abort cancels owned helpers without stopping a different session", async (t) => {
   const { inside } = await workspace(t);
   const controller = new AbortController();
-  const tool = createComputerUseTool({ ctx: { workspaceDir: inside, sessionKey: "gateway-abort" }, appendAuditEvent: async () => {} });
+  const tool = createComputerUseTool({ approvalProvider: async () => "allowed" as const, ctx: { workspaceDir: inside, sessionKey: "gateway-abort" }, appendAuditEvent: async () => {} });
   const active = tool.execute("gateway", { action: "shell", confirm: true, command: process.execPath, args: ["-e", "setInterval(()=>{},1000)"] }, controller.signal);
   controller.abort();
   const result = await active;
   assert.equal(result.details.status, "cancelled");
-  const other = createComputerUseTool({ ctx: { workspaceDir: inside, sessionKey: "other-session" }, appendAuditEvent: async () => {} });
+  const other = createComputerUseTool({ approvalProvider: async () => "allowed" as const, ctx: { workspaceDir: inside, sessionKey: "other-session" }, appendAuditEvent: async () => {} });
   const independent = await other.execute("independent", { action: "shell", confirm: true, command: process.execPath, args: ["-e", "process.stdout.write('okay')"] });
   assert.equal(independent.details.status, "success");
   assert.equal(independent.details.stdout, "okay");
 });
 
 test("typed-input backend diagnostics retain only safe outcome fields", async () => {
-  const tool = createComputerUseTool({
+  const tool = createComputerUseTool({ approvalProvider: async () => "allowed" as const,
     runAdapter: async () => ({ ok: false, backend: "peekaboo", args: ["arbitrary-private-text"], arbitraryBackendField: "arbitrary-private-text", code: "arbitrary-private-text", completedSteps: 1, failedStep: 1 }),
     appendAuditEvent: async () => {},
   });
@@ -153,7 +153,7 @@ for (const cancellation of [false,true]) {
   const previous=process.env.COVEN_DESKTOP_USE_BIN;process.env.COVEN_DESKTOP_USE_BIN=fixture;
   t.after(()=>{if(previous===undefined)delete process.env.COVEN_DESKTOP_USE_BIN;else process.env.COVEN_DESKTOP_USE_BIN=previous;});
   const controller=new AbortController();
-  const active=createComputerUseTool({ctx:{workspaceDir:inside},appendAuditEvent:async()=>{}}).execute("progress",{action:"type-text",text:"fixture",confirm:true,timeoutMs:1000},controller.signal);
+  const active=createComputerUseTool({ approvalProvider: async () => "allowed" as const,ctx:{workspaceDir:inside},appendAuditEvent:async()=>{}}).execute("progress",{action:"type-text",text:"fixture",confirm:true,timeoutMs:1000},controller.signal);
   if(cancellation){for(let i=0;i<100;i++){try{await readFile(ready);break;}catch{await new Promise(r=>setTimeout(r,10));}}controller.abort();}
   const result=await active;
   assert.equal(result.details.status,cancellation?"cancelled":"timeout");

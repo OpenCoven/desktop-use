@@ -145,11 +145,12 @@ function pluginVariant(action: CanonicalAction, variant: Variant): Variant {
   if (action === "type-text") restrict("text", { maxBytes: MAX_TEXT_BYTES, encoding: "utf-8" });
   if (action === "keypress") restrict("keys", { maxItems: MAX_ARRAY_ITEMS, maxItemBytes: MAX_ARG_BYTES, joined: { maxBytes: MAX_ARG_BYTES, separator: KEY_SEPARATOR }, encoding: "utf-8" });
   if (action === "scroll") restrict("amount", PLUGIN_NUMBER_LIMITS.amount);
-  return { ...variant, limits: { ...variant.limits, parameters } };
+  const disjoint = Object.values(parameters).some(limit => (limit.minimum !== undefined && limit.maximum !== undefined && limit.minimum > limit.maximum) || (limit.values !== undefined && limit.values.length === 0));
+  return { ...variant, ...(disjoint ? { state: "unsupported" as const, reasonCodes: [...new Set([...variant.reasonCodes, "LIMITS_DISJOINT"])] } : {}), limits: { ...variant.limits, parameters } };
 }
 
 /** Adapter JSON supplies observations only; eligibility comes from a private-origin host snapshot. */
-export function buildPluginCapabilities(adapterEnvelope: unknown, hostEvidence: HostEvidence, actionPermissions: ActionPermissions): CapabilityReportV1 {
+export function buildPluginCapabilities(adapterEnvelope: unknown, hostEvidence: HostEvidence, actionPermissions: ActionPermissions, surface: "plugin" | "sdk" | "mcp" = "plugin"): CapabilityReportV1 {
   const permissions = validateActionPermissions(actionPermissions);
   const value = object(adapterEnvelope) ? adapterEnvelope.capabilitiesV1 : undefined;
   const adapter = value === undefined ? undefined : normalizeCapabilityReport(value);
@@ -165,6 +166,10 @@ export function buildPluginCapabilities(adapterEnvelope: unknown, hostEvidence: 
     } : localAction(action, hostEvidence);
     if (source && adapterActions.has(action)) {
       capability.variants = capability.variants.map(variant => pluginVariant(action, variant));
+      if (capability.variants.length && capability.variants.every(variant => variant.state === "unsupported")) {
+        capability.state = "unsupported";
+        if (capability.variants.some(variant => variant.reasonCodes.includes("LIMITS_DISJOINT"))) capability.reasonCodes = [...new Set([...capability.reasonCodes, "LIMITS_DISJOINT"])];
+      }
       if (permissionDenied && capability.evidence.some(e => e.kind === "permission" && e.provider?.name === "peekaboo")) {
         capability.evidence = capability.evidence.map(e => e.kind === "permission" && e.provider?.name === "peekaboo" ? { ...e, status: "failed" } : e);
         const deniedReasons = (reasons: string[]) => [...new Set([...reasons.filter(reason => reason !== "BACKEND_ACCESS_UNVERIFIED"), "PERMISSION_DENIED"])];
@@ -174,10 +179,11 @@ export function buildPluginCapabilities(adapterEnvelope: unknown, hostEvidence: 
     }
     // No SDK/MCP claims survive the plugin overlay, even if supplied by adapter JSON.
     capability.surfaces = capability.surfaces.filter(surface => surface === "cli" || surface === "plugin");
+    if (surface !== "plugin") capability.surfaces = capability.surfaces.map(item => item === "plugin" ? surface : item);
     capability.policy = { profile: permissions.allowedActions.includes(action) ? "allowed" : "denied", approval: approval(action), gatewayPolicy: "not-reported" };
     actions[action] = capability;
   }
-  return { schemaVersion: 1, producer: { name: "opencoven-desktop-use-plugin", version, surface: "plugin" }, environment: adapter?.environment ?? hostEvidence.environment, actions,
+  return { schemaVersion: 1, producer: { name: surface === "plugin" ? "opencoven-desktop-use-plugin" : "opencoven-desktop-use", version, surface }, environment: adapter?.environment ?? hostEvidence.environment, actions,
     adapter: { ...hostEvidence.adapter, version: adapter?.producer.version ?? null },
     actionPermissions: { profile: permissions.profile, allowedActions: [...permissions.allowedActions], snapshotId: permissions.snapshotId } };
 }
@@ -186,7 +192,11 @@ export function buildPluginCapabilities(adapterEnvelope: unknown, hostEvidence: 
 export function repairHintsForCapabilities(report: CapabilityReportV1, outcome: CapabilityOutcome): string[] {
   if (outcome.phase === "before-start") return ["The adapter request ended before a process started. No adapter execution was observed."];
   if (outcome.phase === "process") return ["The adapter process did not complete. Inspect its fixed outcome code and any partial progress before deciding whether to retry."];
+  const standalone = report.producer.surface === "sdk" || report.producer.surface === "mcp";
+  const configuration = report.producer.surface === "sdk" ? "trusted SDK adapterPath option" : "trusted MCP configuration adapterPath";
   if (outcome.phase === "spawn") {
+    if (standalone && outcome.code === "ENOENT") return [`The selected adapter could not be started. Install coven-desktop-use or correct the ${configuration}, then restart the actual client launcher and rerun ${COMPUTER_USE_TOOL_NAME} action=health.`];
+    if (standalone && ["EACCES", "EPERM"].includes(outcome.code ?? "")) return [`The selected adapter could not be executed. Check executable access for the ${configuration} and the client launcher account, then rerun ${COMPUTER_USE_TOOL_NAME} action=health.`];
     if (outcome.code === "ENOENT") return [`The selected adapter could not be started. Install coven-desktop-use or correct COVEN_DESKTOP_USE_BIN, then restart the OpenClaw Gateway and rerun ${COMPUTER_USE_TOOL_NAME} action=health.`];
     if (["EACCES", "EPERM"].includes(outcome.code ?? "")) return [`The selected adapter could not be executed. Check its executable access and the gateway service account, then rerun ${COMPUTER_USE_TOOL_NAME} action=health.`];
     return [`The adapter process did not complete. Inspect its fixed outcome code before retrying ${COMPUTER_USE_TOOL_NAME} action=health.`];

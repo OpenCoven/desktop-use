@@ -9,15 +9,9 @@
     "url": "git+https://github.com/OpenCoven/desktop-use.git"
   },
   "files": [
-    "index.ts",
-    "src/**/*.ts",
-    "contracts/v1/observation.schema.json",
-    "contracts/v1/capabilities.schema.json",
-    "contracts/v1/canonical-actions.json",
-    "contracts/v1/canonical-actions.schema.json",
+    "dist/**",
     "agents/**/*",
-    "docs/**/*.md",
-    "scripts/check-plugin-runtime-imports.mjs",
+    "docs/*.md",
     "openclaw.plugin.json",
     "README.md",
     "CHANGELOG.md",
@@ -25,16 +19,20 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test:ts": "tsx --test src/**/*.test.ts scripts/gateway-action-batches.test.mjs",
-    "check": "pnpm run check:contracts && pnpm run typecheck && pnpm run test:ts && pnpm run test:gateway-fixture && pnpm run check:plugin-runtime-imports && cargo test",
+    "test:ts": "pnpm run build && tsx --test \"src/**/*.test.ts\" scripts/gateway-action-batches.test.mjs",
+    "check": "pnpm run check:contracts && pnpm run typecheck && pnpm run test:ts && pnpm run test:gateway-fixture && pnpm run test:runtime-graphs && pnpm run check:plugin-runtime-imports && node scripts/check-plugin-runtime-imports.mjs --compiled && cargo test",
     "generate:contracts": "tsx scripts/generate-capabilities-contract.ts",
     "check:contracts": "tsx scripts/generate-capabilities-contract.ts --check",
     "check:plugin-runtime-imports": "node scripts/check-plugin-runtime-imports.mjs",
-    "test:gateway-fixture": "node --test scripts/gateway-image-fixture.test.mjs"
+    "test:gateway-fixture": "node --test scripts/gateway-image-fixture.test.mjs scripts/packed-metadata.test.mjs",
+    "build": "node scripts/build.mjs",
+    "prepack": "pnpm run build",
+    "test:packed": "node scripts/test-packed-consumers.mjs",
+    "test:runtime-graphs": "node --test scripts/check-plugin-runtime-imports.test.mjs"
   },
   "devDependencies": {
+    "@modelcontextprotocol/client": "2.4.0",
     "@types/node": "25.6.0",
-    "ajv": "8.20.0",
     "jpeg-js": "0.4.4",
     "openclaw": "2026.4.26",
     "tsx": "4.21.0",
@@ -42,7 +40,7 @@
   },
   "openclaw": {
     "extensions": [
-      "./index.ts"
+      "./dist/index.js"
     ],
     "compat": {
       "pluginApi": ">=2026.4.26",
@@ -55,5 +53,32 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.4.0",
+    "ajv": "8.20.0"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./sdk": {
+      "types": "./dist/src/sdk.d.ts",
+      "import": "./dist/src/sdk.js"
+    },
+    "./contracts": {
+      "types": "./dist/src/contracts.d.ts",
+      "import": "./dist/src/contracts.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "coven-desktop-use-mcp": "./dist/src/mcp/main.js"
+  },
+  "engines": {
+    "node": ">=22.14.0"
   }
 }

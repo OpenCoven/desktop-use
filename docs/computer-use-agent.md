@@ -177,7 +177,7 @@ Policy decisions have one of three statuses: `allow`, `needsApproval`, or
 `blocked`. Approval prompts include risk, target, exact redacted input when
 available, and rollback notes for writes.
 
-The gateway hook treats incoming tool arguments as model-controlled. A supplied `confirm:true` does not satisfy runtime approval: the hook classifies the request without confirmation and returns confirmation overrides only alongside `requireApproval`, which the gateway applies after an allowed resolution. Trusted operator calls through the gateway's direct HTTP tool endpoint are a separate gateway-authenticated surface and do not prove this agent approval flow.
+The gateway hook treats incoming tool arguments as model-controlled and rejects private continuation references. A supplied `confirm:true` never authorizes execution. The public `requireApproval.onResolution` callback grants one private continuation only after an actual allowed resolution; execution consumes it once after matching canonical parameters, trusted scope, workspace and policy. Denied, cancelled, expired, changed and replayed continuations cannot authorize an effect. Direct calls to the exported factory return `needsApproval` for gated work without a trusted provider or continuation. The pinned gateways route direct HTTP calls through their public approval hook, so those calls require an actual allowed resolution and fail on denial, expiry or an unavailable route. Neither authentication nor `confirm:true` grants authority. Use the real gateway approval flow or construct the host-neutral client with a trusted approval provider; see [the client contract](desktop-client.md).
 
 OpenClaw 2026.4.26 accepts approval titles up to 80 Unicode characters and descriptions up to 256. The hook uses a compact display with the complete canonical target and risk, plus complete redacted input fields; shell command and argument boundaries are shown as JSON strings/arrays. Inputs and targets are never silently shortened to obtain approval. If the complete display cannot fit the gateway API, the request is visibly blocked with a prompt to shorten it. Rollback advice is summarized as manual rollback where applicable; completed effects are not automatically undone.
 
@@ -200,7 +200,7 @@ Audit writes use the trusted tool factory's agent directory when available. Gate
 
 The plugin offers `computer-use-panel` through the optional host `registerControlUiDescriptor` API. This is integration metadata, not a running panel, state store, subscription, or gateway RPC. Hosts without that API do not get a panel merely by loading the plugin. Rendering and connecting the panel are host responsibilities.
 
-Only two plugin controls are advertised. The descriptor's `actions.stop` maps to `computer_use action=stop`; `actions.runHealthCheck` maps to `computer_use action=health`. The host enables them only when it can invoke that tool under the current agent policy and gateway authentication. `requiredScopes: ["operator.read"]` describes reading panel state, not permission to invoke controls. Tool calls retain their normal authorization. Stop requests cancellation for active calls in the same agent/session/workspace; it does not pause future work, revoke approvals, or clear a retained target. Those operations belong to a host that implements them and are not advertised as plugin controls.
+Only two plugin controls are advertised. The descriptor's `actions.stop` maps to `computer_use action=stop`; `actions.runHealthCheck` maps to `computer_use action=health`. The host enables them only when it can invoke that tool under the current agent policy and gateway authentication. `requiredScopes: ["operator.read"]` describes reading panel state, not permission to invoke controls. Tool calls retain their normal authorization. Stop requests cancellation for active calls and pending plugin continuations in the same agent/session/workspace. A cancelled continuation cannot authorize a later effect, even if the host subsequently allows its approval request. Stop does not pause future work, remove requests from the host-owned approval queue, or clear a retained target; those operations require host controls.
 
 The schema describes host-rendered state. `stateSources` identifies the producer and availability of every field; it does not imply that the plugin emits a combined state object. Hosts translate available results into the schema and leave unavailable fields absent instead of inventing successful or empty state.
 
@@ -218,13 +218,7 @@ The schema describes host-rendered state. `stateSources` identifies the producer
 
 ## Reliability
 
-Actions have bounded timeouts. `stop` is an auditable local control action that
-requests cancellation of active calls in the same agent/session/workspace. It
-reports `cancelling` while those calls settle and `idle` when none were active;
-it does not undo completed effects or revoke approvals. Observation and health adapter calls retry once
-only for transient runtime failures such as timeouts, stale observations, busy
-backends, or reset connections. Interactive, destructive, clipboard, shell, and
-filesystem actions do not retry internally.
+Actions have bounded timeouts. `stop` is an auditable local control action that requests cancellation of active calls and pending plugin continuations in the same agent/session/workspace. It reports `cancelling` when cancellation was requested and `idle` when no matching work remained. Cancelled continuations cannot authorize later effects; Stop does not undo completed effects or remove host-owned approval requests. Observation and health adapter calls retry once only for transient runtime failures such as timeouts, stale observations, busy backends, or reset connections. Interactive, destructive, clipboard, shell, and filesystem actions do not retry internally.
 
 Every action returns a structured status (`success`, `needsApproval`, `blocked`,
 `unsupported`, `error`, `cancelled`, or `timeout`) with enough repair context for the gateway or Control

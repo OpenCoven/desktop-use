@@ -33,7 +33,7 @@ test("returns needsApproval for unapproved interactive actions without invoking 
 
 test("passes approved desktop input through the adapter with --confirm", async () => {
   const calls: string[][] = [];
-  const tool = createComputerUseTool({
+  const tool = createComputerUseTool({ approvalProvider: async () => "allowed" as const,
     ctx: {
       agentId: "computer-use",
       workspaceDir: "/tmp/openclaw/workspace/computer-use",
@@ -86,7 +86,7 @@ test("retries transient observation adapter failures once", async () => {
 
 test("does not retry transient failures for approved interactive desktop input", async () => {
   const calls: string[][] = [];
-  const tool = createComputerUseTool({
+  const tool = createComputerUseTool({ approvalProvider: async () => "allowed" as const,
     ctx: {
       agentId: "computer-use",
       workspaceDir: "/tmp/openclaw/workspace/computer-use",

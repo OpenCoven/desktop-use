@@ -80,7 +80,6 @@ Linux browser-open uses installed xdg-open for absolute HTTP(S) URLs without emb
 
 Clipboard writers and launchers deliberately hand ownership to a clipboard selection server or launched app on success. Those processes can outlive the action and are not killed by a later stop. A timeout, cancellation, or failed handoff still terminates the owned launcher group. All integrations use the documented helper bounds and output limits. No system helpers are installed automatically.
 
-
 ## macOS onboarding
 
 Desktop inspection and interaction require two macOS privacy grants because the
@@ -112,8 +111,7 @@ coven-desktop-use doctor
 
 `inspect` and `screenshot` should be used before interactive actions. Actions
 that click, type, press keys, scroll, or focus windows still require explicit
-confirmation via `--confirm` at the adapter layer and `confirm: true` through the
-OpenClaw plugin.
+confirmation via `--confirm` at the adapter layer and an actual allowed OpenClaw gateway approval resolution. Plugin input `confirm: true` is retained only as a deprecated compatibility field and never authorizes execution. Direct factory invocations need a trusted approval provider or continuation, and HTTP calls follow the host's actual approval hook; see [the client and approval migration guide](docs/desktop-client.md).
 
 ## Build
 
@@ -197,6 +195,7 @@ openclaw plugins install @opencoven/openclaw-desktop-use
 Local development install:
 
 ```bash
+pnpm run build
 openclaw plugins install . --force
 ```
 
@@ -287,3 +286,11 @@ Successful inspect/screenshot captures add an `observationV1` metadata receipt a
 Desktop geometry is available only from the qualified X11, Sway and Peekaboo coordinate-context producers described in [image geometry and native qualification](docs/image-geometry.md). Unknown geometry remains explicitly unavailable; raster dimensions alone do not establish desktop origin or scale. The retained isolated Linux matrix qualifies specific capture and effect combinations. Installed macOS/Peekaboo and Wayland pointer effects remain native acceptance gates.
 
 Screenshot encoding follows --format independently of the destination suffix. A ydotool-only input request skips the optional Wayland registry probe because the wtype protocol cannot affect its provider choice.
+
+## Local MCP and embedding
+
+The host-neutral desktop client also has a local stdio MCP connector and a separately launched terminal approval reference host. See [trusted configuration, protocol compatibility and approval examples](docs/mcp.md). Standalone startup defaults to observation-only eligibility; model requests never carry approval authority.
+
+## Standalone SDK and local MCP candidate
+
+The local unpublished candidate adds compiled JavaScript and TypeScript declarations at `@opencoven/openclaw-desktop-use/sdk` and `/contracts`, plus the `coven-desktop-use-mcp` executable and compiled approval-host/embedding examples. Standalone consumers require Node `>=22.14.0` and need neither OpenClaw nor tsx. Install the exact locally packed tarball using [the client guide](docs/desktop-client.md#local-candidate-consumption); the published npm `0.1.3` artifact does not contain these SDK/MCP exports. See [the MCP guide](docs/mcp.md) for local stdio, the explicit terminal review UI and the two tested protocol revisions. Native desktop, release and publication acceptance remain separate.

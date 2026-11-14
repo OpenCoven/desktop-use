@@ -15,7 +15,7 @@ test("approval identifies a symlink's canonical target before confirmation",asyn
  assert.equal(result.params.path,join(await realpath(outside),"file"));
  assert.ok(result.requireApproval.description.includes(result.params.path));
  assert.ok(result.requireApproval.description.includes("secret-sensitive"));
- assert.equal(result.params.confirm,true);
+ assert.equal(result.params.confirm,undefined); result.requireApproval.onResolution("deny");
 });
 test("execution requires approval again if the canonical parent changes after approval",async t=>{
  const root=await mkdtemp(join(tmpdir(),"desktopuse-rebind-"));t.after(()=>rm(root,{recursive:true,force:true}));

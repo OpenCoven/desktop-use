@@ -13,7 +13,7 @@ const { validateToolArguments } = await import(pathToFileURL(join(hostDirectory,
 
 test("pinned host accepts legacy actions before plugin execution and preserves notices", async () => {
   for (const factory of [createComputerUseTool, createDesktopUseTool]) {
-    const tool = factory({ runAdapter: async () => ({ ok: true }), appendAuditEvent: async () => {} });
+    const tool = factory({ approvalProvider: async () => "allowed" as const, runAdapter: async () => ({ ok: true }), appendAuditEvent: async () => {} });
     for (const parameters of [tool.parameters, cleanSchemaForGemini(tool.parameters)]) {
       for (const [action, canonical, extra] of [
         ["permissions", "doctor", {}],

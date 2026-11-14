@@ -262,6 +262,16 @@ test("plugin coordinate and numeric bounds match validation without weakening X1
   }
 });
 
+test('empty backend and host limit intersections disable variants and their final usable action', async () => {
+  const report = await fixture('x11');
+  for (const variant of report.actions.scroll.variants) variant.limits.parameters.amount = { minimum: 51, maximum: 100 };
+  const result = buildPluginCapabilities({ capabilitiesV1: report }, host, permissions);
+  const scroll = discoverCapabilityControls(result).find(control => control.action === 'scroll')!;
+  assert.equal(scroll.enabled, false);
+  assert.ok(scroll.variants.every(variant => !variant.enabled && variant.reasonCodes.includes('LIMITS_DISJOINT')));
+  assert.equal(scroll.variants[0].parameters.amount.minimum, 51);
+  assert.equal(scroll.variants[0].parameters.amount.maximum, 50);
+});
 
 test("health-only discovery reports unverified native capabilities without probing or expanding trusted eligibility", async () => {
   const schema = JSON.parse(await readFile(new URL("../contracts/v1/capabilities.schema.json", import.meta.url), "utf8"));
