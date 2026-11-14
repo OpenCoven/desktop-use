@@ -210,11 +210,14 @@ test('host approval denial requires exact pinned copy, closed same-call approval
   assert.throws(() => assertHostApprovalDenied('unknown', input));
 });
 
-test('approval wait fails on completed runs instead of waiting for an impossible request', async () => {
+test('approval wait observes late events after completion and bounds missing-approval waits', async () => {
   const { waitForHostApproval } = await import('./release-qualification.mjs');
   const approval = { payload: { id: 'expected' } };
   assert.equal(await waitForHostApproval({ readApproval: () => approval, completed: Promise.resolve({ status: 'ok' }), timeoutMs: 45000 }), approval);
-  await assert.rejects(waitForHostApproval({ readApproval: () => undefined, completed: Promise.resolve({ status: 'ok' }), timeoutMs: 45000 }), { code: 'HOST_APPROVAL_MISSING_AFTER_COMPLETION', outcomeStatus: 'ok' });
-  await assert.rejects(waitForHostApproval({ readApproval: () => undefined, completed: Promise.resolve({ status: 'error' }), timeoutMs: 45000 }), { code: 'HOST_APPROVAL_MISSING_AFTER_COMPLETION', outcomeStatus: 'error' });
+  let lateApproval;
+  setTimeout(() => { lateApproval = approval; }, 10);
+  assert.equal(await waitForHostApproval({ readApproval: () => lateApproval, completed: Promise.resolve({ status: 'ok' }), timeoutMs: 45000 }), approval);
+  await assert.rejects(waitForHostApproval({ readApproval: () => undefined, completed: Promise.resolve({ status: 'ok' }), timeoutMs: 45000, completionGraceMs: 10 }), { code: 'HOST_APPROVAL_MISSING_AFTER_COMPLETION', outcomeStatus: 'ok' });
+  await assert.rejects(waitForHostApproval({ readApproval: () => undefined, completed: Promise.resolve({ status: 'error' }), timeoutMs: 45000, completionGraceMs: 10 }), { code: 'HOST_APPROVAL_MISSING_AFTER_COMPLETION', outcomeStatus: 'error' });
   await assert.rejects(waitForHostApproval({ readApproval: () => undefined, completed: new Promise(() => {}), timeoutMs: 1 }), { code: 'HOST_APPROVAL_DEADLINE' });
 });
