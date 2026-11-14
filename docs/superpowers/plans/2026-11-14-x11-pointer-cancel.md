@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Preserve the existing 100 ms cleanup watchdog, 40 ms reap reserve, action deadlines, helper argv, approval policy and private import boundary.
+- Preserve the existing 100 ms cleanup watchdog, 40 ms reap reserve, action deadlines, literal helper operands, approval policy and private import boundary. The reproduced same-point defect permits removing only the click chain's `--sync` movement wait; keep movement and click on the same ordered helper connection.
 - Arm only the current button in 1..=5; preserve preheld/unrelated buttons, keyboard state and pointer position.
 - Keep keyboard reports at `0xd1`; pointer reports use `0xd2` with the same eight-byte bound. Publish only additive `releasedButtons` counts in 0..=5.
 - Keep source986 and its canonical seven-case scripts/artifacts unchanged. Retain the first failing native receipt and separate manual recovery.
@@ -44,7 +44,7 @@
 **Interfaces:** The X11 click runner uses `Guard::button`, the existing observed process helper and guardian finish. `InputCleanup.releasedButtons?: number` is validated in 0..=5. Interrupted canonical click variants receive the existing unverified fallback when proof is absent.
 
 - [ ] Write and observe failing TypeScript tests for valid/invalid releasedButtons projection and interrupted click fallback without raw diagnostics.
-- [ ] Route the unchanged click argv through the guardian, attaching before helper exec and recording partial/input-start facts.
+- [x] Route the click argv through the guardian, attaching before helper exec and recording partial/input-start facts. Reproduce and fix the additional same-point synchronization wait without changing coordinate/button/repeat operands or deadlines.
 - [ ] Run `pnpm run check`, production packed consumers and Linux Rust tests on the final source; preserve all existing assertions.
 - [ ] Freeze a new matching native/package pair with complete source/input/package hashes; do not rebuild after freezing.
 - [ ] On a fresh explicit owned fixture lease, rerun the actual CLI pointer probe and SDK/both-MCP Stop cases; require real button-down across 25 ms, helper reaping and released state before test recovery.
