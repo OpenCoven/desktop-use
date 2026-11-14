@@ -2,6 +2,8 @@
 
 The MCP connector maps `computer_use` to the host-neutral `DesktopClient`, preserving all 18 canonical action families, shared validation, image receipts, policy, audit and cancellation. It serves local stdio only. Model requests cannot supply `confirm`, workspace or principal identity, approval decisions, secrets or broker configuration. The only listed tool is `computer_use`. Capabilities identify the consumer as `mcp`; installed helpers and protocol success do not establish desktop acceptance.
 
+The connector consumes the public execution v1 request and structured-result schemas described in [the execution contract and version policy](desktop-client.md#execution-contract-and-version-policy). Its negotiated MCP wire revision is independent of that desktop contract. Both supported wire revisions preserve the SDK's `content` and map its `details` to `structuredContent`.
+
 ## Trusted startup
 
 Create an absolute workspace and a separate, existing state directory owned by the current OS user with mode `0700`. Supply an absolute configuration filename owned by that user and not writable by group or others. The connector requires an absolute adapter executable path and principal identity; it does not derive authority from MCP client metadata. The audit file is opened without following symlinks, requires mode `0600` and one link, and cannot silently fall back to unaudited startup. Never put the private state directory inside a model-writable workspace.

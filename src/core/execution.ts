@@ -30,6 +30,7 @@ import {
   redactComputerUseValue,
   type ComputerUseParams,
   type ComputerUsePolicyContext,
+  type NormalizedAdapterResult,
 } from "../computer-use-policy.js";
 
 const adapterOutcomes = new WeakMap<object, CapabilityOutcome>();
@@ -44,7 +45,7 @@ const DEFAULT_ADAPTER_BIN = "coven-desktop-use";
 export type ToolResult = {
   content: [{ type: "text"; text: string }, ...ObservationImage[]];
   details: Record<string, unknown> & {
-    status: string;
+    status: NormalizedAdapterResult['status'];
     success?: boolean;
     risk?: string;
     reason?: string;
