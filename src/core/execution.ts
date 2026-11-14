@@ -149,6 +149,7 @@ export function createExecution(options: ExecutionOptions) {
         details = { status: code === "CANCELLED" ? "cancelled" : ["ETIMEDOUT", "APPROVAL_EXPIRED"].includes(code) ? "timeout" : code === "APPROVAL_DENIED" ? "blocked" : "error", success: false,
           action: params.action, code, error: error instanceof ToolInputError ? error.message : "Action failed; raw diagnostics withheld.",
           ...(caught instanceof CleanupFailure ? { cleanup: caught.cleanup } : {}),
+          ...(error instanceof ProcessFailure && ["click", "type-text", "keypress"].includes(normalizeComputerUseAction(params.action)) && ["CANCELLED", "ETIMEDOUT"].includes(code) ? { result: { ok: false, code, inputCleanup: validatedInputCleanup(error.inputCleanup) ?? { schemaVersion: 1, state: "unverified", reasonCode: "ADAPTER_RESULT_UNAVAILABLE" } } } : {}),
           ...(error instanceof ProcessFailure && ["health", "doctor"].includes(normalizeComputerUseAction(params.action)) ? { adapterInvocation: { ...processOutcome(error), code } } : {}) };
       } finally {
         calls.delete(controller);
@@ -189,7 +190,7 @@ async function executeAllowedAction(
     const raw = observation ? observation.raw : await runAdapterWithTransientObservationRetry(buildAdapterArgs(params), params, runAdapter, action);
     if (observation?.image) onImage?.(observation.image);
     if (action === "doctor") return discoveryResult(raw, ctx, actionPermissions, "doctor", discovery);
-    const safe = ["type-text", "keypress"].includes(action) ? redactTypeDiagnostics(decodeAdapterAction(raw)) : raw;
+    const safe = ["click", "type-text", "keypress"].includes(action) ? redactTypeDiagnostics(decodeAdapterAction(raw)) : raw;
     const normalized = normalizeAdapterResult(safe, { evidence });
     return {
       ...normalized,
@@ -523,12 +524,12 @@ async function runAdapterBinary(args: string[], params: ComputerUseParams, signa
       adapterOutcomes.set(invalid, { phase: "output", processStarted: true, code: "MALFORMED_OUTPUT" }); return invalid;
     }
     adapterOutcomes.set(result as object, { phase: "adapter", processStarted: true });
-    return ["type-text", "keypress"].includes(normalizeComputerUseAction(params.action)) ? redactTypeDiagnostics(result) : result;
+    return ["click", "type-text", "keypress"].includes(normalizeComputerUseAction(params.action)) ? redactTypeDiagnostics(result) : result;
   } catch (error) {
     const code = error instanceof ProcessFailure || error instanceof FileActionError ? error.code : "BACKEND_ERROR";
     const failure = { ok: false, code, error: "Adapter execution failed; raw diagnostics withheld.",
       ...(["ETIMEDOUT", "CANCELLED"].includes(code) ? error instanceof ProcessFailure && error.progress ? error.progress : { progressUnknown: true } : {}),
-      ...(["type-text", "keypress"].includes(normalizeComputerUseAction(params.action)) && ["ETIMEDOUT", "CANCELLED"].includes(code) ? { inputCleanup: error instanceof ProcessFailure && error.inputCleanup ? error.inputCleanup : { schemaVersion: 1, state: "unverified", reasonCode: "ADAPTER_RESULT_UNAVAILABLE" } } : {}),
+      ...(["click", "type-text", "keypress"].includes(normalizeComputerUseAction(params.action)) && ["ETIMEDOUT", "CANCELLED"].includes(code) ? { inputCleanup: error instanceof ProcessFailure ? validatedInputCleanup(error.inputCleanup) ?? { schemaVersion: 1, state: "unverified", reasonCode: "ADAPTER_RESULT_UNAVAILABLE" } : { schemaVersion: 1, state: "unverified", reasonCode: "ADAPTER_RESULT_UNAVAILABLE" } } : {}),
       ...(code === "ENOENT" ? { hint: missingAdapterHint(adapterBin, surface), adapterSetup: adapterSetupGuide(adapterBin, surface) } : {}) };
     adapterOutcomes.set(failure, error instanceof ProcessFailure ? processOutcome(error) : { phase: "process", code });
     return failure;
@@ -552,7 +553,7 @@ function redactTypeDiagnostics(value: unknown): unknown {
   if (inputCleanup) fields.inputCleanup = inputCleanup;
   else if (record.inputCleanup !== undefined || record.code === "CANCELLED" || record.code === "ETIMEDOUT") fields.inputCleanup = { schemaVersion: 1, state: "unverified", reasonCode: "ADAPTER_RESULT_UNAVAILABLE" };
   if (typeof record.backend === "string" && ["peekaboo", "xdotool", "ydotool", "wtype", "linux"].includes(record.backend)) fields.backend = record.backend;
-  const codes = ["ENOENT", "EACCES", "ETIMEDOUT", "CANCELLED", "OUTPUT_LIMIT", "PROCESS_ERROR", "MALFORMED_OUTPUT", "BACKEND_ERROR", "PERMISSION_ERROR"];
+  const codes = ["ENOENT", "EACCES", "ETIMEDOUT", "CANCELLED", "OUTPUT_LIMIT", "PROCESS_ERROR", "MALFORMED_OUTPUT", "BACKEND_ERROR", "PERMISSION_ERROR", "COORDINATES_OUT_OF_RANGE", "POINTER_MAPPING_UNVERIFIED", "X11_CLEANUP_FAILED"];
   if (typeof record.code === "string") fields.code = codes.includes(record.code) ? record.code : "BACKEND_ERROR";
   if (Array.isArray(record.steps)) fields.steps = record.steps.map(redactTypeDiagnostics);
   if (typeof record.adapter === "string") { fields.adapter = "adapter"; fields.result = redactTypeDiagnostics(record.result); }

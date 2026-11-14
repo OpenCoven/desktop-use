@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runProcess } from "./process-runner.js";
+import { runProcess, validatedInputCleanup } from "./process-runner.js";
+
+test("pointer cleanup retains only bounded button counts", () => {
+  assert.deepEqual(validatedInputCleanup({ schemaVersion: 1, state: "verified", releasedButtons: 5, restoredButtons: 1, privateState: "private-pointer-state" }), { schemaVersion: 1, state: "verified", releasedButtons: 5, restoredButtons: 1 });
+});
+
+test("pointer cleanup rejects invalid button counts", () => {
+  for (const releasedButtons of [-1, 6, 1.5, "1", null, true]) {
+    assert.equal(validatedInputCleanup({ schemaVersion: 1, state: "verified", releasedButtons }), undefined);
+  }
+});
 
 const node = process.execPath;
 test("helper runner preserves literal argv", async () => {

@@ -1232,13 +1232,13 @@ fn linux_click(session: LinuxSession, args: &[String]) -> String {
 }
 
 fn x11_click(x: i32, y: i32, button: u32, times: u32) -> String {
-    if resolve_path_binary("xdotool").is_none() {
+    let Some(helper) = resolve_path_binary("xdotool") else {
         return missing_tool_json(
             "xdotool",
             "Install with: sudo apt install xdotool",
             "x11-click",
         );
-    }
+    };
     if !geometry::x11_point_in_root(x, y) {
         if let Err(error) = process::check(deadline()) {
             return process_failure_json("xdotool", &error);
@@ -1256,7 +1256,50 @@ fn x11_click(x: i32, y: i32, button: u32, times: u32) -> String {
         times.to_string().into(),
         button.to_string().into(),
     ];
-    run_linux_command("xdotool", cmd_args, "xdotool", false, &[])
+    let mut guard = x11_input::Guard::prepare(Path::new(&helper), deadline());
+    let qualified = guard.available();
+    let mut input_started = false;
+    let raw = if qualified && !guard.button(button as u8, deadline()) {
+        let error = process::check(deadline())
+            .err()
+            .unwrap_or(process::Failure::Io(std::io::ErrorKind::Other));
+        process_failure_json("xdotool", &error)
+    } else {
+        run_linux_command_observed(
+            "xdotool",
+            cmd_args,
+            "xdotool",
+            false,
+            &[],
+            &mut || {
+                input_started = true;
+            },
+            if qualified { Some(&guard) } else { None },
+        )
+    };
+    if !input_started {
+        guard.not_started();
+    }
+    let mut result: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let cleanup = guard.finish(result["ok"] != true);
+    if qualified && result["ok"] == true && cleanup["state"] == "unverified" {
+        result["ok"] = serde_json::json!(false);
+        result["code"] = serde_json::json!("X11_CLEANUP_FAILED");
+        result["error"] =
+            serde_json::json!("X11 input state could not be verified after execution.");
+    }
+    let failed = result["ok"] != true;
+    result["inputMayHaveStarted"] = serde_json::json!(input_started);
+    result["completedSteps"] = serde_json::json!(usize::from(!failed));
+    result["totalSteps"] = serde_json::json!(1);
+    if failed {
+        result["partial"] = serde_json::json!(input_started);
+        result["failedStep"] = serde_json::json!(0);
+    }
+    if qualified || failed {
+        result["inputCleanup"] = cleanup;
+    }
+    result.to_string()
 }
 
 fn wayland_click(x: i32, y: i32, button: u32, times: u32) -> String {

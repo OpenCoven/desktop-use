@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 
 export type ActionProgress = { completedSteps: number; totalSteps: number; failedStep?: number; completedInputCharacters?: number; inputMayHaveStarted?: boolean; partial: boolean };
 
-export type InputCleanup = { schemaVersion: 1; state: "verified" | "unverified" | "not-needed"; reasonCode?: string; releasedKeys?: number; restoredKeys?: number; restoredButtons?: number; restoredMappings?: number; restoredLock?: boolean; restoredGroup?: boolean };
+export type InputCleanup = { schemaVersion: 1; state: "verified" | "unverified" | "not-needed"; reasonCode?: string; releasedKeys?: number; releasedButtons?: number; restoredKeys?: number; restoredButtons?: number; restoredMappings?: number; restoredLock?: boolean; restoredGroup?: boolean };
 
 export function validatedInputCleanup(value: unknown): InputCleanup | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
@@ -11,7 +11,7 @@ export function validatedInputCleanup(value: unknown): InputCleanup | undefined 
   const reasons = ["X11_GUARD_UNAVAILABLE", "X11_GUARD_TIMEOUT", "X11_PLAN_UNVERIFIED", "X11_STATE_CHANGED", "X11_CLEANUP_FAILED", "ADAPTER_RESULT_UNAVAILABLE"];
   if (record.state === "unverified" ? typeof record.reasonCode !== "string" || !reasons.includes(record.reasonCode) : record.reasonCode !== undefined) return undefined;
   const result: InputCleanup = { schemaVersion: 1, state: record.state as InputCleanup["state"], ...(record.reasonCode === undefined ? {} : { reasonCode: record.reasonCode as string }) };
-  for (const [key, limit] of [["releasedKeys", 256], ["restoredKeys", 256], ["restoredButtons", 5], ["restoredMappings", 1]] as const) {
+  for (const [key, limit] of [["releasedKeys", 256], ["releasedButtons", 5], ["restoredKeys", 256], ["restoredButtons", 5], ["restoredMappings", 1]] as const) {
     if (record[key] === undefined) continue;
     if (!Number.isSafeInteger(record[key]) || (record[key] as number) < 0 || (record[key] as number) > limit) return undefined;
     result[key] = record[key] as number;
