@@ -22,6 +22,7 @@ import { createHash } from "node:crypto";
 export const DISCOVERY_TRUNCATION_MARKER = "⚠️ [... middle content omitted — showing head and tail ...]";
 export const QUALIFICATION_CONTEXT_TOKENS = 65536;
 const contextTail = text => /\[\.\.\. [1-9]\d* more characters truncated\]$/.test(text);
+const newerContextTail = text => /\[\.\.\. [1-9]\d* more characters truncated; rerun with narrower args if needed\]$/.test(text);
 const textContent = content => typeof content === "string" ? content : Array.isArray(content) ? content.filter(block => block.type === "text").map(block => block.text).join("\n") : "";
 const discoveryActions = new Set(["health", "doctor", "permissions"]);
 export function selectEligibleDiscoveryCalls(calls, { allowedActions, canonicalAliases }) {
@@ -31,25 +32,47 @@ export function discoveryCallsForPlan(plan, { currentCase, batchCallId, allowedA
   return selectEligibleDiscoveryCalls((plan.calls ?? [{ name: currentCase, args: plan.args }]).map(call => ({ action: call.args?.action, toolCallId: plan.calls ? batchCallId(call.name) : `call_${currentCase}`, notices: [...(call.args?.action === "permissions" ? ["permissions is deprecated; use doctor instead."] : []), ...(plan.tool === legacyToolName ? [`${legacyToolName} is deprecated; use ${canonicalToolName} instead.`] : [])] })), { allowedActions, canonicalAliases });
 }
 const normalizedCallId = value => typeof value === "string" ? value.replace(/[^a-zA-Z0-9]/g, "") : "";
-export function inspectDiscoveryTransport(body, { currentCase, calls, contextWindowTokens = QUALIFICATION_CONTEXT_TOKENS }) {
+export function inspectDiscoveryTransport(body, { currentCase, calls, contextWindowTokens = QUALIFICATION_CONTEXT_TOKENS, toolName = "computer_use", hostVersion = "2026.4.26" }) {
   assert.ok(Number.isSafeInteger(contextWindowTokens) && contextWindowTokens > 0, "Unknown provider context budget");
+  assert.ok(["2026.4.26", "2026.11.3"].includes(hostVersion), "Unknown discovery host");
+  const newerHost = hostVersion === "2026.11.3";
   // Exact pinned guard: contextTokens*2*.5 estimated chars, then estimate/text ratio2.
-  const providerTextBudget = Math.floor(Math.max(1024, Math.floor(contextWindowTokens * 2 * .5)) / 2);
+  const contextBudget = Math.floor(Math.max(1024, Math.floor(contextWindowTokens * 2 * .5)) / 2);
+  const liveCap = contextWindowTokens >= 200000 ? 64000 : contextWindowTokens >= 100000 ? 32000 : 16000;
+  const providerTextBudget = newerHost ? Math.min(contextBudget, Math.floor(contextWindowTokens * .3) * 4, liveCap) : contextBudget;
   const messages = body.messages ?? [];
-  const lastUser = messages.findLastIndex(message => message.role === "user");
-  assert.ok(lastUser >= 0 && JSON.stringify(messages[lastUser].content).match(/QUALIFICATION_CASE:([a-z0-9-]+)/)?.[1] === currentCase, "Discovery proof must use the current turn");
-  const tools = messages.slice(lastUser + 1).filter(message => message.role === "tool");
+  // Harness-authored turns carry unique markers. Newer hosts may add unmarked
+  // user-role context; require the real call declaration and result as well.
+  const marked = messages.flatMap((message, index) => message.role === "user"
+    ? [...textContent(message.content).matchAll(/QUALIFICATION_CASE:([a-z0-9-]+)/g)].map(match => ({ name: match[1], index })) : []);
+  const current = marked.filter(marker => marker.name === currentCase);
+  assert.ok(current.length === 1 && marked.at(-1)?.name === currentCase, "Discovery proof must use the unique current turn");
+  const markerIndex = current[0].index;
   assert.ok(calls.every(call => normalizedCallId(call.toolCallId).length > 0), "Missing expected tool identity");
   assert.equal(new Set(calls.map(call => normalizedCallId(call.toolCallId))).size, calls.length, "Ambiguous expected tool call");
   return calls.map(call => {
     assert.ok(discoveryActions.has(call.action), "Only discovery may use this transport proof");
-    const matching = tools.filter(message => normalizedCallId(message.tool_call_id) === normalizedCallId(call.toolCallId));
-    assert.equal(matching.length, 1, "Missing or ambiguous current-turn tool call");
-    const content = matching[0].content;
+    const declarations = messages.flatMap((message, index) => message.role === "assistant"
+      ? (message.tool_calls ?? []).filter(item => normalizedCallId(item.id) === normalizedCallId(call.toolCallId)).map(item => ({ item, index })) : []);
+    assert.ok(declarations.length === 1 && declarations[0].index > markerIndex, "Missing, replayed or ambiguous current-turn tool call declaration");
+    assert.ok(["computer_use", "desktop_use"].includes(toolName), "Unknown expected discovery tool name");
+    assert.equal(declarations[0].item.function?.name, toolName, "Current-turn tool call name mismatch");
+    let argumentsValue;
+    try { argumentsValue = JSON.parse(declarations[0].item.function.arguments); } catch { assert.fail("Malformed discovery tool call arguments"); }
+    assert.equal(argumentsValue.action, call.action, "Current-turn tool call action mismatch");
+    const matching = messages.flatMap((message, index) => message.role === "tool" && normalizedCallId(message.tool_call_id) === normalizedCallId(call.toolCallId) ? [{ message, index }] : []);
+    assert.ok(matching.length === 1 && matching[0].index > declarations[0].index, "Missing, replayed, unordered or ambiguous current-turn tool call result");
+    const content = matching[0].message.content;
     const text = textContent(content);
     assert.ok(text.length > 0 && text.length <= providerTextBudget, "Discovery provider text exceeds the context guard limit");
-    assert.ok(!text.includes(DISCOVERY_TRUNCATION_MARKER), "Unexpected persisted-history marker in current provider result");
-    const truncated = contextTail(text);
+    const middle = text.includes(DISCOVERY_TRUNCATION_MARKER);
+    const truncated = newerHost ? newerContextTail(text) : contextTail(text);
+    if (newerHost && middle) {
+      assert.ok(truncated, "Newer live middle omission requires its exact context suffix");
+      assert.equal(text.split(DISCOVERY_TRUNCATION_MARKER).length, 2, "Ambiguous live omission marker");
+      const parts = text.split(`\n\n${DISCOVERY_TRUNCATION_MARKER}\n\n`);
+      assert.ok(parts.length === 2 && parts.every(part => part.length > 0), "Malformed live head-tail omission");
+    } else assert.ok(!middle, "Unexpected persisted-history marker in current provider result");
     const legacyNotices = (call.notices ?? []).map((notice, index) => ({ index, state: text.includes(notice) ? "observed" : "unverified" }));
     if (!truncated) assert.ok(legacyNotices.every(notice => notice.state === "observed"), "Discovery deprecation notice is absent from complete provider wire");
     if (!truncated) {
@@ -57,13 +80,27 @@ export function inspectDiscoveryTransport(body, { currentCase, calls, contextWin
       try { complete = JSON.parse(text); } catch { assert.fail("Malformed untruncated discovery JSON"); }
       assert.ok(["success", "error", "unsupported", "needsApproval", "timeout", "cancelled"].includes(complete.status), "Invalid complete discovery status");
     }
-    return { action: call.action, toolCallId: call.toolCallId, stage: "provider-current-turn", textChars: text.length, sha256: createHash("sha256").update(text).digest("hex"), contextWindowTokens, providerTextBudget, truncationStyle: truncated ? "context-tail" : "none", legacyNotices, truncated, fullCapabilityJsonTransport: !truncated };
+    return { action: call.action, toolCallId: call.toolCallId, stage: "provider-current-turn", hostVersion, textChars: text.length, sha256: createHash("sha256").update(text).digest("hex"), contextWindowTokens, providerTextBudget, truncationStyle: truncated ? middle ? "live-middle" : "context-tail" : "none", legacyNotices, truncated, fullCapabilityJsonTransport: !truncated, ...(newerHost && text.length > 8000 ? { displayPrefix: { textChars: 8000, sha256: createHash("sha256").update(text.slice(0, 8000)).digest("hex") } } : {}) };
   });
 }
 
-export function inspectDiscoveryHistory(message, { toolCallId }) {
+export function inspectDiscoveryHistory(message, { toolCallId, hostVersion = "2026.4.26", runId, transport }) {
   assert.ok(message?.role === "toolResult" && message.toolCallId === toolCallId, "History tool identity mismatch");
   const text = textContent(message.content);
+  if (hostVersion === "2026.11.3") {
+    assert.ok(typeof runId === "string" && runId.length > 0 && message.__openclaw?.runId === runId, "History display run identity mismatch");
+    assert.ok(text.length > 0 && text.length <= 8000, "Discovery display history exceeds the pinned limit");
+    const truncated = message.__openclaw.truncated === true;
+    const sha256 = createHash("sha256").update(text).digest("hex");
+    if (truncated) {
+      assert.equal(message.__openclaw.reason, "display-cap");
+      assert.equal(text.length, 8000);
+      assert.ok(transport?.stage === "provider-current-turn" && transport.hostVersion === hostVersion && transport.toolCallId === toolCallId, "Display history requires same-call live transport");
+      assert.deepEqual(transport.displayPrefix, { textChars: text.length, sha256 }, "Display history must match the verified live prefix");
+    } else { try { JSON.parse(text); } catch { assert.fail("Malformed complete display history JSON"); } }
+    return { stage: "chat-history-display", hostVersion, runId, toolCallId, textChars: text.length, sha256, historyTextBudget: 8000, truncationStyle: truncated ? "display-prefix" : "none", truncated };
+  }
+  assert.equal(hostVersion, "2026.4.26", "Unknown discovery history host");
   assert.ok(text.length > 0 && text.length <= 16000, "Discovery history text exceeds the persisted limit");
   const truncated = text.includes(DISCOVERY_TRUNCATION_MARKER) && contextTail(text);
   if (!truncated) { try { JSON.parse(text); } catch { assert.fail("Malformed untruncated history JSON"); } }
@@ -72,7 +109,14 @@ export function inspectDiscoveryHistory(message, { toolCallId }) {
 
 export function correlateDiscoveryReplay({ transport, history, auditRecords, call, replay, scope }) {
   assert.ok(discoveryActions.has(call.action) && transport?.stage === "provider-current-turn" && (transport.truncated === true || transport.fullCapabilityJsonTransport === true), "Discovery replay requires verified provider transport");
-  assert.ok(history?.stage === "persisted-history" && history.truncated === true && history.toolCallId === call.toolCallId, "Discovery replay requires explicit same-call history truncation");
+  assert.ok(["persisted-history", "chat-history-display"].includes(history?.stage) && history.truncated === true && history.toolCallId === call.toolCallId, "Discovery replay requires explicit same-call history truncation");
+  if (history.stage === "chat-history-display") {
+    assert.equal(transport.hostVersion, "2026.11.3");
+    assert.equal(history.hostVersion, "2026.11.3");
+    assert.ok(typeof history.runId === "string" && history.runId.length > 0, "Discovery replay requires a history run identity");
+    assert.equal(history.runId, scope.runId, "Discovery replay history run mismatch");
+    assert.deepEqual(transport.displayPrefix, { textChars: history.textChars, sha256: history.sha256 }, "Discovery replay display prefix mismatch");
+  }
   assert.equal(transport.toolCallId, call.toolCallId, "Discovery tool identity mismatch");
   assert.equal(transport.action, call.action, "Discovery transport action mismatch");
   const matching = auditRecords.filter(record => record.toolCallId === call.toolCallId);

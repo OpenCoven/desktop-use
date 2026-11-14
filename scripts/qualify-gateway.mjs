@@ -1,5 +1,6 @@
-import { createCapabilitiesFixture, discoveryCallsForPlan, inspectDiscoveryTransport, correlateDiscoveryReplay, inspectDiscoveryHistory, QUALIFICATION_CONTEXT_TOKENS, DISCOVERY_TRUNCATION_MARKER } from "./gateway-capabilities-fixture.mjs";
 import { assertPackedMetadata } from "./packed-metadata.mjs";
+import { createCapabilitiesFixture, discoveryCallsForPlan, inspectDiscoveryTransport, correlateDiscoveryReplay, inspectDiscoveryHistory, QUALIFICATION_CONTEXT_TOKENS, DISCOVERY_TRUNCATION_MARKER } from "./gateway-capabilities-fixture.mjs";
+import { linkLaneHost, assertHostInstallation, assertLoadedSdk, assertMinimalHttpPolicy, assertExplicitDenyModel, assertExplicitDenyGuard, assertHostApprovalDenied, waitForHostApproval } from "./release-qualification.mjs";
 import { createImageFixture, inspectProviderImage } from "./gateway-image-fixture.mjs";
 import { COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME } from "../src/tool-names.ts";
 import { buildRestrictedBatch, batchCallId, callName } from "./gateway-action-batches.mjs";
@@ -26,8 +27,9 @@ const permissionConfigs = {
   "stop-only": { actionProfile: "full", allowedActions: [] },
 };
 assert.ok(Object.hasOwn(permissionConfigs, profile), "Profile must be full, observation-only, desktop-only, or stop-only");
-const root = resolve(process.argv[2] ?? `/tmp/desktopuse-gateway-receipt-${Date.now()}`);
+let root = resolve(process.argv[2] ?? `/tmp/desktopuse-gateway-receipt-${Date.now()}`);
 await mkdir(root, { recursive: true, mode: 0o700 });
+root = await realpath(root);
 const save = async (name, data) => writeFile(join(root, name), `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
 const delay = ms => new Promise(r => setTimeout(r, ms));
 async function until(fn, timeoutMs = 30000) {
@@ -42,7 +44,16 @@ async function until(fn, timeoutMs = 30000) {
 const listen = server => new Promise(r => server.listen(0, "127.0.0.1", r));
 const host = await realpath(resolve(process.argv[3] ?? join(repo, "node_modules/openclaw")));
 const pkg = JSON.parse(await readFile(join(host, "package.json"), "utf8"));
-assert.equal(pkg.version, "2026.4.26");
+const expectedHost = process.argv[7] ?? "2026.4.26";
+assert.equal(pkg.version, expectedHost);
+const newerHost = expectedHost === "2026.11.3";
+assert.ok(["2026.4.26", "2026.11.3"].includes(expectedHost));
+const sdkResolution = await linkLaneHost(pluginRoot, host);
+await save("sdk-resolution.json", { ...sdkResolution, expectedHost, actualHost: pkg.version, toolSearch: newerHost ? false : "host-default" });
+if (process.env.RELEASE_HOST_LOCK) {
+  const hostIdentity = assertHostInstallation(expectedHost, pkg, JSON.parse(await readFile(process.env.RELEASE_HOST_LOCK, "utf8")));
+  await save("host-integrity.json", hostIdentity);
+}
 const hostRequire = createRequire(join(host, "package.json"));
 const WebSocket = hostRequire("ws");
 assert.equal(process.env.OPENCLAW_IMAGE_BACKEND ?? "sharp", "sharp", "Frame qualification requires the pinned Sharp backend");
@@ -50,7 +61,9 @@ assert.equal(hostRequire("sharp/package.json").version, "0.34.5");
 await save("host-image-identity.json", { host, openclawVersion: pkg.version, sharpVersion: "0.34.5", nodeVersion: process.version, imageBackend: "sharp" });
 const cases = new Map();
 const requests = [];
+let providerCalls = 0;
 const modelErrors = [];
+const modelFailures = [];
 const modelSchemas = {};
 const imageFixture = await createImageFixture(repo, root);
 const capabilitiesFixture = await createCapabilitiesFixture(repo, root, imageFixture.adapter);
@@ -64,6 +77,9 @@ const profileActions = {
 }[profile];
 const visibleAliases = Object.keys(legacyActions).filter(action => profileActions.includes(legacyActions[action]));
 const model = createServer(async (req, res) => {
+  providerCalls++;
+  let phase = "request";
+  let fixtureCase = null;
   try {
     let input = ""; for await (const chunk of req) input += chunk;
     const body = JSON.parse(input);
@@ -71,7 +87,13 @@ const model = createServer(async (req, res) => {
     const userIndex = messages.findLastIndex(m => m.role === "user" && JSON.stringify(m.content).includes("QUALIFICATION_CASE:"));
     const marker = JSON.stringify(messages[userIndex]?.content ?? "").match(/QUALIFICATION_CASE:([a-z0-9-]+)/)?.[1];
     assert.ok(marker && cases.has(marker), `Unexpected model request ${req.url}`);
+    fixtureCase = marker;
+    phase = "model-schema";
     const plan = cases.get(marker);
+    if (plan.noTools) {
+      assert.deepEqual(body.tools ?? [], [], "Explicit deny leaves no model tools");
+      await save("explicit-deny-model-inventory.json", { tools: [], noDispatch: true });
+    } else {
     assert.deepEqual((body.tools ?? []).map(t => t.function?.name), [plan.tool ?? COMPUTER_USE_TOOL_NAME], "Actual model tool inventory");
     const definition = body.tools[0].function;
     const actionSchema = definition.parameters.properties.action;
@@ -82,8 +104,9 @@ const model = createServer(async (req, res) => {
     if (profile === "stop-only") assert.ok(actionSchema.description.includes("Stop-only"));
     modelSchemas[definition.name] = definition.parameters;
     await save("model-tool-schemas.json", modelSchemas);
+    }
     const currentToolResults = messages.slice(userIndex + 1).filter(m => m.role === "tool");
-    const finished = plan.replaySourceCase ? true : currentToolResults.length > 0;
+    const finished = plan.noTools || plan.replaySourceCase ? true : currentToolResults.length > 0;
     if (plan.calls) {
       const responseIndex = plan.responses ?? 0;
       assert.ok(responseIndex < 3, "Restricted fixture exceeded batch, Stop and completion provider responses");
@@ -96,10 +119,12 @@ const model = createServer(async (req, res) => {
       assert.equal(currentToolResults.length, 0, "Replay turn must not create a tool result");
       assert.equal(plan.responses ?? 0, 0, "Replay is a single no-tool provider response");
     }
+    phase = "provider-image";
     if (finished && plan.imageKind) await save(`provider-image-${plan.replaySourceCase ? "large-replay" : plan.imageKind}.json`, await inspectProviderImage(body, imageFixture.fixtures[plan.imageKind], { currentCase: marker, ...(plan.replaySourceCase ? { stage: "history-replay", sourceCase: plan.replaySourceCase } : {}) }));
     if (finished) {
+      phase = "discovery-transport";
       const calls = discoveryCallsForPlan(plan, { currentCase: marker, batchCallId, allowedActions: profileActions, canonicalAliases: legacyActions, legacyToolName: DESKTOP_USE_TOOL_NAME, canonicalToolName: COMPUTER_USE_TOOL_NAME });
-      const receipts = calls.length ? inspectDiscoveryTransport(body, { currentCase: marker, calls, contextWindowTokens: QUALIFICATION_CONTEXT_TOKENS }) : [];
+      const receipts = calls.length ? inspectDiscoveryTransport(body, { currentCase: marker, calls, contextWindowTokens: QUALIFICATION_CONTEXT_TOKENS, toolName: plan.tool ?? COMPUTER_USE_TOOL_NAME, hostVersion: expectedHost }) : [];
       if (receipts.length) await save(`${marker}-discovery-provider-transport.json`, receipts);
       if (marker === "capability-model-profile") {
         if (profile === "stop-only") {
@@ -113,6 +138,7 @@ const model = createServer(async (req, res) => {
         }
       }
     }
+    phase = "fixture-response";
     // The host can run a batch in parallel: execute Stop on the next provider
     // response so it cannot cancel the observations being qualified alongside it.
     const stopAfterBatch = plan.stopAfterBatch && finished && !plan.stopSent;
@@ -135,6 +161,8 @@ const model = createServer(async (req, res) => {
   } catch (e) {
     modelErrors.push({ message: String(e) });
     await save("model-errors.json", modelErrors);
+    modelFailures.push({ phase, fixtureCase, errorKind: e.name === "AssertionError" ? "fixture-assertion" : "fixture-error" });
+    await save("fixture-failure-summary.json", { failures: modelFailures, rawContentRetained: false });
     res.writeHead(500, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: { code: "FIXTURE_REQUEST_REJECTED", message: "Fixture model request rejected." } }));
   }
@@ -176,10 +204,31 @@ const config = {
     list: [
       { id: "computer-use", default: true, workspace, agentDir, tools: template.tools },
       { id: "minimal-qualification", workspace, agentDir: join(root, "state/agents/minimal-qualification/agent"), tools: { ...template.tools, profile: "minimal" } },
+      { id: "denied-qualification", workspace, agentDir: join(root, "state/agents/denied-qualification/agent"), tools: { ...template.tools, profile: "full", allow: [COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME], deny: [...template.tools.deny, COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME] } },
       { id: "legacy-qualification", workspace: legacyWorkspace, agentDir: join(root, "state/agents/legacy-qualification/agent"), tools: { ...template.tools, allow: [DESKTOP_USE_TOOL_NAME] } },
     ],
   },
 };
+if (newerHost) {
+  config.agents.entries = Object.fromEntries(config.agents.list.map(({ id, default: _default, ...entry }) => [id, entry]));
+  delete config.agents.list;
+  config.agents.defaults.cwd = workspace;
+  config.agents.ownership = "explicit";
+  delete config.canvasHost;
+  // Exercise the public direct-schema mode; the separate SDK approval lane tests default dispatch_action.
+  config.tools.toolSearch = false;
+}
+const wrapperPath = join(pluginRoot, "release-qualification-wrapper.js");
+await writeFile(wrapperPath, `import plugin from './dist/index.js';
+import { createRequire } from 'node:module';
+import { realpathSync, writeFileSync } from 'node:fs';
+export default {...plugin, register(api) {
+  const sdkEntry = realpathSync(createRequire(import.meta.url).resolve('openclaw/plugin-sdk/plugin-entry'));
+  writeFileSync(${JSON.stringify(join(root, "loaded-sdk.json"))}, JSON.stringify({sdkEntry}));
+  return plugin.register(api);
+}};
+`);
+config.plugins.load.paths = [wrapperPath];
 const configPath = join(root, "openclaw.json"); await save("openclaw.json", config);
 const log = await open(join(root, "console.log"), "w", 0o600);
 const env = Object.fromEntries(["PATH", "TMPDIR", "LANG", "USER"].filter(k => process.env[k]).map(k => [k, process.env[k]]));
@@ -188,23 +237,24 @@ await assert.rejects(access(unavailableAdapter), { code: "ENOENT" });
 Object.assign(env, { OPENCLAW_IMAGE_BACKEND: process.env.OPENCLAW_IMAGE_BACKEND ?? "sharp", OPENCLAW_STATE_DIR: join(root, "state"), OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_HOME: join(root, "home"), OPENCLAW_PLUGIN_LOAD_PROFILE: "1", OPENCLAW_LIVE_GATEWAY: "1", OPENCLAW_LIVE_GATEWAY_PROVIDERS: "qualification", COVEN_DESKTOP_USE_BIN: capabilitiesFixture.adapter, COVEN_HOME: join(root, "coven-home") });
 await save("action-permissions.json", { profile, trustedConfig: permissionConfigs[profile], expectedActions: profileActions, expectedAliases: visibleAliases });
 await save("adapter-fixture.json", { mode: "synthetic-capture-only-when-harness-enabled", nativePlatform: process.platform, realRustBinary: imageFixture.binary, nonCaptureUnavailable: true, graphicalEffects: false, liveProvider: false });
-// Refuse to start a gateway if this package would escape the explicit state root.
-// Verify byte-identical compiled runtime, then use the checkout's installed SDK peer for a
-// dry resolver call with no audit write or gateway/profile initialization.
+// Ordinary source CI still compares its newly packed runtime; attested release lanes verify the manifest tree in release-host.mjs.
+if (!process.env.RELEASE_NATIVE_ADAPTER) {
 for (const file of ["index.js", "openclaw.plugin.json", "src/computer-use-audit.ts", "src/computer-use-agent.ts", "src/tool-names.ts", "src/action-permissions.ts", "src/computer-use-actions.ts", "src/computer-use-policy.ts", "src/plugin-tool.ts", "src/capabilities.ts", "src/host-actions.ts", "src/observation.ts", "src/file-actions.ts", "contracts/v1/observation.schema.json", "contracts/v1/capabilities.schema.json", "contracts/v1/canonical-actions.json", "contracts/v1/canonical-actions.schema.json"]) {
   const runtimeFile = file === "openclaw.plugin.json" ? file : "dist/" + file.replace(/\.ts$/, ".js");
   assert.deepEqual(await readFile(join(repo, runtimeFile)), await readFile(join(pluginRoot, runtimeFile)), `Packed runtime differs: ${runtimeFile}`);
 }
 // Compare complete metadata, allowing only pnpm pack's known prepack removal.
 assertPackedMetadata(JSON.parse(await readFile(join(repo, "package.json"), "utf8")), JSON.parse(await readFile(join(pluginRoot, "package.json"), "utf8")));
-const auditProbe = spawnSync(process.execPath, ["--import", createRequire(join(repo, "package.json")).resolve("tsx"), "--input-type=module", "-e",
+}
+// Preflight imports the installed compiled audit module through this lane's exact host SDK.
+const auditProbe = spawnSync(process.execPath, ["--input-type=module", "-e",
   "const audit = await import(process.argv[1]); console.log(JSON.stringify(['computer-use','legacy-qualification'].map(agentId => audit.resolveComputerUseAuditLogPath({agentId}))));",
-  pathToFileURL(join(repo, "src/computer-use-audit.ts")).href,
-], { cwd: repo, env, encoding: "utf8" });
+  pathToFileURL(join(pluginRoot, "dist/src/computer-use-audit.js")).href,
+], { cwd: workspace, env: { ...env, NODE_PATH: "" }, encoding: "utf8" });
 assert.equal(auditProbe.status, 0, auditProbe.stderr);
 assert.deepEqual(JSON.parse(auditProbe.stdout.trim()), [join(root, "state/agents/computer-use/audit/computer-use.jsonl"), join(root, "state/agents/legacy-qualification/audit/computer-use.jsonl")]);
-await save("audit-path-preflight.json", { isolated: true });
-const gateway = spawn(process.execPath, [join(host, "openclaw.mjs"), "gateway", "run"], { cwd: repo, env, stdio: ["ignore", log.fd, log.fd] });
+await save("audit-path-preflight.json", { isolated: true, ...sdkResolution, compiledModule: join(pluginRoot, "dist/src/computer-use-audit.js") });
+const gateway = spawn(process.execPath, [join(host, "openclaw.mjs"), "gateway", "run"], { cwd: workspace, env, stdio: ["ignore", log.fd, log.fd] });
 let gatewayExit; gateway.on("exit", (code, signal) => { gatewayExit = { code, signal }; });
 let socket;
 const pending = new Map(); const events = [];
@@ -213,6 +263,8 @@ try {
     assert.equal(gatewayExit, undefined, `Gateway exited: ${JSON.stringify(gatewayExit)}`);
     return readFile(join(root, "console.log"), "utf8").then(text => text.includes("[gateway] ready"));
   }, 600000);
+  const loadedSdk = JSON.parse(await readFile(join(root, "loaded-sdk.json"), "utf8"));
+  assertLoadedSdk([loadedSdk], sdkResolution);
   socket = new WebSocket(`ws://127.0.0.1:${port}`);
   const rpc = (method, params = {}, timeoutMs = 600000) => {
     const id = randomUUID();
@@ -229,10 +281,10 @@ try {
       if (frame.type === "event") {
         events.push(frame);
         if (frame.event === "connect.challenge") {
-          rpc("connect", { minProtocol: 3, maxProtocol: 3,
+          rpc("connect", { minProtocol: newerHost ? 4 : 3, maxProtocol: newerHost ? 4 : 3,
             client: { id: "gateway-client", version: pkg.version, platform: process.platform, mode: "backend" },
             role: "operator", scopes: ["operator.admin", "operator.read", "operator.write", "operator.approvals"],
-            caps: ["tool-events"], auth: { token },
+            caps: ["tool-events", "plugin-approvals"], auth: { token },
           }).then(resolve, reject);
         }
       } else if (frame.type === "res" && pending.has(frame.id)) {
@@ -264,7 +316,34 @@ try {
     await save("minimal-effective-tools.json", minimalInventory);
     assert.equal(minimalInventory.profile, "minimal");
     assert.deepEqual(minimalInventory.groups, []);
-    assert.equal((await httpInvoke(COMPUTER_USE_TOOL_NAME, { action: "stop" }, minimalSession)).status, 404);
+    const minimalHttp = await httpInvoke(COMPUTER_USE_TOOL_NAME, { action: "stop" }, minimalSession);
+    const httpPolicy = assertMinimalHttpPolicy(expectedHost, minimalHttp);
+    const minimalAuditPath = join(root, "state/agents/minimal-qualification/audit/computer-use.jsonl");
+    let minimalAudit = [];
+    if (newerHost) {
+      minimalAudit = (await readFile(minimalAuditPath, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+      assert.equal(minimalAudit.length, 1);
+      assert.equal(minimalAudit[0].agentId, "minimal-qualification");
+      assert.equal(minimalAudit[0].sessionKey, minimalSession);
+      assert.equal(minimalAudit[0].action, "stop");
+      assert.equal(minimalAudit[0].result.status, "success");
+    } else await assert.rejects(access(minimalAuditPath), { code: "ENOENT" });
+    await save("minimal-http-policy.json", { hostVersion: expectedHost, modelInventory: [], httpPolicy, status: minimalHttp.status, details: minimalHttp.body.result?.details ?? null, auditRecords: minimalAudit.length, sessionKey: minimalSession });
+    const deniedSession = "agent:denied-qualification:qualification";
+    await rpc("sessions.patch", { key: deniedSession });
+    const deniedInventory = await rpc("tools.effective", { sessionKey: deniedSession });
+    assert.deepEqual(deniedInventory.groups, []);
+    const beforeDenied = events.length;
+    for (const deniedTool of [COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME]) {
+      const denied = await httpInvoke(deniedTool, { action: "stop", confirm: true }, deniedSession);
+      assert.equal(denied.status, 404, "Explicit tool deny applies to operator HTTP as well as model inventory");
+      assert.equal(denied.body.ok, false);
+    }
+    const deniedModel = await runCase("explicit-deny-model", undefined, "none", deniedSession, COMPUTER_USE_TOOL_NAME, { noTools: true });
+    assert.equal(deniedModel.history.messages?.filter(message => message.role === "toolResult").length, 0);
+    assert.equal(events.slice(beforeDenied).some(event => event.event === "plugin.approval.requested"), false);
+    await assert.rejects(access(join(root, "state/agents/denied-qualification/audit/computer-use.jsonl")), { code: "ENOENT" });
+    await save("explicit-tool-deny.json", { hostVersion: expectedHost, sessionKey: deniedSession, deniedTools: [COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME], httpStatus: 404, modelInventory: [], modelDenial: deniedModel.denialProof, guardEvidence: deniedModel.guardEvidence, providerCalls: deniedModel.providerCalls, toolResults: 0, approvals: 0, executorAuditAbsent: true });
     const health = await httpInvoke(COMPUTER_USE_TOOL_NAME, { action: "health" }); await save("health.json", health);
     assert.equal(health.status, 200); assert.deepEqual(health.body.result.details.agent.toolPolicy, template.tools);
     assert.deepEqual(health.body.result.details.actionPermissions.allowedActions, profileActions);
@@ -276,9 +355,12 @@ try {
     const timing = {};
     let modelRequested;
     const modelReady = new Promise(resolve => modelRequested = resolve);
-    cases.set(name, { args, tool, calls: options.calls, stopAfterBatch: options.stopAfterBatch, imageKind: options.imageKind, replaySourceCase: options.replaySourceCase, onModelRequest: () => { timing.modelRequestedMs = Date.now() - startedAt; modelRequested(); } });
+    cases.set(name, { args, tool, noTools: options.noTools, calls: options.calls, stopAfterBatch: options.stopAfterBatch, imageKind: options.imageKind, replaySourceCase: options.replaySourceCase, onModelRequest: () => { timing.modelRequestedMs = Date.now() - startedAt; modelRequested(); } });
     const start = events.length;
-    const accepted = await rpc("agent", { message: `QUALIFICATION_CASE:${name}`, agentId: sessionKey.split(":")[1], sessionKey, idempotencyKey: randomUUID(), deliver: false, timeout: 420 });
+    const providerStart = providerCalls;
+    const responseStart = requests.length;
+    const privateLogPrefix = options.noTools && newerHost ? await readFile(join(root, "gateway.jsonl")) : null;
+    const accepted = await rpc(newerHost ? "chat.send" : "agent", { message: `QUALIFICATION_CASE:${name}`, agentId: sessionKey.split(":")[1], sessionKey, idempotencyKey: randomUUID(), deliver: false, ...(newerHost ? { timeoutMs: 420000 } : { timeout: 420 }) });
     timing.acceptedMs = Date.now() - startedAt;
     const completed = rpc("agent.wait", { runId: accepted.runId, timeoutMs: 420000 }, 430000);
     completed.catch(() => {});
@@ -289,7 +371,13 @@ try {
       await Promise.race([modelReady, completed.then(outcome => { throw new Error(`Agent ${name} ended before a model request: ${outcome.status}`); })]);
       for (const approvalName of options.approvalCalls ?? [name]) {
         const approvalCallId = options.calls ? batchCallId(approvalName) : `call_${approvalName}`;
-        const approval = await until(() => events.slice(start).find(e => e.event === "plugin.approval.requested" && e.payload.request.toolCallId === approvalCallId), 45000);
+        let approval;
+        try {
+          approval = await waitForHostApproval({ completed, timeoutMs: 45000, readApproval: () => events.slice(start).find(e => e.event === "plugin.approval.requested" && e.payload.request.toolCallId === approvalCallId && e.payload.request.toolName === tool && e.payload.request.sessionKey === sessionKey) });
+        } catch (error) {
+          await save(`${name}-approval-wait-failure.json`, { phase: "approval-wait", runId: accepted.runId, sessionKey, toolName: tool, toolCallId: approvalCallId, code: error.code ?? "HOST_APPROVAL_TRANSPORT_ERROR", outcomeStatus: error.outcomeStatus ?? null, observedApprovalCalls: events.slice(start).filter(event => event.event === "plugin.approval.requested").map(event => ({ id: event.payload.id, toolCallId: event.payload.request.toolCallId, toolName: event.payload.request.toolName, sessionKey: event.payload.request.sessionKey })).slice(0, 32) });
+          throw error;
+        }
         timing.approvalRequestedMs = Date.now() - startedAt;
         await save(`${approvalName}-timing.json`, timing);
         await save(`${approvalName}-approval.json`, approval.payload);
@@ -301,8 +389,34 @@ try {
     await save(`${name}-timing.json`, timing);
     console.log(`Gateway agent finished ${name}: ${outcome.status}`);
     const history = await rpc("chat.history", { sessionKey, limit: 100 }); await save(`${name}-history.json`, history);
-    if (!options.abort) assert.equal(outcome.status, "ok", JSON.stringify(outcome));
-    return { history, events: events.slice(start) };
+    let denialProof;
+    let guardEvidence;
+    if (options.noTools) {
+      assert.equal(name, "explicit-deny-model");
+      assert.equal(sessionKey, "agent:denied-qualification:qualification");
+      assert.equal(outcome.runId, accepted.runId);
+      if (newerHost && outcome.status === "error") {
+        const privateLog = await readFile(join(root, "gateway.jsonl"));
+        assert.ok(privateLog.subarray(0, privateLogPrefix.length).equals(privateLogPrefix), "Private diagnostic prefix must remain unchanged");
+        guardEvidence = assertExplicitDenyGuard(privateLog.subarray(privateLogPrefix.length).toString("utf8"), { runId: accepted.runId, sessionKey });
+      }
+      denialProof = assertExplicitDenyModel({ hostVersion: expectedHost, outcome, providerCalls: providerCalls - providerStart, providerResponses: requests.slice(responseStart), messages: history.messages, guardEvidence, sessionKey });
+    } else if (!options.abort) assert.equal(outcome.status, "ok", JSON.stringify(outcome));
+    const approvalDenials = [];
+    if (decision === "deny") {
+      const auditPath = join(root, `state/agents/${sessionKey.split(":")[1]}/audit/computer-use.jsonl`);
+      const auditText = await readFile(auditPath, "utf8").catch(error => { if (error.code !== "ENOENT") throw error; return ""; });
+      const auditRecords = auditText.trim() ? auditText.trim().split("\n").map(line => JSON.parse(line)) : [];
+      for (const approvalName of options.approvalCalls ?? [name]) {
+        const toolCallId = options.calls ? batchCallId(approvalName) : `call_${approvalName}`;
+        const results = history.messages.filter(message => message.role === "toolResult" && message.toolName === tool && message.toolCallId === toolCallId);
+        assert.equal(results.length, 1, "Exact denied tool result required");
+        const result = JSON.parse(results[0].content.filter(block => block.type === "text").map(block => block.text).join("\n"));
+        approvalDenials.push(assertHostApprovalDenied(expectedHost, { result, events: events.slice(start), toolCallId, toolName: tool, sessionKey, auditRecords }));
+      }
+      await save(`${name}-approval-denials.json`, approvalDenials);
+    }
+    return { history, runId: accepted.runId, events: events.slice(start), denialProof, guardEvidence, approvalDenials, providerCalls: providerCalls - providerStart };
   }
   const toolResult = (history, name = COMPUTER_USE_TOOL_NAME) => {
     const message = history.messages?.findLast(m => m.role === "toolResult" && m.toolName === name);
@@ -314,17 +428,17 @@ try {
     const message = result.history.messages?.findLast(message => message.role === "toolResult" && message.toolName === tool && message.toolCallId === toolCallId);
     assert.ok(message, "Missing exact discovery history tool call");
     const text = message.content.filter(block => block.type === "text").map(block => block.text).join("\n");
-    if (!text.includes(DISCOVERY_TRUNCATION_MARKER)) return JSON.parse(text);
+    if (!(newerHost ? message.__openclaw?.truncated : text.includes(DISCOVERY_TRUNCATION_MARKER))) return JSON.parse(text);
     const transports = JSON.parse(await readFile(join(root, `${name}-discovery-provider-transport.json`), "utf8"));
     const transport = transports.find(receipt => receipt.toolCallId === toolCallId);
-    const history = inspectDiscoveryHistory(message, { toolCallId });
+    const history = inspectDiscoveryHistory(message, { toolCallId, hostVersion: expectedHost, runId: result.runId, transport });
     assert.ok(history.truncated, "Replay requires actual history truncation");
     assert.ok(transport?.truncated || transport?.fullCapabilityJsonTransport, "Replay requires verified provider-wire evidence");
     const agentId = sessionKey.split(":")[1];
     const auditPath = join(root, `state/agents/${agentId}/audit/computer-use.jsonl`);
     const auditRecords = (await readFile(auditPath, "utf8")).trim().split("\n").map(line => JSON.parse(line));
     const replay = await httpInvoke(tool, args, sessionKey);
-    const details = correlateDiscoveryReplay({ transport, history, auditRecords, call: { toolCallId, action: args.action }, replay, scope: { agentId, sessionKey, auditPath } });
+    const details = correlateDiscoveryReplay({ transport, history, auditRecords, call: { toolCallId, action: args.action }, replay, scope: { agentId, sessionKey, auditPath, runId: result.runId } });
     await save(`${name}-${args.action}-structured-replay.json`, { stage: "separate-structured-http-replay", originalModelCall: { toolCallId, transport, history }, scope: { agentId, sessionKey, workspace: agentId === "legacy-qualification" ? legacyWorkspace : workspace }, response: replay, auditCorrelation: { action: details.action, status: details.status, success: details.success } });
     return details;
   }
@@ -499,9 +613,11 @@ try {
       assert.equal(batch.events.some(event => event.event === "plugin.approval.requested" && event.payload.request.toolCallId === batchCallId(callName("denied", action))), false);
       denied.push({ action, canonical: legacyActions[action] ?? action, modelDenied: true, approvalRequested: false });
     }
+    assert.equal(batch.approvalDenials.length, gatedActions.length);
     for (const action of gatedActions) {
       assert.equal(batch.events.filter(event => event.event === "plugin.approval.requested" && event.payload.request.toolCallId === batchCallId(callName("gated", action))).length, 1, `Exactly one approval despite model confirmation: ${action}`);
-      assert.equal(JSON.parse(await resultFor("gated", action)).error, "Denied by user");
+      await resultFor("gated", action);
+      assert.equal(batch.approvalDenials.filter(proof => proof.toolCallId === batchCallId(callName("gated", action))).length, 1, `Exactly one strict host-correlated denial proof: ${action}`);
     }
     // Direct HTTP bypasses model schema validation. Representative excluded
     // shell/file/clipboard/launch families must still meet the trusted hook ceiling.
@@ -575,7 +691,7 @@ try {
   const clipboard = await runCase("legacy-clipboard-denied", { action: "clipboard-write", text: secret, confirm: true }, "deny");
   assert.ok(clipboard.events.some(e => e.event === "plugin.approval.requested"));
   assert.equal(toolResult(clipboard.history).status, "error");
-  assert.equal(toolResult(clipboard.history).error, "Denied by user");
+  assert.equal(clipboard.approvalDenials.length, 1);
   // Gateway construction can load bundled provider metadata before dispatching
   // the tool; warm each control route before timing cancellation of live work.
   await httpInvoke(COMPUTER_USE_TOOL_NAME, { action: "stop" }, session);
@@ -630,6 +746,10 @@ try {
   console.log(`Gateway qualification checkpoint: ${root}`);
   }
   }
+  await save("complete.json", { status: "passed", profile, lane, expectedHost, actualHost: pkg.version, sdkResolution, syntheticBackend: true, graphicalAcceptance: "not-run" });
+} catch (error) {
+  await save("qualification-failure.json", { name: error.name, code: error.code ?? null, message: error.message.split("\n")[0].replaceAll(token, "[redacted]").slice(0, 200), frames: error.stack?.split("\n").filter(line => /^\s+at /.test(line)) });
+  throw error;
 } finally {
   await capabilitiesFixture.restore();
   await save("events.json", events);

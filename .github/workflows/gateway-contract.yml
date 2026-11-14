@@ -5,6 +5,7 @@ on:
     paths:
       - '.github/workflows/gateway-contract.yml'
       - 'scripts/qualify-gateway.mjs'
+      - 'scripts/release-qualification.mjs'
       - 'scripts/packed-metadata.mjs'
       - 'scripts/packed-metadata.test.mjs'
       - 'scripts/gateway-image-fixture.mjs'
@@ -55,6 +56,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/gateway-package" "$RUNNER_TEMP/gateway-packed"
           pnpm pack --pack-destination "$RUNNER_TEMP/gateway-package"
           tar -xzf "$RUNNER_TEMP/gateway-package/"*.tgz -C "$RUNNER_TEMP/gateway-packed"
+          npm install --prefix "$RUNNER_TEMP/gateway-packed/package" --ignore-scripts --omit=dev --no-audit --no-fund
           node scripts/qualify-gateway.mjs "$RUNNER_TEMP/gateway-receipts/${{ matrix.profile }}" "$RUNNER_TEMP/gateway-host/node_modules/openclaw" "$RUNNER_TEMP/gateway-packed/package" "${{ matrix.profile }}"
       - name: Preserve contract evidence without gateway credentials or profiles
         if: always()
@@ -65,28 +67,19 @@ jobs:
           path: |
             ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/action-permissions.json
             ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/restricted-summary.json
-            ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/*-direct.json
-            ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/*-result.json
             ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/runtime-version.json
-            ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/health.json
             ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/audit-path-preflight.json
-            ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/effective-tools.json
-            ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/minimal-effective-tools.json
-            ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/legacy-effective-tools.json
-            ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/model-requests.json
+            ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/sdk-resolution.json
+            ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/loaded-sdk.json
             ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/model-error-sanitization.json
             ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/model-tool-schemas.json
             ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/adapter-fixture.json
             ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/provider-image-*.json
-            ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/legacy-action-compatibility.json
-            ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/legacy-tool-compatibility.json
-            ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/events.json
-            ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/*-approval.json
-            ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/*-outcome.json
-            ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/*-history.json
-            ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/*-cancellation.json
-            ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/*-timing.json
             ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/audit-summary.json
-            ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/state/agents/computer-use/audit/computer-use.jsonl
-            ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/state/agents/legacy-qualification/audit/computer-use.jsonl
-            ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/console.log
+            ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/complete.json
+            ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/qualification-failure.json
+            ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/fixture-failure-summary.json
+            ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/minimal-http-policy.json
+            ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/explicit-tool-deny.json
+            ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/*-approval-denials.json
+            ${{ runner.temp }}/gateway-receipts/${{ matrix.profile }}/*-approval-wait-failure.json

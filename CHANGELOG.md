@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.4 - preparation candidate
+
+- Add the compiled standalone SDK, shared public v1 execution contracts and local MCP connector with trusted approval boundaries.
+- Prepare source-bound paired package/native release qualification and explicit installation without claiming publication, successful first-A qualification or rollback acceptance.
+- Replace the unpublished first-A candidate with 0.1.4; the separately published 0.1.3 artifact remains immutable.
+
 ## 0.1.3 - 2026-11-13
 
 - Deliver validated PNG/JPEG image blocks with content hashes and explicit capture/coordinate metadata; reject stale or malformed image artifacts and report unavailable geometry honestly.

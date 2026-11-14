@@ -7,7 +7,7 @@ import jpeg from "jpeg-js";
 
 export async function createImageFixture(repo, root) {
   assert.ok(["darwin", "linux"].includes(process.platform), "Synthetic capture fixture supports native macOS/Linux builds");
-  const binary = join(repo, "target/debug/coven-desktop-use"); await access(binary);
+  const binary = process.env.RELEASE_NATIVE_ADAPTER ?? join(repo, "target/debug/coven-desktop-use"); await access(binary);
   const helpers = join(root, "capture-helpers"); await mkdir(helpers, { mode: 0o700 });
   const marker = join(root, "enable-synthetic-capture");
   const fixtures = {};

@@ -62,10 +62,21 @@ fn run(args: Vec<String>) -> String {
         return help_json();
     }
     if has_flag(&args, "--version") || has_flag(&args, "-V") {
-        return json_obj(vec![
-            ("ok", "true".to_string()),
-            ("version", json_string(VERSION)),
-        ]);
+        let commit = env!("COVEN_BUILD_COMMIT");
+        return serde_json::json!({
+            "ok": true,
+            "version": VERSION,
+            "schemaVersion": 1,
+            "releaseVersion": VERSION,
+            "source": {
+                "repository": "OpenCoven/desktop-use",
+                "commit": if commit.is_empty() { None } else { Some(commit) },
+                "dirty": env!("COVEN_BUILD_DIRTY") != "false"
+            },
+            "adapterProtocolVersion": 1,
+            "contracts": { "observation": 1, "capabilities": 1, "canonicalActions": 1 },
+            "target": env!("COVEN_BUILD_TARGET")
+        }).to_string();
     }
 
     let command = match normalize_command(args[0].as_str()) {

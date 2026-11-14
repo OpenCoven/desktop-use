@@ -30,7 +30,7 @@ The local fixture qualifier `scripts/qualify-sdk-authorization.mjs` runs the pin
 
 ## Local candidate consumption
 
-These exports are local candidate work. This source candidate carries package version `0.1.3`; the published npm `0.1.3` artifact does not contain these SDK/MCP exports. From this checkout, create a tarball and install that exact file into a separate application:
+These exports are local candidate work. This source candidate carries package version `0.1.4`; the published npm `0.1.3` artifact does not contain these SDK/MCP exports. From this checkout, create a tarball and install that exact file into a separate application:
 
 ```sh
 pnpm install --frozen-lockfile --ignore-scripts
@@ -38,7 +38,7 @@ pnpm run check
 mkdir -p /tmp/desktop-use-candidate
 pnpm pack --pack-destination /tmp/desktop-use-candidate
 # In the consuming application:
-npm install /tmp/desktop-use-candidate/opencoven-openclaw-desktop-use-0.1.3.tgz
+npm install /tmp/desktop-use-candidate/opencoven-openclaw-desktop-use-0.1.4.tgz
 ```
 
 ```ts
