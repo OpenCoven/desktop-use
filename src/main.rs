@@ -472,6 +472,33 @@ fn run_peekaboo(
     redact_type_text: bool,
     always_include_permission_guide: bool,
 ) -> String {
+    // v4 removed `image` and `--coords`. Probe only metadata, before the one
+    // action dispatch; never retry an input to discover a helper interface.
+    let screenshot = args.first().is_some_and(|arg| arg == "image");
+    let coordinate_option = if args.first().is_some_and(|arg| arg == "click") {
+        peekaboo_coordinate_option(&args)
+    } else {
+        None
+    };
+    let coordinates = coordinate_option.is_some();
+    let interface = if screenshot || coordinates {
+        peekaboo_v4_interface()
+    } else {
+        None
+    };
+    if interface.is_some() {
+        if screenshot {
+            args[0] = "see".into();
+            args.insert(1, "--no-elements".into());
+        } else if let Some(index) = coordinate_option {
+            args[index] = "--at".into();
+            // The public adapter coordinates are global desktop points. v4's
+            // targeted default is window-relative/background; preserve the
+            // approved global action through its explicit foreground route.
+            // run_macos rejects this action without --confirm before probing.
+            args.splice(1..1, ["--global".into(), "--foreground".into()]);
+        }
+    }
     let separator = args
         .iter()
         .position(|arg| arg == "--")
@@ -483,9 +510,69 @@ fn run_peekaboo(
     let mut cmd = Command::new("peekaboo");
     cmd.args(&args);
     match process::run(&mut cmd, deadline()) {
-        Ok(output) => peekaboo_result(output, redact_type_text, always_include_permission_guide),
+        Ok(output) => {
+            let result = peekaboo_result(output, redact_type_text, always_include_permission_guide);
+            if screenshot {
+                if let Some(identity) = interface {
+                    let mut parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+                    parsed["helperIdentity"] = identity;
+                    return parsed.to_string();
+                }
+            }
+            result
+        }
         Err(err) => process_failure_json("peekaboo", &err),
     }
+}
+
+fn peekaboo_coordinate_option(args: &[OsString]) -> Option<usize> {
+    let mut index = 1;
+    while index < args.len() {
+        if args[index] == "--" {
+            return None;
+        }
+        if args[index] == "--coords" {
+            return Some(index);
+        }
+        index += if args[index].to_str().is_some_and(takes_value) {
+            2
+        } else {
+            1
+        };
+    }
+    None
+}
+
+fn peekaboo_v4_interface() -> Option<serde_json::Value> {
+    let mut command = Command::new("peekaboo");
+    command.args(["--version", "--json", "--no-remote"]);
+    let end = deadline().min(Instant::now() + Duration::from_secs(2));
+    let Ok(output) = process::run(&mut command, end) else {
+        return None;
+    };
+    if !output.status.success() {
+        return None;
+    }
+    let Ok(version) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
+        return None;
+    };
+    let name = version["data"]["current"]
+        .as_str()?
+        .strip_prefix("Peekaboo ")?;
+    if version["success"] != true
+        || name.split('.').next() != Some("4")
+        || name.len() > 64
+        || name.split('.').count() != 3
+        || !name
+            .split('.')
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return None;
+    }
+    let source = version["data"]["sourceCommit"]
+        .as_str()
+        .filter(|text| text.len() == 40 && text.bytes().all(|b| b.is_ascii_hexdigit()));
+    Some(serde_json::json!({"version":name,"sourceCommit":source}))
 }
 
 fn process_failure_json(backend: &str, error: &process::Failure) -> String {
@@ -945,8 +1032,9 @@ fn macos_capture(command: &str, args: &[String]) -> String {
             "frontmost".into()
         }
     });
-    // No installed/version-qualified Peekaboo scope/geometry receipt producer is
-    // available. In particular, auto must never assert an actual screen extent.
+    // A requested mode alone cannot establish actual scope. Geometry is
+    // qualified separately from the helper's bound coordinate receipt; auto
+    // must never assert an actual screen extent from its requested mode.
     capture_transaction(
         &path,
         &mode,
@@ -1054,7 +1142,13 @@ where
     };
     let mut receipt =
         validated.receipt(&provider, requested_mode, actual_mode, annotation_requested);
-    geometry::attach(&mut receipt, geometry_before, requested_mode, &parsed);
+    geometry::attach(
+        &mut receipt,
+        geometry_before,
+        requested_mode,
+        &parsed,
+        &image.to_string_lossy(),
+    );
     if let Err(error) = validated.check_identity(&image, deadline()) {
         return capture_failure_json(&provider, &error);
     }

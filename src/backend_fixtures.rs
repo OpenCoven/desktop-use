@@ -25,7 +25,15 @@ impl Fixture {
     }
     pub fn tool(&self, name: &str, script: &str) {
         let file = self.root.join(name);
-        fs::write(&file, format!("#!/bin/sh\n{script}\n")).unwrap();
+        // Existing action fixtures model the legacy interface. Keep its inert
+        // version query out of scripts that intentionally treat every argv as
+        // a capture/input operation; v4 fixtures supply their own version path.
+        let version_query = if name == "peekaboo" && !script.contains("--version") {
+            r#"if [ "$1" = --version ]; then printf '%s' '{"success":true,"data":{"current":"Peekaboo 3.0.0"}}'; exit 0; fi"#
+        } else {
+            ""
+        };
+        fs::write(&file, format!("#!/bin/sh\n{version_query}\n{script}\n")).unwrap();
         fs::set_permissions(file, fs::Permissions::from_mode(0o700)).unwrap();
     }
     pub fn run(&self, config: Value) -> Value {
@@ -147,6 +155,167 @@ fn peekaboo_success_permission_denial_and_malformed_output() {
     let result = f.run(json!({"platform":"macos","args":["doctor"]}));
     assert_eq!(result["code"], "MALFORMED_OUTPUT");
     assert!(!result.to_string().contains("private-diagnostic"));
+}
+
+#[test]
+fn peekaboo_v4_screenshot_uses_pixel_only_see_and_retains_capture_flags() {
+    let f = Fixture::new();
+    f.tool("peekaboo", r#"
+if [ "$1" = --version ]; then printf '%s' '{"success":true,"data":{"current":"Peekaboo 4.9.8"}}'; exit 0; fi
+printf '%s\n' "$@" > "$FIXTURE_LOG"
+[ "$1" = see ] && [ "$2" = --no-elements ] || exit 64
+previous=; for arg in "$@"; do if [ "$previous" = --path ]; then target="$arg"; fi; previous="$arg"; done
+/bin/cp "$FIXTURE_IMAGE" "$target"
+printf '{"success":true,"data":{"screenshot_raw":"%s"}}' "$target"
+"#);
+    let result = f.run(json!({"platform":"macos","args":["screenshot","--mode","window","--window-id","123","--retina","--format","png","--path",f.root.join("capture.png")]}));
+    assert_eq!(result["ok"], true, "{result}");
+    let log = f.log();
+    assert!(log.starts_with("see\n--no-elements\n"), "{log}");
+    for required in [
+        "--mode\nwindow\n",
+        "--window-id\n123\n",
+        "--format\npng\n",
+        "--retina\n",
+        "--json\n",
+        "--no-remote\n",
+    ] {
+        assert!(log.contains(required), "missing {required}: {log}");
+    }
+    assert_eq!(
+        result["observationV1"]["primaryImage"]["sourceDimensions"]["width"],
+        32
+    );
+}
+
+#[test]
+fn peekaboo_v4_confirmed_coordinates_remain_global_and_dispatch_once() {
+    let f = Fixture::new();
+    f.tool("peekaboo", r#"
+if [ "$1" = --version ]; then printf '%s' '{"success":true,"data":{"current":"Peekaboo 4.9.8"}}'; exit 0; fi
+printf '%s\n' "$@" >> "$FIXTURE_LOG"
+printf '%s' '{"success":true,"data":{}}'
+"#);
+    let denied = f.run(
+        json!({"platform":"macos","args":["click","--coords","220,500","--app","owned.fixture"]}),
+    );
+    assert_eq!(denied["ok"], false);
+    assert!(f.log().is_empty());
+    let allowed=f.run(json!({"platform":"macos","args":["click","--coords","220,500","--app","owned.fixture","--window-id","123","--confirm"]}));
+    assert_eq!(allowed["ok"], true);
+    let log = f.log();
+    assert!(log.contains("--at\n220,500\n"), "{log}");
+    assert!(
+        log.contains("--global\n") && log.contains("--foreground\n"),
+        "{log}"
+    );
+    assert!(
+        log.contains("--app\nowned.fixture\n--window-id\n123\n"),
+        "{log}"
+    );
+    assert!(!log.contains("--coords\n"));
+    assert_eq!(log.lines().filter(|line| *line == "click").count(), 1);
+}
+
+#[test]
+fn peekaboo_v4_preserves_flag_like_selector_and_query_values() {
+    for args in [
+        vec!["click", "--query", "--coords", "--confirm"],
+        vec!["click", "--on", "--coords", "--confirm"],
+        vec![
+            "click",
+            "--coords",
+            "220,500",
+            "--window-title",
+            "--coords",
+            "--confirm",
+        ],
+    ] {
+        let f = Fixture::new();
+        f.tool("peekaboo",r#"
+if [ "$1" = --version ]; then printf '%s' '{"success":true,"data":{"current":"Peekaboo 4.9.8"}}'; exit 0; fi
+printf '%s\n' "$@" > "$FIXTURE_LOG"
+printf '%s' '{"success":true,"data":{}}'
+"#);
+        let result = f.run(json!({"platform":"macos","args":args}));
+        assert_eq!(result["ok"], true);
+        let log = f.log();
+        if args.contains(&"--query") {
+            assert!(log.ends_with("--\n--coords\n"), "{log}");
+            assert!(
+                !log.contains("--foreground\n") && !log.contains("--global\n"),
+                "{log}"
+            );
+        } else if args.contains(&"--on") {
+            assert!(log.contains("--on\n--coords\n"), "{log}");
+            assert!(
+                !log.contains("--foreground\n") && !log.contains("--global\n"),
+                "{log}"
+            );
+        } else {
+            assert!(log.contains("--at\n220,500\n"), "{log}");
+            assert!(log.contains("--window-title\n--coords\n"), "{log}");
+        }
+    }
+}
+
+#[test]
+fn peekaboo_v4_pixel_capture_geometry_is_bound_to_qualified_source_and_owned_file() {
+    for (source, window_id, expected) in [
+        ("70dbc4183f390a5a72d5dc01d8a77eb672217070", 123, "available"),
+        (
+            "0000000000000000000000000000000000000000",
+            123,
+            "unavailable",
+        ),
+        (
+            "70dbc4183f390a5a72d5dc01d8a77eb672217070",
+            456,
+            "unavailable",
+        ),
+    ] {
+        let f = Fixture::new();
+        let metadata =
+            json!({"success":true,"data":{"current":"Peekaboo 4.9.8","sourceCommit":source}});
+        let capture = json!({"success":true,"target_receipt":{"window_id":123},"data":{
+            "files":[{"path":"%s","window_id":window_id,"mime_type":"image/png"}],
+            "observations":[{"coordinates":{"coordinate_space":"global_display_points","image_size_pixels":{"width":32,"height":24},"logical_bounds":[[120,388],[32,24]],"scale_factor":1,"screen_index":0},"target":{"resolved_kind":"window-id","window_id":123,"bounds":[[120,388],[32,24]]}}]
+        }});
+        f.tool("peekaboo", &format!(r#"
+if [ "$1" = --version ]; then printf '%s' '{}'; exit 0; fi
+previous=; for arg in "$@"; do if [ "$previous" = --path ]; then target="$arg"; fi; previous="$arg"; done
+/bin/cp "$FIXTURE_IMAGE" "$target"
+printf '{}' "$target"
+"#, metadata, capture));
+        let result = f.run(json!({"platform":"macos","args":["screenshot","--mode","window","--window-id","123","--path",f.root.join("capture.png")]}));
+        assert_eq!(result["ok"], true, "{result}");
+        assert_eq!(
+            result["observationV1"]["geometry"]["state"], expected,
+            "{result}"
+        );
+        if expected == "available" {
+            assert_eq!(
+                result["observationV1"]["geometry"]["regions"][0]["desktopRect"]["x"],
+                120.0
+            );
+            assert_eq!(result["observationV1"]["provider"]["version"], "4.9.8");
+        }
+    }
+}
+
+#[test]
+fn peekaboo_version_probe_never_publishes_nonidentity_diagnostics() {
+    let f = Fixture::new();
+    f.tool("peekaboo",r#"
+if [ "$1" = --version ]; then printf '%s' '{"success":true,"data":{"current":"Peekaboo 4.9.8","sourceCommit":{"private":"private-version-diagnostic"}}}'; exit 0; fi
+previous=; for arg in "$@"; do if [ "$previous" = --path ]; then target="$arg"; fi; previous="$arg"; done
+/bin/cp "$FIXTURE_IMAGE" "$target"
+printf '%s' '{"success":true,"data":{}}'
+"#);
+    let result = f
+        .run(json!({"platform":"macos","args":["screenshot","--path",f.root.join("capture.png")]}));
+    assert_eq!(result["ok"], true);
+    assert!(!result.to_string().contains("private-version-diagnostic"));
 }
 
 #[test]
