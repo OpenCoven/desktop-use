@@ -212,7 +212,7 @@ function createTool(options: CreateComputerUseToolOptions, legacyTool = false) {
             };
           } else {
             const boundedAdapter: AdapterRunner = (args, request) => runAdapter(args, request, controller.signal);
-            details = await executeAllowedAction(params, ctx, boundedAdapter, controller.signal, image => images.push(image), actionPermissions);
+            details = await executeAllowedAction(params, ctx, actionPermissions, boundedAdapter, controller.signal, image => images.push(image));
             if (normalizeComputerUseAction(params.action) === "health") {
               details.actionPermissions = { scope: "adapter-eligibility", ...actionPermissions, gatewayAuthorization: "not-reported" };
             }
@@ -257,10 +257,10 @@ export function createDesktopUseTool(options: CreateComputerUseToolOptions = {})
 async function executeAllowedAction(
   params: ComputerUseParams,
   ctx: ComputerUsePolicyContext,
+  permissions: ActionPermissions,
   runAdapter: AdapterRunner,
   signal?: AbortSignal,
   onImage?: (image: ObservationImage) => void,
-  actionPermissions: ActionPermissions = resolveActionPermissions(),
 ): Promise<ToolResult["details"]> {
   const action = normalizeComputerUseAction(params.action);
   const evidence = {
@@ -275,7 +275,7 @@ async function executeAllowedAction(
       : undefined;
     const raw = observation ? observation.raw : await runAdapterWithTransientObservationRetry(buildAdapterArgs(params), params, runAdapter, action);
     if (observation?.image) onImage?.(observation.image);
-    if (action === "doctor") return discoveryResult(raw, ctx, actionPermissions, "doctor");
+    if (action === "doctor") return discoveryResult(raw, ctx, permissions, "doctor");
     const safe = action === "type-text" ? redactTypeDiagnostics(decodeAdapterAction(raw)) : raw;
     const normalized = normalizeAdapterResult(safe, { evidence });
     return {
@@ -288,7 +288,7 @@ async function executeAllowedAction(
 
   switch (action) {
     case "health":
-      return runHealth(ctx, runAdapter, params, actionPermissions);
+      return runHealth(ctx, runAdapter, params, permissions);
     case "stop":
       return stopComputerUse(ctx);
     case "shell":
@@ -319,6 +319,24 @@ async function executeAllowedAction(
 }
 
 async function runHealth(ctx: ComputerUsePolicyContext, runAdapter: AdapterRunner, params: ComputerUseParams, permissions: ActionPermissions): Promise<ToolResult["details"]> {
+  if (!isActionAllowed(permissions, "doctor")) {
+    // A trusted policy skip is not an adapter response or a failed native probe.
+    const hostEvidence = await discoverCapabilityHost();
+    const capabilitiesV1 = buildPluginCapabilities(undefined, hostEvidence, permissions);
+    return {
+      action: "health",
+      agent: COMPUTER_USE_AGENT,
+      healthCheck: COMPUTER_USE_HEALTH_CHECK,
+      auditLog: resolveComputerUseAuditLogPath(ctx),
+      status: "blocked",
+      success: false,
+      code: "ACTION_PROFILE_DENIED",
+      reason: "The doctor probe was not run because doctor is disabled by trusted action permissions.",
+      adapterProbe: { action: "doctor", status: "skipped", code: "ACTION_PROFILE_DENIED" },
+      capabilitiesV1,
+      adapterInvocation: { ...hostEvidence.adapter, version: null, phase: "before-start", processStarted: false, code: "ACTION_PROFILE_DENIED" },
+    };
+  }
   let adapterResult: unknown;
   try {
     adapterResult = await runAdapterWithTransientObservationRetry(["doctor"], { action: "doctor", timeoutMs: params.timeoutMs }, runAdapter, "health");
@@ -330,10 +348,8 @@ async function runHealth(ctx: ComputerUsePolicyContext, runAdapter: AdapterRunne
   return discoveryResult(adapterResult, ctx, permissions, "health");
 }
 
-async function discoveryResult(adapterResult: unknown, ctx: ComputerUsePolicyContext, permissions: ActionPermissions, action: "health" | "doctor"): Promise<ToolResult["details"]> {
+async function discoverCapabilityHost(): Promise<HostEvidence> {
   const adapterBin = resolveAdapterBin();
-  let outcome: CapabilityOutcome = adapterResult && typeof adapterResult === "object" ? adapterOutcomes.get(adapterResult) ?? { phase: "adapter" } : { phase: "output", code: "MALFORMED_OUTPUT" };
-  const normalized = normalizeAdapterResult(adapterResult, { evidence: action === "health" ? { action, adapter: adapterBin } : { action, agentId: ctx.agentId ?? COMPUTER_USE_AGENT.id, sessionKey: ctx.sessionKey } });
   const selected = isAbsolute(adapterBin) || adapterBin.includes("/") ? resolve(adapterBin) : installedBinary(adapterBin);
   const hostName = platform();
   const session = process.env.XDG_SESSION_TYPE?.toLowerCase();
@@ -342,6 +358,14 @@ async function discoveryResult(adapterResult: unknown, ctx: ComputerUsePolicyCon
     adapter: { configuredPath: adapterBin, resolvedPath: selected ? await realpath(selected).catch(() => null) : null }, integrations: {}, observedAtMs: Date.now(),
   };
   hostEvidence.integrations = discoverHostIntegrations(hostName, process.env, installedBinary, hostEvidence.observedAtMs!);
+  return hostEvidence;
+}
+
+async function discoveryResult(adapterResult: unknown, ctx: ComputerUsePolicyContext, permissions: ActionPermissions, action: "health" | "doctor"): Promise<ToolResult["details"]> {
+  const adapterBin = resolveAdapterBin();
+  let outcome: CapabilityOutcome = adapterResult && typeof adapterResult === "object" ? adapterOutcomes.get(adapterResult) ?? { phase: "adapter" } : { phase: "output", code: "MALFORMED_OUTPUT" };
+  const normalized = normalizeAdapterResult(adapterResult, { evidence: action === "health" ? { action, adapter: adapterBin } : { action, agentId: ctx.agentId ?? COMPUTER_USE_AGENT.id, sessionKey: ctx.sessionKey } });
+  const hostEvidence = await discoverCapabilityHost();
   let capabilitiesV1;
   let compatibilityError: string | undefined;
   try { capabilitiesV1 = buildPluginCapabilities(adapterResult, hostEvidence, permissions); }
