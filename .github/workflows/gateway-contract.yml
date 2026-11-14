@@ -10,6 +10,7 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'vendor/**'
+      - 'scripts/gateway-action-batches*.mjs'
       - 'index.ts'
       - 'src/**'
       - 'agents/**'

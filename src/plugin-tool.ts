@@ -211,7 +211,7 @@ function createTool(options: CreateComputerUseToolOptions, legacyTool = false) {
             };
           } else {
             const boundedAdapter: AdapterRunner = (args, request) => runAdapter(args, request, controller.signal);
-            details = await executeAllowedAction(params, ctx, boundedAdapter, controller.signal, image => images.push(image));
+            details = await executeAllowedAction(params, ctx, actionPermissions, boundedAdapter, controller.signal, image => images.push(image));
             if (normalizeComputerUseAction(params.action) === "health") {
               details.actionPermissions = { scope: "adapter-eligibility", ...actionPermissions, gatewayAuthorization: "not-reported" };
             }
@@ -255,6 +255,7 @@ export function createDesktopUseTool(options: CreateComputerUseToolOptions = {})
 async function executeAllowedAction(
   params: ComputerUseParams,
   ctx: ComputerUsePolicyContext,
+  permissions: ActionPermissions,
   runAdapter: AdapterRunner,
   signal?: AbortSignal,
   onImage?: (image: ObservationImage) => void,
@@ -284,7 +285,7 @@ async function executeAllowedAction(
 
   switch (action) {
     case "health":
-      return runHealth(ctx, runAdapter, params, signal);
+      return runHealth(ctx, permissions, runAdapter, params, signal);
     case "stop":
       return stopComputerUse(ctx);
     case "shell":
@@ -314,7 +315,23 @@ async function executeAllowedAction(
   }
 }
 
-async function runHealth(ctx: ComputerUsePolicyContext, runAdapter: AdapterRunner, params: ComputerUseParams, _signal?: AbortSignal): Promise<ToolResult["details"]> {
+async function runHealth(ctx: ComputerUsePolicyContext, permissions: ActionPermissions, runAdapter: AdapterRunner, params: ComputerUseParams, _signal?: AbortSignal): Promise<ToolResult["details"]> {
+  const localHealth = {
+    action: "health",
+    agent: COMPUTER_USE_AGENT,
+    healthCheck: COMPUTER_USE_HEALTH_CHECK,
+    auditLog: resolveComputerUseAuditLogPath(ctx),
+  };
+  if (!isActionAllowed(permissions, "doctor")) {
+    return {
+      ...localHealth,
+      status: "blocked",
+      success: false,
+      code: "ACTION_PROFILE_DENIED",
+      reason: "The doctor probe was not run because doctor is disabled by trusted action permissions.",
+      adapterProbe: { action: "doctor", status: "skipped", code: "ACTION_PROFILE_DENIED" },
+    };
+  }
   const adapterBin = resolveAdapterBin();
   let adapterResult: unknown;
   try {
@@ -332,10 +349,7 @@ async function runHealth(ctx: ComputerUsePolicyContext, runAdapter: AdapterRunne
   });
   return {
     ...normalized,
-    action: "health",
-    agent: COMPUTER_USE_AGENT,
-    healthCheck: COMPUTER_USE_HEALTH_CHECK,
-    auditLog: resolveComputerUseAuditLogPath(ctx),
+    ...localHealth,
     repairHints: [
       missingAdapterHint(adapterBin),
       `Run ${COMPUTER_USE_TOOL_NAME} action=doctor after granting Screen Recording and Accessibility.`,

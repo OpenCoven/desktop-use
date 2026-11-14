@@ -22,8 +22,8 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test:ts": "tsx --test src/**/*.test.ts",
-    "check": "pnpm run typecheck && pnpm run test:ts && pnpm run test:gateway-fixture && pnpm run check:plugin-runtime-imports && cargo test",
+    "test:ts": "tsx --test src/**/*.test.ts scripts/*.test.mjs",
+    "check": "pnpm run typecheck && pnpm run test:ts && pnpm run check:plugin-runtime-imports && cargo test",
     "check:plugin-runtime-imports": "node scripts/check-plugin-runtime-imports.mjs",
     "test:gateway-fixture": "node --test scripts/gateway-image-fixture.test.mjs"
   },

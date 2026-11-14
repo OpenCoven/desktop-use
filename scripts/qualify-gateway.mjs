@@ -1,5 +1,6 @@
 import { createImageFixture, inspectProviderImage } from "./gateway-image-fixture.mjs";
 import { COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME } from "../src/tool-names.ts";
+import { buildRestrictedBatch, batchCallId, callName } from "./gateway-action-batches.mjs";
 // Real pinned gateway + local deterministic model transport; no live provider or desktop input.
 import assert from "node:assert/strict";
 import { createServer, request as httpRequest } from "node:http";
@@ -42,8 +43,6 @@ const WebSocket = hostRequire("ws");
 assert.equal(process.env.OPENCLAW_IMAGE_BACKEND ?? "sharp", "sharp", "Frame qualification requires the pinned Sharp backend");
 assert.equal(hostRequire("sharp/package.json").version, "0.34.5");
 await save("host-image-identity.json", { host, openclawVersion: pkg.version, sharpVersion: "0.34.5", nodeVersion: process.version, imageBackend: "sharp" });
-// Host replay normalizes tool-call ids; keep batched fixture ids alphanumeric.
-const batchCallId = name => `call${name.replace(/[^a-zA-Z0-9]/g, "")}`;
 const cases = new Map();
 const requests = [];
 const modelErrors = [];
@@ -155,7 +154,7 @@ const log = await open(join(root, "console.log"), "w", 0o600);
 const env = Object.fromEntries(["PATH", "TMPDIR", "LANG", "USER"].filter(k => process.env[k]).map(k => [k, process.env[k]]));
 const unavailableAdapter = join(root, "deliberately-unavailable-desktop-adapter");
 await assert.rejects(access(unavailableAdapter), { code: "ENOENT" });
-Object.assign(env, { OPENCLAW_IMAGE_BACKEND: process.env.OPENCLAW_IMAGE_BACKEND ?? "sharp", OPENCLAW_STATE_DIR: join(root, "state"), OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_HOME: join(root, "home"), OPENCLAW_PLUGIN_LOAD_PROFILE: "1", OPENCLAW_LIVE_GATEWAY: "1", OPENCLAW_LIVE_GATEWAY_PROVIDERS: "qualification", COVEN_DESKTOP_USE_BIN: imageFixture.adapter });
+Object.assign(env, { COVEN_HOME: join(root, "coven"), OPENCLAW_IMAGE_BACKEND: process.env.OPENCLAW_IMAGE_BACKEND ?? "sharp", OPENCLAW_STATE_DIR: join(root, "state"), OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_HOME: join(root, "home"), OPENCLAW_PLUGIN_LOAD_PROFILE: "1", OPENCLAW_LIVE_GATEWAY: "1", OPENCLAW_LIVE_GATEWAY_PROVIDERS: "qualification", COVEN_DESKTOP_USE_BIN: imageFixture.adapter });
 await save("action-permissions.json", { profile, trustedConfig: permissionConfigs[profile], expectedActions: profileActions, expectedAliases: visibleAliases });
 await save("adapter-fixture.json", { mode: "synthetic-capture-only-when-harness-enabled", nativePlatform: process.platform, realRustBinary: imageFixture.binary, nonCaptureUnavailable: true, graphicalEffects: false, liveProvider: false });
 // Refuse to start a gateway if this package would escape the explicit state root.
@@ -318,20 +317,13 @@ try {
       "browser-open": { url: "https://example.invalid/qualification" }, "app-launch": { app: "desktopuse-nonexistent-fixture" },
     };
     await writeFile(join(workspace, "observation.txt"), "local observation fixture");
-    const allowedActions = ["stop", "health", "doctor", "inspect", "screenshot", "file-list", "file-read"].filter(action => profileActions.includes(action));
-    const deniedActions = [...canonicalActions, ...Object.keys(legacyActions)].filter(action => !profileActions.includes(legacyActions[action] ?? action));
-    const gatedActions = profile === "desktop-only" ? ["clipboard-read", "clipboard-write", "browser-open", "app-launch", "type", "press"] : [];
-    const callName = (kind, action) => `restricted-${kind}-${action}`;
-    const calls = [
-      ...allowedActions.filter(action => action !== "stop").map(action => ({ name: callName("allowed", action), args: { action, ...fixtures[action] } })),
-      ...deniedActions.map(action => ({ name: callName("denied", action), args: { action, ...fixtures[legacyActions[action] ?? action], confirm: true } })),
-      ...gatedActions.map(action => ({ name: callName("gated", action), args: { action, ...fixtures[legacyActions[action] ?? action], confirm: true } })),
-    ];
+    const { allowedActions, deniedActions, gatedActions, calls, approvalCalls } = buildRestrictedBatch(profileActions, fixtures);
+    assert.deepEqual([...calls.map(call => call.args.action), "stop"].sort(), [...canonicalActions, ...Object.keys(legacyActions)].sort(), "Each compatible action must occur exactly once across the batch and separate Stop");
     assert.equal(new Set([...calls.map(call => batchCallId(call.name)), batchCallId(callName("allowed", "stop"))]).size, calls.length + 1, "Each batched tool-call id must be unique");
     // A single real agent turn avoids rebuilding the unchanged provider catalog
     // for each vocabulary item. Every tool call keeps its own id and receipt.
     const batch = await runCase("restricted-matrix", { action: "stop" }, gatedActions.length ? "deny" : "none", session, COMPUTER_USE_TOOL_NAME,
-      { calls, stopAfterBatch: true, approvalCalls: gatedActions.map(action => callName("gated", action)) });
+      { calls, stopAfterBatch: true, approvalCalls });
     const resultFor = async (kind, action) => {
       const name = callName(kind, action);
       const message = batch.history.messages?.find(message => message.role === "toolResult" && message.toolCallId === batchCallId(name));
@@ -342,7 +334,7 @@ try {
     const allowed = [];
     for (const action of allowedActions) {
       const details = JSON.parse(await resultFor("allowed", action));
-      assert.equal(details.status, ["health", "doctor", "inspect", "screenshot"].includes(action) ? "error" : "success");
+      assert.equal(details.status, ["health", "doctor", "inspect", "screenshot"].includes(legacyActions[action] ?? action) ? "error" : "success");
       if (action === "health") {
         assert.deepEqual(details.actionPermissions.allowedActions, profileActions);
         assert.equal(details.actionPermissions.gatewayAuthorization, "not-reported");
@@ -356,7 +348,10 @@ try {
       assert.equal(batch.events.some(event => event.event === "plugin.approval.requested" && event.payload.request.toolCallId === batchCallId(callName("denied", action))), false);
       denied.push({ action, canonical: legacyActions[action] ?? action, modelDenied: true, approvalRequested: false });
     }
-    for (const action of gatedActions) assert.equal(JSON.parse(await resultFor("gated", action)).error, "Denied by user");
+    for (const action of gatedActions) {
+      assert.equal(batch.events.filter(event => event.event === "plugin.approval.requested" && event.payload.request.toolCallId === batchCallId(callName("gated", action))).length, 1, `Exactly one approval despite model confirmation: ${action}`);
+      assert.equal(JSON.parse(await resultFor("gated", action)).error, "Denied by user");
+    }
     // Direct HTTP bypasses model schema validation. Representative excluded
     // shell/file/clipboard/launch families must still meet the trusted hook ceiling.
     const direct = [];
