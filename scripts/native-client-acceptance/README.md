@@ -67,11 +67,20 @@ NATIVE_ACCEPTANCE_ROOT=/owned/negative-mcp node /owned/consumer/mcp-security.mjs
 
 The active-cancellation outer guard adopts detached descendants as a Linux subreaper and terminates/reaps every owned descendant before resuming the same dedicated Xvfb server. It also handles SIGTERM and SIGINT; a cleanup failure retains the exclusive display lease for recovery and must not be treated as a pass. Capture cases check actual helper liveness, cancellation/timeout, reaping and destination preservation. Input cases require a matching ready fixture, successful focus, observed input before Stop and no later fixture input. A failed input case remains failed even when its helper was reaped; preserve held-key and event-timestamp evidence. Never disable auto-repeat to mask that result. On failure, release only synthetic keys introduced by the test in this isolated display and verify that key state and fixture counters return to a stable baseline before another owner uses it.
 
+For the separate native OpenClaw driver, `gtk-openclaw-state.mjs` projects this GTK fixture into a flat counter/window receipt without changing the fixture or exposing raw event contents. Supply the observed owned Xvfb PID as `FIXTURE_XVFB_PID`; the output must be a new private path. Keep the bridge running through the exclusive fixture lease.
+
+```sh
+node /owned/acceptance/gtk-openclaw-state.mjs /owned/fixture-client-state.json /owned/client-fixture.pid /owned/fixture/fixture.py "$FIXTURE_XVFB_PID" /owned/new-openclaw-fixture-state.json --owned-disposable-display
+```
+
+Each bridge observation binds live fixture/server process start identities, the actual Python fixture invocation and display, matching active-window/PID probes, and independent borderless X11 geometry matching GTK origin/extent at both ends of acquisition. Geometry and identities must stay stable within a one-second acquisition budget; timestamps retain acquisition start. Sampling is a bounded stability check, not an atomic desktop snapshot. The bridge exports counts, fixed fixture target bounds, process identities and freshness metadata, and invalidates its output on failure or handled termination. The OpenClaw consumer must independently require the selected bridge script/hash, live bridge and GTK identities, and a receipt no older than one second after all asynchronous validation. A stale state file cannot substitute for a live oracle. These source/contract checks establish no native/provider-chain or Stop acceptance until the real owned run is observed.
+
 The non-native verifier and identity tests can run without launching a fixture. The process-guard regression requires Linux but no graphical session; it checks actual detached descendants after normal parent exit and after a parent timeout.
 
 ```sh
 python3 -m unittest scripts/native-client-acceptance/test_image_proof.py
 node --test scripts/native-client-acceptance/identity-preflight.test.mjs
+node --test scripts/native-client-acceptance/gtk-openclaw-state.test.mjs
 python3 scripts/native-client-acceptance/test_owned_process_guard.py
 ```
 
