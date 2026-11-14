@@ -72,6 +72,21 @@ test("the approval hook keeps a sessionless context apart from an empty session 
   assert.equal(empty.params?.path, join(second, "note.txt"));
 });
 
+test("inventory and model sessions retain their own workspaces for the same agent", async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "desktopuse-inventory-scope-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const inventory = join(root, "inventory"), workspace = join(root, "workspace");
+  await mkdir(inventory); await mkdir(workspace);
+  const agentId = "legacy-qualification";
+  const inventorySession = { agentId, sessionKey: "agent:legacy-qualification:inventory", workspaceDir: inventory };
+  const modelSession = { agentId, sessionKey: "agent:legacy-qualification:qualification", workspaceDir: workspace };
+  const hook = hookFor([inventorySession, modelSession]);
+  const result = await hook({ toolName: DESKTOP_USE_TOOL_NAME, params: { action: "file-write", path: "note.txt", content: "fixture" } }, modelSession) as any;
+  assert.equal(result.params?.path, join(workspace, "note.txt"));
+  assert.ok(result.requireApproval);
+  result.requireApproval.onResolution("deny");
+});
+
 for (const toolName of [COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME]) {
   test(`${toolName} file approval never borrows another session's factory context`, async t => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "desktopuse-missing-scope-")));

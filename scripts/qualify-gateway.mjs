@@ -680,7 +680,10 @@ try {
   assert.equal(toolResult(rebind.history).status, "needsApproval"); await noFile(join(rebound, "note.txt"));
   const legacySession = "agent:legacy-qualification:qualification";
   await rpc("sessions.patch", { key: legacySession });
-  const legacyInventory = await rpc("tools.effective", { sessionKey: legacySession }); await save("legacy-effective-tools.json", legacyInventory);
+  // Inventory and model dispatch can construct tools with different workspaces.
+  const legacyInventorySession = "agent:legacy-qualification:inventory";
+  await rpc("sessions.patch", { key: legacyInventorySession });
+  const legacyInventory = await rpc("tools.effective", { sessionKey: legacyInventorySession }); await save("legacy-effective-tools.json", legacyInventory);
   assert.deepEqual(legacyInventory.groups.flatMap(g => g.tools.map(t => t.id)), [DESKTOP_USE_TOOL_NAME]);
   const legacy = await runCase("legacy-denied", { action: "file-write", path: "legacy.txt", content: secret, confirm: true }, "deny", legacySession, DESKTOP_USE_TOOL_NAME);
   await noFile(join(legacyWorkspace, "legacy.txt"));
