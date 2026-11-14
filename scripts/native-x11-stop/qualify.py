@@ -9,7 +9,8 @@ from pathlib import Path
 import signal
 import subprocess
 import time
-from x11_state import clock_bounds, clock_delta
+from owned_process_guard import install_recovery_handlers, begin_recovery
+from x11_state import clock_bounds, clock_delta, unproven_post_settlement_events
 
 
 def main():
@@ -18,7 +19,9 @@ def main():
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--server-pid", type=int, required=True)
     parser.add_argument("--fixture-pid", type=int, required=True)
+    parser.add_argument("--interrupt-after-held-key", action="store_true", help="Exercise real SIGTERM recovery after the first held-key boundary.")
     args = parser.parse_args()
+    install_recovery_handlers()
     from datetime import datetime, timezone
     expires = datetime.fromisoformat(args.lease_expires.replace("Z", "+00:00"))
     assert datetime.now(timezone.utc).timestamp() + 90 < expires.timestamp(), "lease too short"
@@ -127,6 +130,7 @@ def main():
         for key in preheld:
             own_key(key, True)
         expected = keys()
+        event_cursor = len(fixture()["keys"])
         sample = "a" * 4000 + ("b" if 56 in concurrent else "")
         proc = subprocess.Popen([args.adapter, "type-text", "--text", sample, "--timeout-ms", "1000" if mode == "timeout" else "15000", "--confirm"],
                                 env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
@@ -155,9 +159,14 @@ def main():
                     helper = None
                     continue
                 if 38 in keys():
-                    paused = True
-                    break
-                os.kill(helper[0], signal.SIGCONT)
+                    # Require a stable held boundary before cancellation, rather
+                    # than racing a paired key-up already queued by the helper.
+                    time.sleep(.025)
+                    if child_identity(helper[0]) == helper[1] and 38 in keys():
+                        paused = True
+                        break
+                if child_identity(helper[0]) == helper[1]:
+                    os.kill(helper[0], signal.SIGCONT)
             time.sleep(.001)
         assert paused, "did not observe the actual helper holding the intended key"
         if 38 not in expected:
@@ -165,6 +174,8 @@ def main():
         for key in concurrent:
             own_key(key, True)
             expected.add(key)
+        if args.interrupt_after_held_key:
+            os.kill(os.getpid(), signal.SIGTERM)
         if mode == "cancel":
             os.kill(proc.pid, signal.SIGTERM)
         elif mode == "helper-failure":
@@ -183,12 +194,18 @@ def main():
         if not expected:
             before = len(fixture()["keys"])
             time.sleep(.75)
-            events = fixture()["keys"][before:]
-            queued = sum(clock_delta(event["serverTimeMs"], returned_ms) <= offset_lower for event in events)
-            late = len(events) - queued
+            all_events = fixture()["keys"]
+            events = all_events[before:]
+            queued = sum(clock_delta(event["serverTimeMs"], returned_ms) < offset_lower for event in events)
+            late = unproven_post_settlement_events(all_events, event_cursor, returned_ms, offset_lower)
+            if late:
+                receipt["unprovenEventTiming"] = {"case": mode, "settledMonotonicMs": returned_ms,
+                    "eventCursorBeforeInput": event_cursor, "eventsClassified": len(all_events) - event_cursor,
+                    "serverClockDeltaMs": [clock_delta(event["serverTimeMs"], returned_ms)
+                        for event in all_events[event_cursor:] if clock_delta(event["serverTimeMs"], returned_ms) >= offset_lower]}
             assert late == 0, "new or ambiguously timed fixture events after cancellation settled"
         results.append({"case": mode, "preheldKeyCount": len(preheld), "concurrentKeyCount": len(concurrent), "concurrentKeyAlsoOccursLaterInRequest": 56 in concurrent,
-                        "actualHeldKeyObserved": True, "helperReaped": True, "keyStatePreserved": True,
+                        "actualHeldKeyObserved": True, "heldBoundaryStableMs": 25, "helperReaped": True, "keyStatePreserved": True,
                         "postReturnGeneratedOrAmbiguousEvents": late, "queuedPreReturnEventsDeliveredLater": queued,
                         "settlementMs": returned_ms - round(started * 1000),
                         "inputCleanup": result["inputCleanup"], "passed": True})
@@ -213,6 +230,17 @@ def main():
                             "modifierPresses": 1, "visibleKeyEvents": len(events), "preheldStatePreserved": True, "passed": True})
             own_key(50, False)
             settle()
+        before = len(fixture()["keys"])
+        outcome = invoke(args.adapter, "keypress", "--keys", "tab,return,ctrl+a", "--confirm")
+        assert outcome["ok"] and outcome["inputCleanup"]["state"] == "verified"
+        settle()
+        events = fixture()["keys"][before:]
+        assert any(event["name"] == "Tab" for event in events)
+        assert any(event["name"] == "Return" for event in events)
+        assert any(event["name"] == "a" and event["text"] == "\x01" for event in events)
+        assert keys() == initial
+        results.append({"case": "keypress-and-chord", "observedFixtureMatch": True, "keyStateRestored": True,
+                        "inputCleanup": outcome["inputCleanup"], "passed": True})
         for mode, preheld, concurrent in (("cancel", (), ()), ("timeout", (), ()), ("helper-failure", (), ()),
                                           ("cancel", (50,), ()), ("cancel", (38,), ()), ("cancel", (), (56,))):
             stop_held(mode, preheld, concurrent)
@@ -270,6 +298,7 @@ def main():
         # Resume only this lease's exact server before any synchronous state query.
         if server.exists() and server.joinpath("stat").read_text().rsplit(")", 1)[1].split()[19] == server_start:
             os.kill(args.server_pid, signal.SIGCONT)
+        begin_recovery()
         for proc in processes:
             if proc.poll() is None:
                 os.kill(proc.pid, signal.SIGTERM)

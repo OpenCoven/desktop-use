@@ -189,7 +189,7 @@ async function executeAllowedAction(
     const raw = observation ? observation.raw : await runAdapterWithTransientObservationRetry(buildAdapterArgs(params), params, runAdapter, action);
     if (observation?.image) onImage?.(observation.image);
     if (action === "doctor") return discoveryResult(raw, ctx, actionPermissions, "doctor", discovery);
-    const safe = action === "type-text" ? redactTypeDiagnostics(decodeAdapterAction(raw)) : raw;
+    const safe = ["type-text", "keypress"].includes(action) ? redactTypeDiagnostics(decodeAdapterAction(raw)) : raw;
     const normalized = normalizeAdapterResult(safe, { evidence });
     return {
       ...normalized,
@@ -523,7 +523,7 @@ async function runAdapterBinary(args: string[], params: ComputerUseParams, signa
       adapterOutcomes.set(invalid, { phase: "output", processStarted: true, code: "MALFORMED_OUTPUT" }); return invalid;
     }
     adapterOutcomes.set(result as object, { phase: "adapter", processStarted: true });
-    return normalizeComputerUseAction(params.action) === "type-text" ? redactTypeDiagnostics(result) : result;
+    return ["type-text", "keypress"].includes(normalizeComputerUseAction(params.action)) ? redactTypeDiagnostics(result) : result;
   } catch (error) {
     const code = error instanceof ProcessFailure || error instanceof FileActionError ? error.code : "BACKEND_ERROR";
     const failure = { ok: false, code, error: "Adapter execution failed; raw diagnostics withheld.",
@@ -540,6 +540,7 @@ function redactTypeDiagnostics(value: unknown): unknown {
   if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, code: "MALFORMED_OUTPUT" };
   const record = value as Record<string, unknown>;
   const fields: Record<string, unknown> = {};
+  if (typeof record.platform === "string" && ["macos", "linux", "windows"].includes(record.platform)) fields.platform = record.platform;
   for (const key of ["ok", "supported", "requiresConfirmation", "timedOut", "cancelled", "partial", "progressUnknown", "inputMayHaveStarted"]) {
     if (typeof record[key] === "boolean") fields[key] = record[key];
   }
@@ -550,7 +551,7 @@ function redactTypeDiagnostics(value: unknown): unknown {
   const inputCleanup = validatedInputCleanup(record.inputCleanup);
   if (inputCleanup) fields.inputCleanup = inputCleanup;
   else if (record.inputCleanup !== undefined || record.code === "CANCELLED" || record.code === "ETIMEDOUT") fields.inputCleanup = { schemaVersion: 1, state: "unverified", reasonCode: "ADAPTER_RESULT_UNAVAILABLE" };
-  if (["peekaboo", "xdotool", "ydotool", "wtype", "linux"].includes(String(record.backend))) fields.backend = record.backend;
+  if (typeof record.backend === "string" && ["peekaboo", "xdotool", "ydotool", "wtype", "linux"].includes(record.backend)) fields.backend = record.backend;
   const codes = ["ENOENT", "EACCES", "ETIMEDOUT", "CANCELLED", "OUTPUT_LIMIT", "PROCESS_ERROR", "MALFORMED_OUTPUT", "BACKEND_ERROR", "PERMISSION_ERROR"];
   if (typeof record.code === "string") fields.code = codes.includes(record.code) ? record.code : "BACKEND_ERROR";
   if (Array.isArray(record.steps)) fields.steps = record.steps.map(redactTypeDiagnostics);

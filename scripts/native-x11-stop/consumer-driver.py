@@ -9,7 +9,8 @@ from pathlib import Path
 import signal
 import subprocess
 import time
-from x11_state import clock_bounds, clock_delta
+from owned_process_guard import install_recovery_handlers, begin_recovery
+from x11_state import clock_bounds, clock_delta, unproven_post_settlement_events
 
 
 def main():
@@ -19,6 +20,7 @@ def main():
     parser.add_argument('--fixture-pid', type=int, required=True)
     parser.add_argument('--server-pid', type=int, required=True)
     args = parser.parse_args()
+    install_recovery_handlers()
     from datetime import datetime, timezone
     assert datetime.now(timezone.utc).timestamp() + 120 < datetime.fromisoformat(args.lease_expires.replace('Z', '+00:00')).timestamp()
     assert hashlib.sha256(Path(args.adapter).read_bytes()).hexdigest() == args.native_sha256
@@ -77,32 +79,40 @@ def main():
                             except ProcessLookupError:
                                 continue
                             if 38 in keys():
-                                held = (pid, birth); owned_helpers.add(held); break
-                            os.kill(pid, signal.SIGCONT)
+                                time.sleep(.025)
+                                if identity(pid) == birth and 38 in keys():
+                                    held = (pid, birth); owned_helpers.add(held); break
+                            if identity(pid) == birth:
+                                os.kill(pid, signal.SIGCONT)
                 if held:
                     workspace.joinpath('held-key-observed').write_text('ready')
                     break
                 time.sleep(.001)
             assert held, 'real held-key boundary not observed'
             out, err = current.communicate(timeout=15)
-            returned_ms = time.monotonic_ns() // 1_000_000
             assert current.returncode == 0, 'packed consumer assertion failed: ' + err.decode()[-1000:]
             assert not out and not err
             assert not Path(f'/proc/{held[0]}').exists(), 'input helper was not reaped'
             assert not keys(), 'key remained held after packed consumer settlement'
             result = json.loads(workspace.joinpath('consumer-receipt.json').read_text())
             settled = len(fixture()['keys']); time.sleep(.75)
-            late_events = fixture()['keys'][settled:]
-            queued = sum(clock_delta(event['serverTimeMs'], returned_ms) <= offset_lower for event in late_events)
+            events = fixture()['keys']
+            returned_ms = result['resultSettledMonotonicMs']
+            action_events = events[result['eventCursorBeforeInput']:]
+            late_events = events[settled:]
+            queued = sum(clock_delta(event['serverTimeMs'], returned_ms) < offset_lower for event in late_events)
+            post_settlement = unproven_post_settlement_events(events, result['eventCursorBeforeInput'], returned_ms, offset_lower)
             result.update({'actualHeldKeyObserved': True, 'helperReaped': True, 'keyStateRestored': True,
+                           'heldBoundaryStableMs': 25,
                            'queuedPreReturnEventsDeliveredLater': queued,
-                           'postReturnGeneratedOrAmbiguousEvents': len(late_events) - queued})
+                           'postReturnGeneratedOrAmbiguousEvents': post_settlement, 'allInputEventsClassified': len(action_events)})
             receipt['cases'].append(result)
             assert result['postReturnGeneratedOrAmbiguousEvents'] == 0
         receipt['success'] = True
     finally:
         if server.exists() and server.joinpath('stat').read_text().rsplit(')', 1)[1].split()[19] == server_birth:
             os.kill(args.server_pid, signal.SIGCONT)
+        begin_recovery()
         if current and current.poll() is None:
             os.kill(current.pid, signal.SIGTERM)
             try:

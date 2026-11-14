@@ -35,10 +35,32 @@ fn wait(fd: libc::c_int, events: libc::c_short) {
 }
 
 impl TextHelper {
+    pub(super) fn start_guarded(
+        helper: &Path,
+        characters: &[char],
+        deadline: Instant,
+        guardian: &super::guard::PrivateChild,
+    ) -> Result<(Self, usize), Failure> {
+        Self::start_with(helper, characters, deadline, |command| {
+            guardian.attach(command, deadline)
+        })
+    }
+    pub(super) fn input_fd(&self) -> i32 {
+        self.input.as_ref().unwrap().as_raw_fd()
+    }
+    #[cfg(test)]
     pub(super) fn start(
         helper: &Path,
         characters: &[char],
         deadline: Instant,
+    ) -> Result<(Self, usize), Failure> {
+        Self::start_with(helper, characters, deadline, |_| {})
+    }
+    fn start_with(
+        helper: &Path,
+        characters: &[char],
+        deadline: Instant,
+        mut configure: impl FnMut(&mut Command),
     ) -> Result<(Self, usize), Failure> {
         let mut length = characters.len().min(CHUNK);
         loop {
@@ -51,15 +73,17 @@ impl TextHelper {
                     indices.insert(*value, operands.len());
                 }
             }
-            let spawned = Command::new(helper)
+            let mut command = Command::new(helper);
+            command
                 .arg("-")
                 .args(operands)
                 .env_remove("DEBUG")
                 .process_group(0)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn();
+                .stderr(Stdio::piped());
+            configure(&mut command);
+            let spawned = command.spawn();
             let mut child = match spawned {
                 Ok(child) => child,
                 Err(error) if error.raw_os_error() == Some(libc::E2BIG) && length > 1 => {

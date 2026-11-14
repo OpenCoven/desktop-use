@@ -1,5 +1,8 @@
+use super::helper::Helper;
 use super::xlib::Context;
 use std::os::fd::RawFd;
+use std::os::unix::process::CommandExt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 const CLEANUP: Duration = Duration::from_millis(100);
@@ -7,6 +10,41 @@ const REAP: Duration = Duration::from_millis(40);
 // Distinct from every one-byte acknowledgement, including an ACK that arrives
 // just after cancellation interrupted its original read.
 const REPORT: u8 = 0xd1;
+static PARENT_GONE: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn parent_died(_: libc::c_int) {
+    // Linux-only raw syscalls and stack data: safe while an Xlib call is
+    // blocked. Never extend an already shorter cleanup watchdog.
+    unsafe {
+        PARENT_GONE.store(true, Ordering::Relaxed);
+        let errno = *libc::__errno_location();
+        let mut current: libc::itimerval = std::mem::zeroed();
+        let read = libc::syscall(libc::SYS_getitimer, libc::ITIMER_REAL, &mut current);
+        if read != 0
+            || current.it_value.tv_sec > 0
+            || current.it_value.tv_usec == 0
+            || current.it_value.tv_usec > 100_000
+        {
+            let watchdog = libc::itimerval {
+                it_interval: libc::timeval {
+                    tv_sec: 0,
+                    tv_usec: 0,
+                },
+                it_value: libc::timeval {
+                    tv_sec: 0,
+                    tv_usec: 100_000,
+                },
+            };
+            libc::syscall(
+                libc::SYS_setitimer,
+                libc::ITIMER_REAL,
+                &watchdog,
+                std::ptr::null_mut::<libc::itimerval>(),
+            );
+        }
+        *libc::__errno_location() = errno;
+    }
+}
 
 pub(super) struct PrivateChild {
     pid: libc::pid_t,
@@ -16,7 +54,44 @@ pub(super) struct PrivateChild {
     cleanup_allowed: bool,
 }
 
-fn timer(duration: Duration) {
+struct ParentSignalMask(libc::sigset_t);
+impl ParentSignalMask {
+    fn block() -> Self {
+        unsafe {
+            let mut mask: libc::sigset_t = std::mem::zeroed();
+            let mut previous: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut mask);
+            libc::sigaddset(&mut mask, libc::SIGUSR1);
+            if libc::sigprocmask(libc::SIG_BLOCK, &mask, &mut previous) != 0 {
+                libc::_exit(1);
+            }
+            Self(previous)
+        }
+    }
+}
+impl Drop for ParentSignalMask {
+    fn drop(&mut self) {
+        unsafe {
+            libc::sigprocmask(libc::SIG_SETMASK, &self.0, std::ptr::null_mut());
+        }
+    }
+}
+fn timer(mut duration: Duration) {
+    // A parent-death handler must not cap the timer between this decision and
+    // a later normal timer write which would accidentally extend that cap.
+    let _mask = ParentSignalMask::block();
+    if PARENT_GONE.load(Ordering::Relaxed) {
+        let mut current: libc::itimerval = unsafe { std::mem::zeroed() };
+        if unsafe { libc::getitimer(libc::ITIMER_REAL, &mut current) } == 0 {
+            let left = Duration::from_secs(current.it_value.tv_sec as u64)
+                + Duration::from_micros(current.it_value.tv_usec as u64);
+            if left.is_zero() {
+                return;
+            }
+            duration = duration.min(left);
+        }
+        duration = duration.min(CLEANUP);
+    }
     let timer = libc::itimerval {
         it_interval: libc::timeval {
             tv_sec: 0,
@@ -77,12 +152,27 @@ fn wait_pipe(fd: RawFd, events: libc::c_short) {
         libc::poll(&mut ready, 1, 1);
     }
 }
-unsafe fn child(command: RawFd, reply: RawFd, lifetime: Duration) -> ! {
+unsafe fn child(command: RawFd, reply: RawFd, lifetime: Duration, owner: libc::pid_t) -> ! {
     libc::setpgid(0, 0);
+    libc::prctl(libc::PR_SET_NAME, c"coven-x11-guard".as_ptr(), 0, 0, 0);
     libc::signal(libc::SIGTERM, libc::SIG_DFL);
     libc::signal(libc::SIGINT, libc::SIG_DFL);
     libc::signal(libc::SIGALRM, libc::SIG_DFL);
     libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+    libc::signal(
+        libc::SIGUSR1,
+        parent_died as *const () as libc::sighandler_t,
+    );
+    let mut wake: libc::sigset_t = std::mem::zeroed();
+    libc::sigemptyset(&mut wake);
+    libc::sigaddset(&mut wake, libc::SIGUSR1);
+    if libc::sigprocmask(libc::SIG_UNBLOCK, &wake, std::ptr::null_mut()) != 0 {
+        libc::_exit(1);
+    }
+    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGUSR1, 0, 0, 0) != 0 || libc::getppid() != owner
+    {
+        libc::_exit(1);
+    }
     let no_core = libc::rlimit {
         rlim_cur: 0,
         rlim_max: 0,
@@ -101,6 +191,10 @@ unsafe fn child(command: RawFd, reply: RawFd, lifetime: Duration) -> ! {
     }
     let lifetime_end = Instant::now() + lifetime;
     timer(lifetime);
+    if !Helper::supported() {
+        write_child(reply, b"U");
+        libc::_exit(0);
+    }
     let Some(mut context) = Context::open() else {
         write_child(reply, b"U");
         libc::_exit(0);
@@ -108,12 +202,54 @@ unsafe fn child(command: RawFd, reply: RawFd, lifetime: Duration) -> ! {
     if !write_child(reply, b"R") {
         libc::_exit(0);
     }
+    let mut helper: Option<Helper> = None;
     loop {
         let mut kind = [0u8; 1];
         if !read_exact(command, &mut kind) {
             break;
         }
         match kind[0] {
+            b'H' => {
+                let mut bytes = [0; 4];
+                if !read_exact(command, &mut bytes) {
+                    break;
+                }
+                let pid = u32::from_le_bytes(bytes) as i32;
+                let prepared = if helper.as_ref().is_none_or(Helper::exited) {
+                    Helper::bind(pid, owner)
+                } else {
+                    None
+                };
+                let ack = if let Some(prepared) = prepared {
+                    helper = Some(prepared);
+                    b'A'
+                } else {
+                    b'U'
+                };
+                if !write_child(reply, &[ack]) {
+                    break;
+                }
+            }
+            b'W' => {
+                let mut bytes = [0; 4];
+                if !read_exact(command, &mut bytes) {
+                    break;
+                }
+                let held = helper.as_mut().is_some_and(|helper| {
+                    helper.hold_input(owner, u32::from_le_bytes(bytes) as i32)
+                });
+                if !write_child(reply, &[if held { b'A' } else { b'U' }]) {
+                    break;
+                }
+            }
+            b'D' => {
+                if let Some(helper) = &mut helper {
+                    helper.release_input();
+                }
+                if !write_child(reply, b"A") {
+                    break;
+                }
+            }
             b'O' => {
                 let mut clear = [0];
                 if !read_exact(command, &mut clear) {
@@ -130,7 +266,14 @@ unsafe fn child(command: RawFd, reply: RawFd, lifetime: Duration) -> ! {
             }
             b'E' => {
                 timer(CLEANUP);
-                let report = context.end_logical();
+                let stopped = helper
+                    .as_mut()
+                    .is_none_or(|helper| helper.quiesce(Instant::now() + CLEANUP));
+                let report = if stopped {
+                    context.end_logical()
+                } else {
+                    [1, 2, 0, 0, 0, 0, 0, 0]
+                };
                 if !write_report(reply, report) {
                     break;
                 }
@@ -181,7 +324,14 @@ unsafe fn child(command: RawFd, reply: RawFd, lifetime: Duration) -> ! {
         }
     }
     timer(CLEANUP);
-    let report = context.end_logical();
+    let stopped = helper
+        .as_mut()
+        .is_none_or(|helper| helper.quiesce(Instant::now() + CLEANUP));
+    let report = if stopped {
+        context.end_logical()
+    } else {
+        [1, 2, 0, 0, 0, 0, 0, 0]
+    };
     drop(context);
     write_report(reply, report);
     libc::_exit(0);
@@ -195,6 +345,7 @@ impl PrivateChild {
         let mut command = [0; 2];
         let mut reply = [0; 2];
         unsafe {
+            let owner = libc::getpid();
             if libc::pipe2(command.as_mut_ptr(), libc::O_CLOEXEC) != 0 {
                 return None;
             }
@@ -213,6 +364,7 @@ impl PrivateChild {
                     command[0],
                     reply[1],
                     deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(200),
+                    owner,
                 );
             }
             libc::close(command[0]);
@@ -311,6 +463,73 @@ impl PrivateChild {
     pub(super) fn activate(&mut self, data: &[u8], deadline: Instant) -> bool {
         let mut ack = [0u8; 1];
         self.send(data, deadline, true) && self.read(&mut ack, deadline, true) && ack == *b"A"
+    }
+    pub(super) fn attach(&self, command: &mut std::process::Command, deadline: Instant) {
+        let (write_fd, read_fd) = (self.command, self.reply);
+        let owner = unsafe { libc::getpid() };
+        let end = deadline.min(Instant::now() + CLEANUP);
+        unsafe {
+            command.pre_exec(move || {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::getppid() != owner {
+                    libc::_exit(125);
+                }
+                let mut frame = [b'H', 0, 0, 0, 0];
+                frame[1..].copy_from_slice(&(libc::getpid() as u32).to_le_bytes());
+                let mut written = 0;
+                while written < frame.len() && Instant::now() < end {
+                    let size = libc::write(
+                        write_fd,
+                        frame[written..].as_ptr().cast(),
+                        frame.len() - written,
+                    );
+                    if size > 0 {
+                        written += size as usize;
+                    } else if size < 0
+                        && matches!(
+                            std::io::Error::last_os_error().kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                        )
+                    {
+                        wait_pipe(write_fd, libc::POLLOUT);
+                    } else {
+                        return Err(std::io::Error::from_raw_os_error(libc::EPIPE));
+                    }
+                }
+                let mut ack = [0];
+                while written == frame.len() && Instant::now() < end {
+                    let size = libc::read(read_fd, ack.as_mut_ptr().cast(), 1);
+                    if size == 1 {
+                        return if ack == *b"A" {
+                            Ok(())
+                        } else {
+                            Err(std::io::Error::from_raw_os_error(libc::EIO))
+                        };
+                    }
+                    if size == 0 {
+                        break;
+                    }
+                    if !matches!(
+                        std::io::Error::last_os_error().kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                    ) {
+                        break;
+                    }
+                    wait_pipe(read_fd, libc::POLLIN);
+                }
+                Err(std::io::Error::from_raw_os_error(libc::ETIMEDOUT))
+            });
+        }
+    }
+    pub(super) fn hold_input(&mut self, fd: i32, deadline: Instant) -> bool {
+        let mut frame = vec![b'W'];
+        frame.extend_from_slice(&(fd as u32).to_le_bytes());
+        self.activate(&frame, deadline)
+    }
+    pub(super) fn release_input(&mut self, deadline: Instant) -> bool {
+        self.activate(b"D", deadline)
     }
     pub(super) fn begin_logical(&mut self, clear: bool, deadline: Instant) -> Option<bool> {
         let mut ack = [0];

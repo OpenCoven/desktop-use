@@ -1,5 +1,7 @@
 #[cfg(target_os = "linux")]
 mod guard;
+#[cfg(target_os = "linux")]
+mod helper;
 #[cfg(any(target_os = "linux", test))]
 mod state;
 #[cfg(target_os = "linux")]
@@ -19,15 +21,34 @@ impl TextHelper {
         helper: &Path,
         characters: &[char],
         deadline: Instant,
+        guard: &mut Guard,
     ) -> Result<(Self, usize), crate::process::Failure> {
         #[cfg(target_os = "linux")]
         {
-            let (inner, length) = stream::TextHelper::start(helper, characters, deadline)?;
+            let (inner, length) = stream::TextHelper::start_guarded(
+                helper,
+                characters,
+                deadline,
+                guard
+                    .child
+                    .as_ref()
+                    .ok_or(crate::process::Failure::Backend)?,
+            )?;
+            if !guard
+                .child
+                .as_mut()
+                .unwrap()
+                .hold_input(inner.input_fd(), deadline)
+            {
+                return Err(crate::process::check(deadline)
+                    .err()
+                    .unwrap_or(crate::process::Failure::Backend));
+            }
             Ok((Self { inner }, length))
         }
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = (helper, characters, deadline);
+            let _ = (helper, characters, deadline, guard);
             Err(crate::process::Failure::Backend)
         }
     }
@@ -47,14 +68,27 @@ impl TextHelper {
             Err(crate::process::Failure::Backend)
         }
     }
-    pub(crate) fn finish(self, deadline: Instant) -> Result<(), crate::process::Failure> {
+    pub(crate) fn finish(
+        self,
+        deadline: Instant,
+        guard: &mut Guard,
+    ) -> Result<(), crate::process::Failure> {
         #[cfg(target_os = "linux")]
         {
+            if !guard
+                .child
+                .as_mut()
+                .is_some_and(|child| child.release_input(deadline))
+            {
+                return Err(crate::process::check(deadline)
+                    .err()
+                    .unwrap_or(crate::process::Failure::Backend));
+            }
             self.inner.finish(deadline)
         }
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = deadline;
+            let _ = (deadline, guard);
             Err(crate::process::Failure::Backend)
         }
     }
@@ -65,6 +99,14 @@ pub(crate) struct Guard {
     child: Option<guard::PrivateChild>,
 }
 impl Guard {
+    pub(crate) fn attach_helper(&self, command: &mut std::process::Command, deadline: Instant) {
+        #[cfg(target_os = "linux")]
+        if let Some(child) = &self.child {
+            child.attach(command, deadline);
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = (command, deadline);
+    }
     pub(crate) fn prepare(helper: &Path, deadline: Instant) -> Self {
         #[cfg(target_os = "linux")]
         {

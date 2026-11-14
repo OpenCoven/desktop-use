@@ -52,6 +52,7 @@ try {
   const fixture = JSON.parse(await readFile(fixturePath, 'utf8'));
   assert.equal(fixture.pid, Number(fixturePid)); assert.equal(fixture.ready, true);
   assert.equal((await call({ action: 'focus', windowTitle: fixtureTitle })).details.success, true);
+  const eventCursorBeforeInput = fixture.keys.length;
   pending = call({ action: 'type-text', text: 'a'.repeat(4000), timeoutMs: mode === 'timeout' ? 2000 : 15000 }, controller.signal);
   pending.catch(() => {});
   await writeFile(join(workspace, 'input-started'), 'ready');
@@ -63,6 +64,7 @@ try {
   if (mode === 'stop') assert.equal((await call({ action: 'stop' })).details.success, true);
   if (mode === 'abort') controller.abort();
   const result = await pending;
+  const resultSettledMonotonicMs = Number(process.hrtime.bigint() / 1_000_000n);
   assert.equal(result.details.status, mode === 'timeout' ? 'timeout' : 'cancelled');
   const native = result.details.result;
   assert.equal(native.inputCleanup.state, 'verified');
@@ -82,6 +84,7 @@ try {
   await writeFile(join(workspace, 'consumer-receipt.json'), JSON.stringify({ surface, mode, status: result.details.status,
     inputCleanup: native.inputCleanup, completedInputCharacters: native.completedInputCharacters,
     inputMayHaveStarted: native.inputMayHaveStarted, partial: native.partial,
+    resultSettledMonotonicMs, eventCursorBeforeInput,
     approvalMode: 'scripted-trusted-reference', nativeSha256: nativeHash, privateInputAbsent: true }) + '\n');
 } finally {
   controller.abort(); if (pending) await pending.catch(() => {}); await close();

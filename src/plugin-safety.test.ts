@@ -163,17 +163,17 @@ for (const cancellation of [false,true]) {
  });
 }
 
-test("typed cleanup confidence retains only versioned enums and bounded counts", async () => {
+for (const action of ["type-text", "keypress"] as const) test(`${action} cleanup confidence retains only versioned enums and bounded counts`, async () => {
   const tool = createComputerUseTool({ approvalProvider: async () => "allowed" as const,
     runAdapter: async () => ({ ok: false, code: "CANCELLED", backend: "xdotool", inputCleanup: { schemaVersion: 1, state: "verified", releasedKeys: 1, restoredKeys: 0, rawState: "private-cleanup-diagnostic" } }), appendAuditEvent: async () => {},
   });
-  const result = await tool.execute("cleanup-confidence", { action: "type-text", text: "private-cleanup-diagnostic", confirm: true });
+  const result = await tool.execute("cleanup-confidence", { action, ...(action === "type-text" ? { text: "private-cleanup-diagnostic" } : { keys: ["a"] }), confirm: true });
   assert.equal(result.details.status, "cancelled");
   assert.deepEqual((result.details.result as any).inputCleanup, { schemaVersion: 1, state: "verified", releasedKeys: 1, restoredKeys: 0 });
   assert.ok(!JSON.stringify(result).includes("private-cleanup-diagnostic"));
 });
 
-for (const variant of ["missing", "unknown-state", "private-reason", "negative-count", "oversize-count", "unknown-version", "array-state", "array-reason"]) test(`typed cleanup cannot certify ${variant} evidence`, async () => {
+for (const action of ["type-text", "keypress"] as const) for (const variant of ["missing", "unknown-state", "private-reason", "negative-count", "oversize-count", "unknown-version", "array-state", "array-reason"]) test(`${action} cleanup cannot certify ${variant} evidence`, async () => {
   const cleanup: any = { schemaVersion: 1, state: "verified", releasedKeys: 1 };
   if (variant === "unknown-state") cleanup.state = "private-cleanup-diagnostic";
   if (variant === "private-reason") { cleanup.state = "unverified"; cleanup.reasonCode = "private-cleanup-diagnostic"; }
@@ -185,8 +185,18 @@ for (const variant of ["missing", "unknown-state", "private-reason", "negative-c
   const tool = createComputerUseTool({ approvalProvider: async () => "allowed" as const,
     runAdapter: async () => ({ ok: false, code: "CANCELLED", ...(variant === "missing" ? {} : { inputCleanup: cleanup }) }), appendAuditEvent: async () => {},
   });
-  const result = await tool.execute("invalid-cleanup", { action: "type-text", text: "private-cleanup-diagnostic", confirm: true });
+  const result = await tool.execute("invalid-cleanup", { action, ...(action === "type-text" ? { text: "private-cleanup-diagnostic" } : { keys: ["a"] }), confirm: true });
   assert.equal(result.details.status, "cancelled");
   assert.deepEqual((result.details.result as any).inputCleanup, { schemaVersion: 1, state: "unverified", reasonCode: "ADAPTER_RESULT_UNAVAILABLE" });
+  assert.ok(!JSON.stringify(result).includes("private-cleanup-diagnostic"));
+});
+
+for (const action of ["type-text", "keypress"] as const) test(`${action} sanitizes nested normal-exit cleanup evidence`, async () => {
+  const tool = createComputerUseTool({ approvalProvider: async () => "allowed" as const,
+    runAdapter: async () => ({ ok: false, code: "CANCELLED", inputCleanup: { schemaVersion: 1, state: "verified", releasedKeys: 1, rawState: "private-cleanup-diagnostic" }, steps: [{ ok: false, code: "CANCELLED", inputCleanup: { schemaVersion: 1, state: "verified", releasedKeys: 257, rawState: "private-cleanup-diagnostic" } }] }), appendAuditEvent: async () => {},
+  });
+  const result = await tool.execute("nested-cleanup", { action, ...(action === "type-text" ? { text: "private-cleanup-diagnostic" } : { keys: ["a"] }), confirm: true });
+  assert.deepEqual((result.details.result as any).inputCleanup, { schemaVersion: 1, state: "verified", releasedKeys: 1 });
+  assert.deepEqual((result.details.result as any).steps[0].inputCleanup, { schemaVersion: 1, state: "unverified", reasonCode: "ADAPTER_RESULT_UNAVAILABLE" });
   assert.ok(!JSON.stringify(result).includes("private-cleanup-diagnostic"));
 });

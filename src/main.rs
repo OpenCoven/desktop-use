@@ -1920,6 +1920,7 @@ fn run_x11_keyboard_steps(steps: Vec<LinuxStep>, typed: bool) -> String {
                     Path::new(&helper),
                     &values[offset..],
                     deadline(),
+                    &mut guard,
                 ) {
                     Ok(prepared) => prepared,
                     Err(error) => return process_failure_json("xdotool", &error),
@@ -1949,7 +1950,7 @@ fn run_x11_keyboard_steps(steps: Vec<LinuxStep>, typed: bool) -> String {
                     guard.completed();
                     characters += 1;
                 }
-                if let Err(error) = writer.finish(deadline()) {
+                if let Err(error) = writer.finish(deadline(), &mut guard) {
                     return process_failure_json("xdotool", &error);
                 }
                 offset += count;
@@ -1984,6 +1985,7 @@ fn run_x11_keyboard_steps(steps: Vec<LinuxStep>, typed: bool) -> String {
                 &mut || {
                     started = true;
                 },
+                Some(&guard),
             );
             input_started |= started;
             if !started {
@@ -2036,6 +2038,7 @@ fn run_linux_command(
         redact_type_text,
         extra_fields,
         &mut || {},
+        None,
     )
 }
 
@@ -2046,9 +2049,13 @@ fn run_linux_command_observed(
     redact_type_text: bool,
     extra_fields: &[(&'static str, String)],
     on_started: &mut dyn FnMut(),
+    guard: Option<&x11_input::Guard>,
 ) -> String {
     let mut cmd = Command::new(program);
     cmd.args(&args);
+    if let Some(guard) = guard {
+        guard.attach_helper(&mut cmd, deadline());
+    }
     match process::run_observed(&mut cmd, deadline(), on_started) {
         Ok(output) => {
             let ok = output.status.success();

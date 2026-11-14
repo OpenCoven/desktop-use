@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import time
+from owned_process_guard import install_recovery_handlers, begin_recovery
 
 
 def main():
@@ -19,6 +20,7 @@ def main():
     p.add_argument('--server-pid', type=int, required=True)
     p.add_argument('--fixture-pid', type=int, required=True)
     a = p.parse_args()
+    install_recovery_handlers()
     from datetime import datetime, timezone
     assert datetime.now(timezone.utc).timestamp() + 60 < datetime.fromisoformat(a.lease_expires.replace('Z', '+00:00')).timestamp()
     assert hashlib.sha256(Path(a.adapter).read_bytes()).hexdigest() == a.native_sha256
@@ -74,9 +76,9 @@ def main():
     owned = {}
     resumers = []
     try:
-        for mode in ('blocked-readiness', 'blocked-cleanup', 'parent-EOF'):
+        for mode in ('blocked-readiness', 'blocked-cleanup', 'parent-EOF', 'parent-EOF-blocked', 'parent-EOF-probe'):
             assert not keys()
-            if mode == 'blocked-readiness':
+            if mode in ('blocked-readiness', 'parent-EOF-probe'):
                 resumers.append(auto_resume(1.7))
                 server_signal(signal.SIGSTOP)
             action_started = time.monotonic()
@@ -104,26 +106,39 @@ def main():
                             held = pid
                             break
                         os.kill(pid, signal.SIGCONT)
-                if held or mode == 'blocked-readiness' and proc.poll() is not None:
+                if held or mode == 'parent-EOF-probe' and guard or mode == 'blocked-readiness' and proc.poll() is not None:
                     break
                 time.sleep(.001)
             assert guard, 'actual guard process not observed'
             started = time.monotonic()
-            if mode != 'blocked-readiness':
+            if mode == 'parent-EOF-probe':
+                os.kill(proc.pid, signal.SIGKILL)
+            elif mode != 'blocked-readiness':
                 assert held, 'actual held helper key not observed'
-                if mode == 'blocked-cleanup':
+                if mode in ('blocked-cleanup', 'parent-EOF-blocked'):
                     resumers.append(auto_resume(1))
                     server_signal(signal.SIGSTOP)
-                    os.kill(proc.pid, signal.SIGTERM)
+                    if mode == 'parent-EOF-blocked':
+                        # Keep it blocked in the actual Xlib call rather than
+                        # stopped: orphaned stopped groups receive HUP/CONT.
+                        os.kill(held, signal.SIGCONT)
+                        time.sleep(.02)
+                        os.kill(proc.pid, signal.SIGKILL)
+                    else:
+                        os.kill(proc.pid, signal.SIGTERM)
                 else:
                     os.kill(proc.pid, signal.SIGKILL)
             out, err = proc.communicate(timeout=3)
             assert not err
-            if mode == 'parent-EOF':
-                assert reap(guard), 'orphaned guard did not terminate after EOF'
-                assert not keys(), 'EOF guard did not release the intended held key'
-                rows.append({'case': mode, 'guardReapedByTestSubreaper': True, 'heldKeyReleasedByGuard': True,
-                             'inputHelperNeedsManualCrashRecovery': True, 'passed': True})
+            if mode.startswith('parent-EOF'):
+                if held:
+                    assert reap(held, timeout=.5), 'orphaned input helper survived parent death'
+                assert reap(guard, timeout=.5), 'orphaned guard did not terminate after EOF'
+                if mode == 'parent-EOF':
+                    assert not keys(), 'EOF guard did not release the intended held key'
+                rows.append({'case': mode, 'guardReapedByTestSubreaper': True, 'keyStateRestoredWithoutManualRecovery': mode == 'parent-EOF',
+                             'inputHelperNeedsManualCrashRecovery': False, 'helperReapedByTestSubreaper': True,
+                             'actualInputHelperStarted': held is not None, 'inputStateRequiresServerRecovery': mode in ('parent-EOF-blocked', 'parent-EOF-probe'), 'passed': True})
             else:
                 elapsed = time.monotonic() - started
                 result = json.loads(out)
@@ -151,6 +166,7 @@ def main():
         receipt['success'] = True
     finally:
         server_signal(signal.SIGCONT)
+        begin_recovery()
         if proc and proc.poll() is None:
             os.kill(proc.pid, signal.SIGTERM)
             try:

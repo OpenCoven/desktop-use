@@ -9,6 +9,7 @@ from pathlib import Path
 import signal
 import subprocess
 import time
+from owned_process_guard import install_recovery_handlers, begin_recovery
 
 
 def main():
@@ -18,7 +19,9 @@ def main():
     p.add_argument('--server-pid', type=int, required=True)
     p.add_argument('--fixture-pid', type=int, required=True)
     p.add_argument('--temporary-two-row-mapping-authorized', action='store_true', required=True)
+    p.add_argument('--interrupt-after-layout', action='store_true', help='Exercise SIGTERM recovery immediately after the authorized mapping change.')
     a = p.parse_args()
+    install_recovery_handlers()
     from datetime import datetime, timezone
     assert datetime.now(timezone.utc).timestamp() + 60 < datetime.fromisoformat(a.lease_expires.replace('Z', '+00:00')).timestamp()
     for path, sha in ((a.adapter, a.native_sha256), (a.baseline_adapter, a.baseline_sha256)):
@@ -68,9 +71,6 @@ def main():
     def set_row(code, values):
         data = (ctypes.c_ulong * len(values))(*values)
         x.XChangeKeyboardMapping(d, code, len(values), data, 1); x.XSync(d, 0)
-    def interrupted(_number, _frame):
-        raise RuntimeError('owned mapped-layout test interrupted')
-    signal.signal(signal.SIGTERM, interrupted); signal.signal(signal.SIGINT, interrupted)
     env = {**os.environ, 'DISPLAY': a.display, 'XDG_SESSION_TYPE': 'x11'}
     receipt = {'session': 'owned-virtual-x11', 'physicalDisplayVerified': False, 'scope': 'explicitly-mapped-Unicode-only',
                'nativeSha256': a.native_sha256, 'baselineSha256': a.baseline_sha256, 'temporaryRows': rows,
@@ -83,6 +83,8 @@ def main():
         assert modifiers() == initial_modifiers
         assert all(same_row(initial[code], active[code]) for code in initial if code not in rows)
         receipt['activeRows'] = [list(active[code]) for code in rows]
+        if a.interrupt_after_layout:
+            os.kill(os.getpid(), signal.SIGTERM)
         time.sleep(.25)  # Let the actual fixture consume its mapping notifications.
         for label, adapter in (('baseline', a.baseline_adapter), ('candidate', a.adapter)):
             before = len(fixture()['keys'])
@@ -99,6 +101,7 @@ def main():
                                        'visibleKeyEvents': len(events), 'inputCleanup': result.get('inputCleanup'), 'passed': True})
         receipt['success'] = True
     finally:
+        begin_recovery()
         assert server.joinpath('stat').read_text().rsplit(')', 1)[1].split()[19] == server_birth
         # No global key sweep and no persistent keyboard/layout configuration.
         assert keys() <= set(rows)

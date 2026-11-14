@@ -8,6 +8,12 @@ def clock_delta(server_ms, monotonic_ms):
     return (server_ms - monotonic_ms + modulus // 2) % modulus - modulus // 2
 
 
+def unproven_post_settlement_events(events, cursor, settled_ms, offset_lower):
+    # Include events already delivered before an observer's later snapshot.
+    # Equality cannot prove ordering within a timestamp's millisecond bucket.
+    return sum(clock_delta(event['serverTimeMs'], settled_ms) >= offset_lower for event in events[cursor:])
+
+
 def clock_bounds(x11, display):
     class PropertyEvent(ctypes.Structure):
         _fields_ = [("type", ctypes.c_int), ("serial", ctypes.c_ulong), ("send_event", ctypes.c_int),
