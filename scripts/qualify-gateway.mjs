@@ -616,7 +616,8 @@ try {
     assert.equal(batch.approvalDenials.length, gatedActions.length);
     for (const action of gatedActions) {
       assert.equal(batch.events.filter(event => event.event === "plugin.approval.requested" && event.payload.request.toolCallId === batchCallId(callName("gated", action))).length, 1, `Exactly one approval despite model confirmation: ${action}`);
-      assert.equal(JSON.parse(await resultFor("gated", action)).error, "Denied by user");
+      await resultFor("gated", action);
+      assert.equal(batch.approvalDenials.filter(proof => proof.toolCallId === batchCallId(callName("gated", action))).length, 1, `Exactly one strict host-correlated denial proof: ${action}`);
     }
     // Direct HTTP bypasses model schema validation. Representative excluded
     // shell/file/clipboard/launch families must still meet the trusted hook ceiling.
