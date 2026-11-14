@@ -13,7 +13,7 @@ import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { verifyMacIdentity, focusedFixture, preparedPython, nativeHarnessEnvironment } from './identity-preflight.mjs';
 import { proveMacActiveBoundary, proveMacNoLateControls, verifyMacClockBracket } from './mac-control-proof.mjs';
-import { cleanupMacActiveClient } from './mac-active-cleanup.mjs';
+import { cleanupMacActiveClient, observeMacCall } from './mac-active-cleanup.mjs';
 
 assert.equal(process.platform, 'darwin');
 assert.equal(process.env.NATIVE_ACCEPTANCE_OWNED_MAC_INPUT, 'yes', 'explicit unlocked owned-fixture execution is required');
@@ -75,6 +75,8 @@ async function command(expected) {
 const abort = new AbortController();
 let invoke, close = async () => {}, pending, stopPending;
 let inputReturnedNs, stopReturnedNs, stopState, settled = false;
+let settlementObserverFailed = false;
+const observerFailed = () => { settlementObserverFailed = true; };
 const audits = [];
 const packageRoot = dirname(createRequire(import.meta.url).resolve('@opencoven/openclaw-desktop-use/package.json'));
 const manifest = JSON.parse(await readFile(join(packageRoot, 'package.json')));
@@ -83,8 +85,8 @@ try {
   if (surface === 'sdk') {
     const client = createDesktopClient({ workspaceDir: workspace, scope: { principalId: 'native-active-mac', sessionId: caseId }, adapterPath: adapter,
       actionPermissions: resolveActionPermissions({ actionProfile: 'full' }), auditSink: async event => { audits.push(event); }, approvalProvider: () => 'allowed' });
-    invoke = (request, signal) => client.execute(request, { callId: `${caseId}-${request.action}`,
-      signal: signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal });
+    invoke = (request, signal, onSettlement) => observeMacCall(client.execute(request, { callId: `${caseId}-${request.action}`,
+      signal: signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal }), onSettlement, undefined, observerFailed);
   } else {
     const config = join(caseRoot, 'config.json');
     await writeFile(config, JSON.stringify({ workspaceDir: workspace, stateDir: stateRoot, principalId: 'native-active-mac', sessionId: caseId, adapterPath: adapter, actionProfile: 'full' }), { mode: 0o600 });
@@ -101,11 +103,9 @@ try {
     assert.equal(client.getNegotiatedProtocolVersion(), modern ? '2026-07-28' : '2025-11-25');
     assert.equal(client.getServerVersion().version, manifest.version);
     assert.deepEqual((await client.listTools()).tools.map(tool => tool.name), ['computer_use']);
-    invoke = async (request, signal) => {
-      const result = await client.callTool({ name: 'computer_use', arguments: request },
-        { signal: signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal });
-      return { content: result.content, details: result.structuredContent };
-    };
+    invoke = (request, signal, onSettlement) => observeMacCall(client.callTool({ name: 'computer_use', arguments: request },
+      { signal: signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal }), onSettlement,
+    result => ({ content: result.content, details: result.structuredContent }), observerFailed);
     close = () => client.close();
   }
   const call = async request => {
@@ -136,25 +136,19 @@ try {
   emit({ kind: 'ready', fixturePid, windowNumber: fixture.windowNumber, clockProof, clockNowNs: String(process.hrtime.bigint()) });
   await command('start');
   const text = 'a'.repeat(4000);
-  pending = invoke({ action: 'type-text', ...target, text, clear: true, timeoutMs: mode === 'timeout' ? 2000 : 12000 }, abort.signal).then(result => {
-    inputReturnedNs = String(process.hrtime.bigint()); // First fulfillment callback: no await or process query before this.
+  const stampInput = rejected => {
+    inputReturnedNs = String(process.hrtime.bigint()); // First supported-API callback, before normalization/await.
     settled = true;
-    emit({ kind: 'input-settled', inputReturnedNs });
-    return result;
-  }, error => {
-    inputReturnedNs = String(process.hrtime.bigint());
-    settled = true;
-    emit({ kind: 'input-settled', inputReturnedNs, rejected: true });
-    throw error;
-  });
+    emit({ kind: 'input-settled', inputReturnedNs, ...(rejected ? { rejected: true } : {}) });
+  };
+  pending = invoke({ action: 'type-text', ...target, text, clear: true, timeoutMs: mode === 'timeout' ? 2000 : 12000 }, abort.signal, stampInput);
   pending.catch(() => {});
   emit({ kind: 'started' });
   const active = await Promise.race([command('active'), pending.then(() => { throw new Error('ACTIVE_BOUNDARY_MISSED'); })]);
   assert.equal(settled, false, 'input already settled before the active trigger');
   assert.match(active.observedActiveNs, /^[0-9]+$/);
   if (mode === 'stop') {
-    stopPending = invoke({ action: 'stop' }).then(result => {
-      stopReturnedNs = String(process.hrtime.bigint());
+    stopPending = invoke({ action: 'stop' }, undefined, () => { stopReturnedNs = String(process.hrtime.bigint()); }).then(result => {
       stopState = result.details.state;
       emit({ kind: 'stop-acknowledged', stopReturnedNs, state: ['idle', 'cancelling'].includes(stopState) ? stopState : 'unknown' });
       return result;
@@ -189,7 +183,7 @@ try {
   await privateWrite('client-receipt.json', receipt);
   emit({ kind: 'finished', success: true });
 } catch (error) {
-  await privateWrite('client-failure-private.json', { success: false, phase: settled ? 'post-settlement' : 'pre-settlement', error: String(error.message), inputReturnedNs, stopReturnedNs });
+  await privateWrite('client-failure-private.json', { success: false, phase: settled ? 'post-settlement' : 'pre-settlement', error: String(error.message), inputReturnedNs, stopReturnedNs, settlementObserverFailed });
   emit({ kind: 'failed', success: false, phase: settled ? 'post-settlement' : 'pre-settlement' });
   process.exitCode = 1;
 } finally {
