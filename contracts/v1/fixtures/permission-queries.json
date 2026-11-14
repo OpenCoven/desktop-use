@@ -1,0 +1,103 @@
+[
+  {
+    "name": "screen recording denied",
+    "query": {
+      "success": true,
+      "data": {
+        "permissions": [
+          {
+            "name": "Screen Recording",
+            "isGranted": false
+          }
+        ]
+      }
+    },
+    "denied": true
+  },
+  {
+    "name": "accessibility denied legacy",
+    "query": {
+      "ok": true,
+      "permissions": [
+        {
+          "permission": "Accessibility",
+          "isGranted": false
+        }
+      ]
+    },
+    "denied": true
+  },
+  {
+    "name": "granted is not action success",
+    "query": {
+      "success": true,
+      "data": {
+        "permissions": [
+          {
+            "name": "Screen Recording",
+            "isGranted": true
+          }
+        ]
+      }
+    },
+    "denied": false
+  },
+  {
+    "name": "unrecognized permission",
+    "query": {
+      "success": true,
+      "data": {
+        "permissions": [
+          {
+            "name": "Microphone",
+            "isGranted": false
+          }
+        ]
+      }
+    },
+    "denied": false
+  },
+  {
+    "name": "diagnostic strings are not evidence",
+    "query": {
+      "success": true,
+      "data": {
+        "message": "Screen Recording isGranted false"
+      }
+    },
+    "denied": false
+  },
+  {
+    "name": "nonboolean grant",
+    "query": {
+      "success": true,
+      "data": {
+        "permissions": [
+          {
+            "name": "Accessibility",
+            "isGranted": "false"
+          }
+        ]
+      }
+    },
+    "denied": false
+  },
+  {
+    "name": "unrecognized container",
+    "query": {
+      "success": true,
+      "other": {
+        "name": "Screen Recording",
+        "isGranted": false
+      }
+    },
+    "denied": false
+  },
+  {
+    "name": "missing data",
+    "query": {
+      "success": true
+    },
+    "denied": false
+  }
+]

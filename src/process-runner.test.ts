@@ -40,3 +40,30 @@ test("timeout removes inherited-pipe descendants after the parent exits", async 
   await new Promise(r => setTimeout(r, 650));
   await assert.rejects(readFile(marker), { code: "ENOENT" });
 });
+
+test("runner reports explicit pre-start and spawn-failed lifecycle facts", async () => {
+  const aborted = new AbortController(); aborted.abort();
+  for (const [file, options, code, lifecycle] of [
+    [node, { timeoutMs: 1000, signal: aborted.signal }, "CANCELLED", "not-started"],
+    [node, { timeoutMs: 0 }, "ETIMEDOUT", "not-started"],
+    ["/no/such/lifecycle-helper", { timeoutMs: 1000 }, "ENOENT", "spawn-failed"],
+  ] as const) await assert.rejects(runProcess(file, [], options), (e: any) => { assert.equal(e.code, code); assert.equal(e.lifecycle, lifecycle); return true; });
+});
+
+test("runner retains started provenance for timeout, output, stdin and nonzero failures", async () => {
+  for (const [script, options, code] of [
+    ["setInterval(()=>{},1000)", { timeoutMs: 100 }, "ETIMEDOUT"],
+    ["process.stdout.write('x'.repeat(10000));setInterval(()=>{},1000)", { timeoutMs: 1000, maxBuffer: 100 }, "OUTPUT_LIMIT"],
+    ["require('fs').closeSync(0);setInterval(()=>{},1000)", { timeoutMs: 1000, input: "x".repeat(4*1024*1024) }, "STDIN_ERROR"],
+    ["process.exit(2)", { timeoutMs: 1000 }, "PROCESS_EXIT"],
+  ] as const) await assert.rejects(runProcess(node, ["-e", script], options), (e: any) => { assert.equal(e.code, code); assert.equal(e.lifecycle, "started"); assert.doesNotMatch(String(e), /repeat|stdin.destroy/); return true; });
+});
+
+test("runner distinguishes cancellation after observed child readiness", async t => {
+  const { mkdtemp, readFile, rm } = await import("node:fs/promises"); const { join } = await import("node:path"); const { tmpdir } = await import("node:os");
+  const root = await mkdtemp(join(tmpdir(), "desktopuse-lifecycle-")); t.after(() => rm(root, { recursive: true, force: true }));
+  const marker = join(root, "ready"); const controller = new AbortController();
+  const pending = runProcess(node, ["-e", `require('fs').writeFileSync(${JSON.stringify(marker)},'ready');setInterval(()=>{},1000)`], { timeoutMs: 2000, signal: controller.signal }); pending.catch(() => {});
+  for (let tries=0;;tries++) { if (await readFile(marker,"utf8").catch(()=>"") === "ready") break; assert.ok(tries < 100); await new Promise(r=>setTimeout(r,10)); }
+  controller.abort(); await assert.rejects(pending, (e:any) => { assert.equal(e.code,"CANCELLED"); assert.equal(e.lifecycle,"started"); return true; });
+});

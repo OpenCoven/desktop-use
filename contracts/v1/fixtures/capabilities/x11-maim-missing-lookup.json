@@ -1,0 +1,1375 @@
+{
+  "report": {
+    "actions": {
+      "app-launch": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "plugin-dispatch-only",
+            "status": "passed"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "required",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [
+          "SURFACE_UNAVAILABLE"
+        ],
+        "state": "unsupported",
+        "surfaces": [
+          "plugin"
+        ],
+        "variants": []
+      },
+      "browser-open": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "plugin-dispatch-only",
+            "status": "passed"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "required",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [
+          "SURFACE_UNAVAILABLE"
+        ],
+        "state": "unsupported",
+        "surfaces": [
+          "plugin"
+        ],
+        "variants": []
+      },
+      "click": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "cli-and-plugin-dispatch",
+            "status": "passed"
+          },
+          {
+            "kind": "binary",
+            "observedAtMs": 1700000000000,
+            "provider": {
+              "name": "xdotool",
+              "version": null
+            },
+            "scope": "executable-on-path-only",
+            "status": "failed"
+          },
+          {
+            "kind": "permission",
+            "provider": {
+              "name": "linux",
+              "version": null
+            },
+            "scope": "display-daemon-uinput-access; not-probed",
+            "status": "unknown"
+          },
+          {
+            "kind": "geometry",
+            "provider": {
+              "name": "linux",
+              "version": null
+            },
+            "scope": "current-x11-root-extent-and-signed-16-bit-input-bounds; not-probed",
+            "status": "not-run"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "required",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [
+          "BACKEND_UNAVAILABLE"
+        ],
+        "state": "unsupported",
+        "surfaces": [
+          "cli",
+          "plugin"
+        ],
+        "variants": [
+          {
+            "limits": {
+              "constraints": [
+                "CURRENT_ROOT_EXTENT_REQUIRED",
+                "SIGNED_I32_COORDINATE_SYNTAX",
+                "DISPLAY_ACCESS_UNVERIFIED"
+              ],
+              "parameters": {
+                "coords": {
+                  "maximum": 32767,
+                  "minimum": 0,
+                  "units": "desktop-pixels"
+                }
+              }
+            },
+            "mode": null,
+            "provider": {
+              "name": "xdotool",
+              "version": null
+            },
+            "reasonCodes": [],
+            "selectors": [
+              "coords"
+            ],
+            "state": "unsupported"
+          },
+          {
+            "limits": {
+              "constraints": [
+                "NO_SEMANTIC_ELEMENT_IDS"
+              ],
+              "parameters": {}
+            },
+            "mode": null,
+            "provider": {
+              "name": "linux",
+              "version": null
+            },
+            "reasonCodes": [
+              "SELECTOR_UNSUPPORTED"
+            ],
+            "selectors": [
+              "app",
+              "windowTitle",
+              "windowId",
+              "screenIndex",
+              "on",
+              "query"
+            ],
+            "state": "unsupported"
+          }
+        ]
+      },
+      "clipboard-read": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "plugin-dispatch-only",
+            "status": "passed"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "required",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [
+          "SURFACE_UNAVAILABLE"
+        ],
+        "state": "unsupported",
+        "surfaces": [
+          "plugin"
+        ],
+        "variants": []
+      },
+      "clipboard-write": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "plugin-dispatch-only",
+            "status": "passed"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "required",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [
+          "SURFACE_UNAVAILABLE"
+        ],
+        "state": "unsupported",
+        "surfaces": [
+          "plugin"
+        ],
+        "variants": []
+      },
+      "doctor": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "cli-and-plugin-dispatch",
+            "status": "passed"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "none",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [],
+        "state": "available",
+        "surfaces": [
+          "cli",
+          "plugin"
+        ],
+        "variants": [
+          {
+            "limits": {
+              "constraints": [
+                "OBSERVATIONAL_ONLY"
+              ],
+              "parameters": {
+                "timeoutMs": {
+                  "maximum": 120000,
+                  "minimum": 1000,
+                  "units": "milliseconds"
+                }
+              }
+            },
+            "mode": null,
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "reasonCodes": [],
+            "selectors": [],
+            "state": "available"
+          }
+        ]
+      },
+      "file-list": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "plugin-dispatch-only",
+            "status": "passed"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "request-dependent",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [
+          "SURFACE_UNAVAILABLE"
+        ],
+        "state": "unsupported",
+        "surfaces": [
+          "plugin"
+        ],
+        "variants": []
+      },
+      "file-read": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "plugin-dispatch-only",
+            "status": "passed"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "request-dependent",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [
+          "SURFACE_UNAVAILABLE"
+        ],
+        "state": "unsupported",
+        "surfaces": [
+          "plugin"
+        ],
+        "variants": []
+      },
+      "file-write": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "plugin-dispatch-only",
+            "status": "passed"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "required",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [
+          "SURFACE_UNAVAILABLE"
+        ],
+        "state": "unsupported",
+        "surfaces": [
+          "plugin"
+        ],
+        "variants": []
+      },
+      "focus": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "cli-and-plugin-dispatch",
+            "status": "passed"
+          },
+          {
+            "kind": "binary",
+            "observedAtMs": 1700000000000,
+            "provider": {
+              "name": "wmctrl",
+              "version": null
+            },
+            "scope": "executable-on-path-only",
+            "status": "failed"
+          },
+          {
+            "kind": "binary",
+            "observedAtMs": 1700000000000,
+            "provider": {
+              "name": "xdotool",
+              "version": null
+            },
+            "scope": "executable-on-path-only",
+            "status": "failed"
+          },
+          {
+            "kind": "permission",
+            "provider": {
+              "name": "linux",
+              "version": null
+            },
+            "scope": "display-daemon-uinput-access; not-probed",
+            "status": "unknown"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "required",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [
+          "BACKEND_UNAVAILABLE"
+        ],
+        "state": "unsupported",
+        "surfaces": [
+          "cli",
+          "plugin"
+        ],
+        "variants": [
+          {
+            "limits": {
+              "constraints": [
+                "COMBINED_SELECTORS",
+                "UNAMBIGUOUS_MATCH_REQUIRED"
+              ],
+              "parameters": {}
+            },
+            "mode": null,
+            "provider": {
+              "name": "wmctrl",
+              "version": null
+            },
+            "reasonCodes": [],
+            "selectors": [
+              "app",
+              "windowTitle",
+              "windowId"
+            ],
+            "state": "unsupported"
+          },
+          {
+            "limits": {
+              "constraints": [
+                "SINGLE_SELECTOR_ONLY"
+              ],
+              "parameters": {}
+            },
+            "mode": null,
+            "provider": {
+              "name": "xdotool",
+              "version": null
+            },
+            "reasonCodes": [],
+            "selectors": [
+              "app"
+            ],
+            "state": "unsupported"
+          },
+          {
+            "limits": {
+              "constraints": [
+                "SINGLE_SELECTOR_ONLY"
+              ],
+              "parameters": {}
+            },
+            "mode": null,
+            "provider": {
+              "name": "xdotool",
+              "version": null
+            },
+            "reasonCodes": [],
+            "selectors": [
+              "windowTitle"
+            ],
+            "state": "unsupported"
+          },
+          {
+            "limits": {
+              "constraints": [
+                "SINGLE_SELECTOR_ONLY"
+              ],
+              "parameters": {}
+            },
+            "mode": null,
+            "provider": {
+              "name": "xdotool",
+              "version": null
+            },
+            "reasonCodes": [],
+            "selectors": [
+              "windowId"
+            ],
+            "state": "unsupported"
+          }
+        ]
+      },
+      "health": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "plugin-dispatch-only",
+            "status": "passed"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "none",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [
+          "SURFACE_UNAVAILABLE"
+        ],
+        "state": "unsupported",
+        "surfaces": [
+          "plugin"
+        ],
+        "variants": []
+      },
+      "inspect": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "cli-and-plugin-dispatch",
+            "status": "passed"
+          },
+          {
+            "kind": "binary",
+            "observedAtMs": 1700000000000,
+            "provider": {
+              "name": "maim",
+              "version": null
+            },
+            "scope": "executable-on-path-only",
+            "status": "passed"
+          },
+          {
+            "kind": "permission",
+            "provider": {
+              "name": "linux",
+              "version": null
+            },
+            "scope": "display-daemon-uinput-access; not-probed",
+            "status": "unknown"
+          },
+          {
+            "kind": "geometry",
+            "provider": {
+              "name": "linux",
+              "version": null
+            },
+            "scope": "version-qualified-stable-geometry-required; see-image-geometry-contract",
+            "status": "not-run"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "request-dependent",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [
+          "NO_SEMANTIC_ELEMENT_IDS"
+        ],
+        "state": "degraded",
+        "surfaces": [
+          "cli",
+          "plugin"
+        ],
+        "variants": [
+          {
+            "limits": {
+              "constraints": [
+                "DISPLAY_ACCESS_UNVERIFIED",
+                "COORDINATE_MAPPING_REQUIRES_GEOMETRY_RECEIPT",
+                "NO_SEMANTIC_ELEMENT_IDS"
+              ],
+              "parameters": {
+                "format": {
+                  "values": [
+                    "png"
+                  ]
+                },
+                "image": {
+                  "maxBytes": 8388608,
+                  "maxDecodedBytes": 268435456,
+                  "maxHeight": 16384,
+                  "maxPixels": 64000000,
+                  "maxWidth": 16384
+                }
+              }
+            },
+            "mode": "screen",
+            "provider": {
+              "name": "maim",
+              "version": null
+            },
+            "reasonCodes": [],
+            "selectors": [],
+            "state": "degraded"
+          },
+          {
+            "limits": {
+              "constraints": [
+                "DISPLAY_ACCESS_UNVERIFIED",
+                "COORDINATE_MAPPING_REQUIRES_GEOMETRY_RECEIPT",
+                "SUCCESSFUL_NUMERIC_ACTIVE_WINDOW_LOOKUP_REQUIRED",
+                "NO_SEMANTIC_ELEMENT_IDS"
+              ],
+              "parameters": {
+                "format": {
+                  "values": [
+                    "png"
+                  ]
+                },
+                "image": {
+                  "maxBytes": 8388608,
+                  "maxDecodedBytes": 268435456,
+                  "maxHeight": 16384,
+                  "maxPixels": 64000000,
+                  "maxWidth": 16384
+                }
+              }
+            },
+            "mode": "window",
+            "provider": {
+              "name": "maim",
+              "version": null
+            },
+            "reasonCodes": [
+              "HELPER_MISSING"
+            ],
+            "selectors": [],
+            "state": "unsupported"
+          },
+          {
+            "limits": {
+              "constraints": [
+                "DISPLAY_ACCESS_UNVERIFIED",
+                "COORDINATE_MAPPING_REQUIRES_GEOMETRY_RECEIPT",
+                "SUCCESSFUL_NUMERIC_ACTIVE_WINDOW_LOOKUP_REQUIRED",
+                "NO_SEMANTIC_ELEMENT_IDS"
+              ],
+              "parameters": {
+                "format": {
+                  "values": [
+                    "png"
+                  ]
+                },
+                "image": {
+                  "maxBytes": 8388608,
+                  "maxDecodedBytes": 268435456,
+                  "maxHeight": 16384,
+                  "maxPixels": 64000000,
+                  "maxWidth": 16384
+                }
+              }
+            },
+            "mode": "frontmost",
+            "provider": {
+              "name": "maim",
+              "version": null
+            },
+            "reasonCodes": [
+              "HELPER_MISSING"
+            ],
+            "selectors": [],
+            "state": "unsupported"
+          },
+          {
+            "limits": {
+              "constraints": [
+                "NO_SEMANTIC_ELEMENT_IDS"
+              ],
+              "parameters": {}
+            },
+            "mode": null,
+            "provider": {
+              "name": "linux",
+              "version": null
+            },
+            "reasonCodes": [
+              "SELECTOR_UNSUPPORTED"
+            ],
+            "selectors": [
+              "app",
+              "windowTitle",
+              "windowId",
+              "screenIndex",
+              "on",
+              "query"
+            ],
+            "state": "unsupported"
+          }
+        ]
+      },
+      "keypress": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "cli-and-plugin-dispatch",
+            "status": "passed"
+          },
+          {
+            "kind": "binary",
+            "observedAtMs": 1700000000000,
+            "provider": {
+              "name": "xdotool",
+              "version": null
+            },
+            "scope": "executable-on-path-only",
+            "status": "failed"
+          },
+          {
+            "kind": "permission",
+            "provider": {
+              "name": "linux",
+              "version": null
+            },
+            "scope": "display-daemon-uinput-access; not-probed",
+            "status": "unknown"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "required",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [
+          "BACKEND_UNAVAILABLE"
+        ],
+        "state": "unsupported",
+        "surfaces": [
+          "cli",
+          "plugin"
+        ],
+        "variants": [
+          {
+            "limits": {
+              "constraints": [
+                "DISPLAY_ACCESS_UNVERIFIED"
+              ],
+              "parameters": {}
+            },
+            "mode": null,
+            "provider": {
+              "name": "xdotool",
+              "version": null
+            },
+            "reasonCodes": [],
+            "selectors": [],
+            "state": "unsupported"
+          },
+          {
+            "limits": {
+              "constraints": [
+                "NO_SEMANTIC_ELEMENT_IDS"
+              ],
+              "parameters": {}
+            },
+            "mode": null,
+            "provider": {
+              "name": "linux",
+              "version": null
+            },
+            "reasonCodes": [
+              "SELECTOR_UNSUPPORTED"
+            ],
+            "selectors": [
+              "app",
+              "windowTitle",
+              "windowId",
+              "screenIndex",
+              "on",
+              "query"
+            ],
+            "state": "unsupported"
+          }
+        ]
+      },
+      "screenshot": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "cli-and-plugin-dispatch",
+            "status": "passed"
+          },
+          {
+            "kind": "binary",
+            "observedAtMs": 1700000000000,
+            "provider": {
+              "name": "maim",
+              "version": null
+            },
+            "scope": "executable-on-path-only",
+            "status": "passed"
+          },
+          {
+            "kind": "permission",
+            "provider": {
+              "name": "linux",
+              "version": null
+            },
+            "scope": "display-daemon-uinput-access; not-probed",
+            "status": "unknown"
+          },
+          {
+            "kind": "geometry",
+            "provider": {
+              "name": "linux",
+              "version": null
+            },
+            "scope": "version-qualified-stable-geometry-required; see-image-geometry-contract",
+            "status": "not-run"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "request-dependent",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [],
+        "state": "available",
+        "surfaces": [
+          "cli",
+          "plugin"
+        ],
+        "variants": [
+          {
+            "limits": {
+              "constraints": [
+                "DISPLAY_ACCESS_UNVERIFIED",
+                "COORDINATE_MAPPING_REQUIRES_GEOMETRY_RECEIPT"
+              ],
+              "parameters": {
+                "format": {
+                  "values": [
+                    "png",
+                    "jpg"
+                  ]
+                },
+                "image": {
+                  "maxBytes": 8388608,
+                  "maxDecodedBytes": 268435456,
+                  "maxHeight": 16384,
+                  "maxPixels": 64000000,
+                  "maxWidth": 16384
+                }
+              }
+            },
+            "mode": "screen",
+            "provider": {
+              "name": "maim",
+              "version": null
+            },
+            "reasonCodes": [],
+            "selectors": [],
+            "state": "available"
+          },
+          {
+            "limits": {
+              "constraints": [
+                "DISPLAY_ACCESS_UNVERIFIED",
+                "COORDINATE_MAPPING_REQUIRES_GEOMETRY_RECEIPT",
+                "SUCCESSFUL_NUMERIC_ACTIVE_WINDOW_LOOKUP_REQUIRED"
+              ],
+              "parameters": {
+                "format": {
+                  "values": [
+                    "png",
+                    "jpg"
+                  ]
+                },
+                "image": {
+                  "maxBytes": 8388608,
+                  "maxDecodedBytes": 268435456,
+                  "maxHeight": 16384,
+                  "maxPixels": 64000000,
+                  "maxWidth": 16384
+                }
+              }
+            },
+            "mode": "window",
+            "provider": {
+              "name": "maim",
+              "version": null
+            },
+            "reasonCodes": [
+              "HELPER_MISSING"
+            ],
+            "selectors": [],
+            "state": "unsupported"
+          },
+          {
+            "limits": {
+              "constraints": [
+                "DISPLAY_ACCESS_UNVERIFIED",
+                "COORDINATE_MAPPING_REQUIRES_GEOMETRY_RECEIPT",
+                "SUCCESSFUL_NUMERIC_ACTIVE_WINDOW_LOOKUP_REQUIRED"
+              ],
+              "parameters": {
+                "format": {
+                  "values": [
+                    "png",
+                    "jpg"
+                  ]
+                },
+                "image": {
+                  "maxBytes": 8388608,
+                  "maxDecodedBytes": 268435456,
+                  "maxHeight": 16384,
+                  "maxPixels": 64000000,
+                  "maxWidth": 16384
+                }
+              }
+            },
+            "mode": "frontmost",
+            "provider": {
+              "name": "maim",
+              "version": null
+            },
+            "reasonCodes": [
+              "HELPER_MISSING"
+            ],
+            "selectors": [],
+            "state": "unsupported"
+          },
+          {
+            "limits": {
+              "constraints": [
+                "NO_SEMANTIC_ELEMENT_IDS"
+              ],
+              "parameters": {}
+            },
+            "mode": null,
+            "provider": {
+              "name": "linux",
+              "version": null
+            },
+            "reasonCodes": [
+              "SELECTOR_UNSUPPORTED"
+            ],
+            "selectors": [
+              "app",
+              "windowTitle",
+              "windowId",
+              "screenIndex",
+              "on",
+              "query"
+            ],
+            "state": "unsupported"
+          }
+        ]
+      },
+      "scroll": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "cli-and-plugin-dispatch",
+            "status": "passed"
+          },
+          {
+            "kind": "binary",
+            "observedAtMs": 1700000000000,
+            "provider": {
+              "name": "xdotool",
+              "version": null
+            },
+            "scope": "executable-on-path-only",
+            "status": "failed"
+          },
+          {
+            "kind": "permission",
+            "provider": {
+              "name": "linux",
+              "version": null
+            },
+            "scope": "display-daemon-uinput-access; not-probed",
+            "status": "unknown"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "required",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [
+          "BACKEND_UNAVAILABLE"
+        ],
+        "state": "unsupported",
+        "surfaces": [
+          "cli",
+          "plugin"
+        ],
+        "variants": [
+          {
+            "limits": {
+              "constraints": [
+                "DISPLAY_ACCESS_UNVERIFIED"
+              ],
+              "parameters": {
+                "amount": {
+                  "maximum": 50,
+                  "minimum": 1,
+                  "units": "wheel-steps"
+                },
+                "direction": {
+                  "values": [
+                    "up",
+                    "down",
+                    "left",
+                    "right"
+                  ]
+                }
+              }
+            },
+            "mode": null,
+            "provider": {
+              "name": "xdotool",
+              "version": null
+            },
+            "reasonCodes": [],
+            "selectors": [],
+            "state": "unsupported"
+          },
+          {
+            "limits": {
+              "constraints": [
+                "NO_SEMANTIC_ELEMENT_IDS"
+              ],
+              "parameters": {
+                "amount": {
+                  "maximum": 50,
+                  "minimum": 1,
+                  "units": "wheel-steps"
+                },
+                "direction": {
+                  "values": [
+                    "up",
+                    "down",
+                    "left",
+                    "right"
+                  ]
+                }
+              }
+            },
+            "mode": null,
+            "provider": {
+              "name": "linux",
+              "version": null
+            },
+            "reasonCodes": [
+              "SELECTOR_UNSUPPORTED"
+            ],
+            "selectors": [
+              "app",
+              "windowTitle",
+              "windowId",
+              "screenIndex",
+              "on",
+              "query"
+            ],
+            "state": "unsupported"
+          }
+        ]
+      },
+      "shell": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "plugin-dispatch-only",
+            "status": "passed"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "required",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [
+          "SURFACE_UNAVAILABLE"
+        ],
+        "state": "unsupported",
+        "surfaces": [
+          "plugin"
+        ],
+        "variants": []
+      },
+      "stop": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "plugin-dispatch-only",
+            "status": "passed"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "none",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [
+          "SURFACE_UNAVAILABLE"
+        ],
+        "state": "unsupported",
+        "surfaces": [
+          "plugin"
+        ],
+        "variants": []
+      },
+      "type-text": {
+        "evidence": [
+          {
+            "kind": "implementation",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "cli-and-plugin-dispatch",
+            "status": "passed"
+          },
+          {
+            "kind": "binary",
+            "observedAtMs": 1700000000000,
+            "provider": {
+              "name": "xdotool",
+              "version": null
+            },
+            "scope": "executable-on-path-only",
+            "status": "failed"
+          },
+          {
+            "kind": "permission",
+            "provider": {
+              "name": "linux",
+              "version": null
+            },
+            "scope": "display-daemon-uinput-access; not-probed",
+            "status": "unknown"
+          },
+          {
+            "kind": "actual-action",
+            "provider": {
+              "name": "coven-desktop-use",
+              "version": "0.1.3"
+            },
+            "scope": "no-desktop-action-during-discovery",
+            "status": "not-run"
+          }
+        ],
+        "policy": {
+          "approval": "required",
+          "gatewayPolicy": "not-reported",
+          "profile": "unknown"
+        },
+        "reasonCodes": [
+          "BACKEND_UNAVAILABLE"
+        ],
+        "state": "unsupported",
+        "surfaces": [
+          "cli",
+          "plugin"
+        ],
+        "variants": [
+          {
+            "limits": {
+              "constraints": [
+                "DISPLAY_ACCESS_UNVERIFIED"
+              ],
+              "parameters": {}
+            },
+            "mode": null,
+            "provider": {
+              "name": "xdotool",
+              "version": null
+            },
+            "reasonCodes": [],
+            "selectors": [],
+            "state": "unsupported"
+          },
+          {
+            "limits": {
+              "constraints": [
+                "NO_SEMANTIC_ELEMENT_IDS"
+              ],
+              "parameters": {}
+            },
+            "mode": null,
+            "provider": {
+              "name": "linux",
+              "version": null
+            },
+            "reasonCodes": [
+              "SELECTOR_UNSUPPORTED"
+            ],
+            "selectors": [
+              "app",
+              "windowTitle",
+              "windowId",
+              "screenIndex",
+              "on",
+              "query"
+            ],
+            "state": "unsupported"
+          }
+        ]
+      }
+    },
+    "environment": {
+      "platform": "linux",
+      "session": "x11"
+    },
+    "producer": {
+      "name": "coven-desktop-use",
+      "surface": "cli",
+      "version": "0.1.3"
+    },
+    "schemaVersion": 1
+  }
+}

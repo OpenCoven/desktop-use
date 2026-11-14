@@ -1,7 +1,9 @@
+import { MAX_TEXT_BYTES, MAX_ARG_BYTES, MAX_ARRAY_ITEMS, KEY_SEPARATOR, PLUGIN_NUMBER_LIMITS, PLUGIN_COORD_LIMITS } from "./plugin-request-limits.js";
+import { explicitMacPermissionFailure, buildPluginCapabilities, repairHintsForCapabilities, type HostEvidence, type CapabilityOutcome } from "./capabilities.js";
 import { withOwnedObservation, type ObservationImage } from "./observation.js";
 import { CANONICAL_ACTIONS, LEGACY_ACTION_ALIASES, type LegacyAction } from "./computer-use-actions.js";
 import { ACTION_PROFILE_DENIED_REASON, isActionAllowed, resolveActionPermissions, validateActionPermissions, type ActionPermissions } from "./action-permissions.js";
-import { installedBinary, planHostAction } from "./host-actions.js";
+import { installedBinary, planHostAction, discoverHostIntegrations } from "./host-actions.js";
 import { CleanupFailure, FileActionError, listDirectory, readRegularFile, writeRegularFile } from "./file-actions.js";
 import { runProcess, ProcessFailure } from "./process-runner.js";
 import { createHash } from "node:crypto";
@@ -31,11 +33,10 @@ import {
   type ComputerUsePolicyContext,
 } from "./computer-use-policy.js";
 
+const adapterOutcomes = new WeakMap<object, CapabilityOutcome>();
 const activeCalls = new Map<string, Set<AbortController>>();
 const scopeKey = (ctx: ComputerUsePolicyContext) => computerUseScopeKey(ctx, "call");
 
-const MAX_TEXT_BYTES = 100_000;
-const MAX_ARG_BYTES = 2_048;
 const MAX_STDIO_BYTES = 64_000;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const CAPTURE_TIMEOUT_MS = 45_000;
@@ -84,8 +85,8 @@ const ComputerUseToolSchema = {
     },
     app: { type: "string", description: "Target app name, bundle id, or PID:123." },
     windowTitle: { type: "string", description: "Partial target window title." },
-    windowId: { type: "number", description: "Platform window id." },
-    screenIndex: { type: "number", minimum: 0 },
+    windowId: { type: "number", ...PLUGIN_NUMBER_LIMITS.windowId, description: "Platform window id." },
+    screenIndex: { type: "number", ...PLUGIN_NUMBER_LIMITS.screenIndex },
     mode: { type: "string", enum: ["screen", "window", "frontmost", "auto"] },
     path: { type: "string", description: "Target file path or output image path." },
     format: { type: "string", enum: ["png", "jpg"] },
@@ -108,7 +109,7 @@ const ComputerUseToolSchema = {
     pressReturn: { type: "boolean" },
     keys: { type: "array", items: { type: "string" }, description: "Keys for keypress." },
     direction: { type: "string", enum: ["up", "down", "left", "right"] },
-    amount: { type: "number", minimum: 1, maximum: 50 },
+    amount: { type: "number", ...PLUGIN_NUMBER_LIMITS.amount },
     command: { type: "string", description: "Executable for shell action. No shell interpolation." },
     args: { type: "array", items: { type: "string" }, description: "Shell argv." },
     cwd: { type: "string", description: "Shell cwd. Defaults to the agent workspace." },
@@ -123,7 +124,7 @@ const ComputerUseToolSchema = {
       description:
         "Set by OpenClaw approval hooks after explicit user approval for gated actions.",
     },
-    timeoutMs: { type: "number", minimum: 1000, maximum: 120000 },
+    timeoutMs: { type: "number", ...PLUGIN_NUMBER_LIMITS.timeoutMs },
   },
 } as const;
 
@@ -201,7 +202,7 @@ function createTool(options: CreateComputerUseToolOptions, legacyTool = false) {
           const prepared = await prepareComputerUseRequest(params, ctx);
           params = prepared.params;
           decision = prepared.decision;
-          if (controller.signal.aborted) throw new ProcessFailure("CANCELLED");
+          if (controller.signal.aborted) throw new ProcessFailure("CANCELLED", undefined, undefined, "not-started");
           if (decision.status === "blocked" || decision.status === "needsApproval") {
             details = {
               status: decision.status, success: false, action: decision.normalizedAction,
@@ -222,7 +223,8 @@ function createTool(options: CreateComputerUseToolOptions, legacyTool = false) {
         const code = error instanceof ProcessFailure || error instanceof FileActionError ? error.code : error instanceof ToolInputError ? "INVALID_INPUT" : ["ENOENT", "EACCES", "EPERM", "EISDIR", "ENOTDIR", "EEXIST", "EIO", "ENOSPC"].includes((error as NodeJS.ErrnoException)?.code ?? "") ? (error as NodeJS.ErrnoException).code! : "ACTION_FAILED";
         details = { status: code === "CANCELLED" ? "cancelled" : code === "ETIMEDOUT" ? "timeout" : "error", success: false,
           action: params.action, code, error: error instanceof ToolInputError ? error.message : "Action failed; raw diagnostics withheld.",
-          ...(caught instanceof CleanupFailure ? { cleanup: caught.cleanup } : {}) };
+          ...(caught instanceof CleanupFailure ? { cleanup: caught.cleanup } : {}),
+          ...(error instanceof ProcessFailure && ["health", "doctor"].includes(normalizeComputerUseAction(params.action)) ? { adapterInvocation: { ...processOutcome(error), code } } : {}) };
       } finally {
         calls.delete(controller);
         if (!calls.size) activeCalls.delete(scope);
@@ -273,6 +275,7 @@ async function executeAllowedAction(
       : undefined;
     const raw = observation ? observation.raw : await runAdapterWithTransientObservationRetry(buildAdapterArgs(params), params, runAdapter, action);
     if (observation?.image) onImage?.(observation.image);
+    if (action === "doctor") return discoveryResult(raw, ctx, permissions, "doctor");
     const safe = action === "type-text" ? redactTypeDiagnostics(decodeAdapterAction(raw)) : raw;
     const normalized = normalizeAdapterResult(safe, { evidence });
     return {
@@ -285,7 +288,7 @@ async function executeAllowedAction(
 
   switch (action) {
     case "health":
-      return runHealth(ctx, permissions, runAdapter, params, signal);
+      return runHealth(ctx, runAdapter, params, permissions);
     case "stop":
       return stopComputerUse(ctx);
     case "shell":
@@ -315,47 +318,69 @@ async function executeAllowedAction(
   }
 }
 
-async function runHealth(ctx: ComputerUsePolicyContext, permissions: ActionPermissions, runAdapter: AdapterRunner, params: ComputerUseParams, _signal?: AbortSignal): Promise<ToolResult["details"]> {
-  const localHealth = {
-    action: "health",
-    agent: COMPUTER_USE_AGENT,
-    healthCheck: COMPUTER_USE_HEALTH_CHECK,
-    auditLog: resolveComputerUseAuditLogPath(ctx),
-  };
+async function runHealth(ctx: ComputerUsePolicyContext, runAdapter: AdapterRunner, params: ComputerUseParams, permissions: ActionPermissions): Promise<ToolResult["details"]> {
   if (!isActionAllowed(permissions, "doctor")) {
+    // A trusted policy skip is not an adapter response or a failed native probe.
+    const hostEvidence = await discoverCapabilityHost();
+    const capabilitiesV1 = buildPluginCapabilities(undefined, hostEvidence, permissions);
     return {
-      ...localHealth,
+      action: "health",
+      agent: COMPUTER_USE_AGENT,
+      healthCheck: COMPUTER_USE_HEALTH_CHECK,
+      auditLog: resolveComputerUseAuditLogPath(ctx),
       status: "blocked",
       success: false,
       code: "ACTION_PROFILE_DENIED",
       reason: "The doctor probe was not run because doctor is disabled by trusted action permissions.",
       adapterProbe: { action: "doctor", status: "skipped", code: "ACTION_PROFILE_DENIED" },
+      capabilitiesV1,
+      adapterInvocation: { ...hostEvidence.adapter, version: null, phase: "before-start", processStarted: false, code: "ACTION_PROFILE_DENIED" },
     };
   }
-  const adapterBin = resolveAdapterBin();
   let adapterResult: unknown;
   try {
-    adapterResult = await runAdapterWithTransientObservationRetry(
-      ["doctor"],
-      { action: "doctor", timeoutMs: params.timeoutMs },
-      runAdapter,
-      "health",
-    );
+    adapterResult = await runAdapterWithTransientObservationRetry(["doctor"], { action: "doctor", timeoutMs: params.timeoutMs }, runAdapter, "health");
   } catch (error) {
-    adapterResult = { ok: false, ...safeExecutionError(error) };
+    const failure = safeExecutionError(error);
+    adapterResult = { ok: false, ...failure };
+    adapterOutcomes.set(adapterResult as object, error instanceof ProcessFailure ? processOutcome(error) : { phase: "process", code: failure.code });
   }
-  const normalized = normalizeAdapterResult(adapterResult, {
-    evidence: { action: "health", adapter: adapterBin },
-  });
-  return {
-    ...normalized,
-    ...localHealth,
-    repairHints: [
-      missingAdapterHint(adapterBin),
-      `Run ${COMPUTER_USE_TOOL_NAME} action=doctor after granting Screen Recording and Accessibility.`,
-      "Restart the OpenClaw Gateway after changing COVEN_DESKTOP_USE_BIN or macOS privacy grants.",
-    ],
-    permissionFlow: permissionFlowForResult(adapterResult, "doctor"),
+  return discoveryResult(adapterResult, ctx, permissions, "health");
+}
+
+async function discoverCapabilityHost(): Promise<HostEvidence> {
+  const adapterBin = resolveAdapterBin();
+  const selected = isAbsolute(adapterBin) || adapterBin.includes("/") ? resolve(adapterBin) : installedBinary(adapterBin);
+  const hostName = platform();
+  const session = process.env.XDG_SESSION_TYPE?.toLowerCase();
+  const hostEvidence: HostEvidence = {
+    environment: { platform: hostName === "darwin" ? "macos" : hostName === "linux" ? "linux" : hostName === "win32" ? "windows" : "other", session: hostName !== "linux" ? null : session === "wayland" || (session !== "x11" && process.env.WAYLAND_DISPLAY) ? "wayland" : session === "x11" || process.env.DISPLAY ? "x11" : null },
+    adapter: { configuredPath: adapterBin, resolvedPath: selected ? await realpath(selected).catch(() => null) : null }, integrations: {}, observedAtMs: Date.now(),
+  };
+  hostEvidence.integrations = discoverHostIntegrations(hostName, process.env, installedBinary, hostEvidence.observedAtMs!);
+  return hostEvidence;
+}
+
+async function discoveryResult(adapterResult: unknown, ctx: ComputerUsePolicyContext, permissions: ActionPermissions, action: "health" | "doctor"): Promise<ToolResult["details"]> {
+  const adapterBin = resolveAdapterBin();
+  let outcome: CapabilityOutcome = adapterResult && typeof adapterResult === "object" ? adapterOutcomes.get(adapterResult) ?? { phase: "adapter" } : { phase: "output", code: "MALFORMED_OUTPUT" };
+  const normalized = normalizeAdapterResult(adapterResult, { evidence: action === "health" ? { action, adapter: adapterBin } : { action, agentId: ctx.agentId ?? COMPUTER_USE_AGENT.id, sessionKey: ctx.sessionKey } });
+  const hostEvidence = await discoverCapabilityHost();
+  let capabilitiesV1;
+  let compatibilityError: string | undefined;
+  try { capabilitiesV1 = buildPluginCapabilities(adapterResult, hostEvidence, permissions); }
+  catch (error) {
+    compatibilityError = error instanceof Error && error.message.startsWith("CAPABILITY_SCHEMA_UNSUPPORTED") ? "CAPABILITY_SCHEMA_UNSUPPORTED" : "CAPABILITY_SCHEMA_INVALID";
+    capabilitiesV1 = buildPluginCapabilities(undefined, hostEvidence, permissions);
+    outcome = { ...outcome, phase: "output", code: compatibilityError };
+  }
+  const decoded = decodeAdapterAction(adapterResult);
+  outcome = { ...outcome, code: outcome.code ?? (typeof decoded.code === "string" ? decoded.code : undefined), setupGuide: Boolean(readObjectField(adapterResult, "setupGuide")), permissionDenied: explicitMacPermissionFailure(adapterResult) };
+  const repairHints = repairHintsForCapabilities(capabilitiesV1, outcome);
+  return { ...normalized, ...(compatibilityError ? { status: "error", success: false, code: compatibilityError, error: "Adapter capability response is incompatible; raw diagnostics withheld." } : {}),
+    action, ...(action === "health" ? { agent: COMPUTER_USE_AGENT, healthCheck: COMPUTER_USE_HEALTH_CHECK, auditLog: resolveComputerUseAuditLogPath(ctx) } : {}), capabilitiesV1,
+    adapterInvocation: { ...hostEvidence.adapter, version: capabilitiesV1.adapter?.version ?? null, phase: outcome.phase, ...(outcome.processStarted === undefined ? {} : { processStarted: outcome.processStarted }), ...(outcome.code ? { code: outcome.code } : {}) },
+    repairHints, permissionFlow: outcome.phase === "adapter" ? permissionFlowForResult(adapterResult, "doctor", repairHints.some(hint => hint.includes("macOS permissions"))) : undefined,
   };
 }
 
@@ -397,7 +422,7 @@ function shouldRetryAdapterResult(result: unknown, action: string): boolean {
   if (record.ok === true || record.supported === false || record.code === "CANCELLED" || record.code === "ETIMEDOUT") {
     return false;
   }
-  if (looksLikePermissionFailure(result)) {
+  if (explicitMacPermissionFailure(result)) {
     return false;
   }
   const haystack = [
@@ -524,7 +549,7 @@ export function normalizeParams(params: unknown): ComputerUseParams {
       if (!Array.isArray(value) || Array.from(value).some((item) => typeof item !== "string")) {
         throw new ToolInputError(`${label} must be an array of strings.`);
       }
-      if (value.length > 256) throw new ToolInputError(`${label} exceeds 256 items.`);
+      if (value.length > MAX_ARRAY_ITEMS) throw new ToolInputError(`${label} exceeds ${MAX_ARRAY_ITEMS} items.`);
       for (const item of value) {
         if (item.includes("\0")) throw new ToolInputError(`${label} must not contain NUL bytes.`);
         assertMaxBytes(item, label, MAX_ARG_BYTES);
@@ -550,9 +575,9 @@ export function normalizeParams(params: unknown): ComputerUseParams {
     }
   }
   if (Array.isArray(record.keys)) {
-    assertMaxBytes(record.keys.join(","), "keys", MAX_ARG_BYTES);
+    assertMaxBytes(record.keys.join(KEY_SEPARATOR), "keys", MAX_ARG_BYTES);
   }
-  if (record.coords !== undefined && (!/^-?\d{1,10},-?\d{1,10}$/.test((record.coords as string).trim()) || (record.coords as string).split(",").some(n => Number(n) < -2147483648 || Number(n) > 2147483647))) {
+  if (record.coords !== undefined && (!/^-?\d{1,10},-?\d{1,10}$/.test((record.coords as string).trim()) || (record.coords as string).split(",").some(n => Number(n) < PLUGIN_COORD_LIMITS.minimum || Number(n) > PLUGIN_COORD_LIMITS.maximum))) {
     throw new ToolInputError("coords must be in x,y form, for example 120,240.");
   }
   const normalized = record as ComputerUseParams;
@@ -568,6 +593,10 @@ export function normalizeParams(params: unknown): ComputerUseParams {
   return record as ComputerUseParams;
 }
 
+function processOutcome(error: ProcessFailure): CapabilityOutcome {
+  return { phase: error.lifecycle === "not-started" ? "before-start" : error.lifecycle === "spawn-failed" ? "spawn" : "process", ...(error.lifecycle === "unknown" ? {} : { processStarted: error.lifecycle === "started" }), code: error.code };
+}
+
 async function runAdapterBinary(args: string[], params: ComputerUseParams, signal?: AbortSignal): Promise<unknown> {
   const timeout = params.timeoutMs ?? (params.action === "inspect" || params.action === "screenshot" ? CAPTURE_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
   const adapterBin = resolveAdapterBin();
@@ -576,16 +605,20 @@ async function runAdapterBinary(args: string[], params: ComputerUseParams, signa
       timeoutMs: timeout, signal, maxBuffer: 10 * 1024 * 1024, reportProgress: true,
     });
     let result: unknown;
-    try { result = JSON.parse(stdout); } catch { return { ok: false, code: "MALFORMED_OUTPUT", error: "Adapter returned malformed JSON; output withheld." }; }
+    try { result = JSON.parse(stdout); } catch { const invalid = { ok: false, code: "MALFORMED_OUTPUT", error: "Adapter returned malformed JSON; output withheld." }; adapterOutcomes.set(invalid, { phase: "output", processStarted: true, code: "MALFORMED_OUTPUT" }); return invalid; }
     if (!result || typeof result !== "object" || Array.isArray(result) || typeof (result as any).ok !== "boolean") {
-      return { ok: false, code: "MALFORMED_OUTPUT", error: "Adapter returned an invalid envelope; output withheld." };
+      const invalid = { ok: false, code: "MALFORMED_OUTPUT", error: "Adapter returned an invalid envelope; output withheld." };
+      adapterOutcomes.set(invalid, { phase: "output", processStarted: true, code: "MALFORMED_OUTPUT" }); return invalid;
     }
+    adapterOutcomes.set(result as object, { phase: "adapter", processStarted: true });
     return normalizeComputerUseAction(params.action) === "type-text" ? redactTypeDiagnostics(result) : result;
   } catch (error) {
     const code = error instanceof ProcessFailure || error instanceof FileActionError ? error.code : "BACKEND_ERROR";
-    return { ok: false, code, error: "Adapter execution failed; raw diagnostics withheld.",
+    const failure = { ok: false, code, error: "Adapter execution failed; raw diagnostics withheld.",
       ...(["ETIMEDOUT", "CANCELLED"].includes(code) ? error instanceof ProcessFailure && error.progress ? error.progress : { progressUnknown: true } : {}),
       ...(code === "ENOENT" ? { hint: missingAdapterHint(adapterBin), adapterSetup: adapterSetupGuide(adapterBin) } : {}) };
+    adapterOutcomes.set(failure, error instanceof ProcessFailure ? processOutcome(error) : { phase: "process", code });
+    return failure;
   }
 }
 
@@ -605,7 +638,7 @@ function redactTypeDiagnostics(value: unknown): unknown {
   if (typeof record.code === "string") fields.code = codes.includes(record.code) ? record.code : "BACKEND_ERROR";
   if (Array.isArray(record.steps)) fields.steps = record.steps.map(redactTypeDiagnostics);
   if (typeof record.adapter === "string") { fields.adapter = "adapter"; fields.result = redactTypeDiagnostics(record.result); }
-  if (looksLikePermissionFailure(value)) fields.permissionError = "PERMISSION_ERROR";
+  if (explicitMacPermissionFailure(value)) fields.permissionError = "PERMISSION_ERROR";
   return fields;
 }
 
@@ -692,7 +725,7 @@ function buildTypeTextArgs(params: ComputerUseParams): string[] {
 
 function buildKeypressArgs(params: ComputerUseParams): string[] {
   if (!params.keys?.length) throw new ToolInputError("keypress requires keys.");
-  const args = ["keypress", "--confirm", "--keys", params.keys.join(",")];
+  const args = ["keypress", "--confirm", "--keys", params.keys.join(KEY_SEPARATOR)];
   addCommonTargetArgs(args, params);
   return args;
 }
@@ -721,12 +754,14 @@ function addCommonTargetArgs(args: string[], params: ComputerUseParams): void {
 }
 
 
-function permissionFlowForResult(result: unknown, action: string): unknown | undefined {
+function permissionFlowForResult(result: unknown, action: string, reportDenial = false): unknown | undefined {
   const platform = readStringField(result, "platform");
   if (platform === "linux") {
+    const guide = readObjectField(result, "setupGuide");
+    if (!guide || !(readArrayField(guide, "missingTools")?.length)) return undefined;
     return linuxPermissionFlow(result, action);
   }
-  if (action !== "doctor" && !looksLikePermissionFailure(result)) {
+  if (!reportDenial && !explicitMacPermissionFailure(result)) {
     return undefined;
   }
   return {
@@ -783,16 +818,12 @@ function linuxPermissionFlow(result: unknown, action: string): unknown | undefin
     summary:
       readStringField(setupGuide, "summary") ??
       "Linux desktop-use requires per-session helper tools (scrot/xdotool on X11, grim/wtype/ydotool on Wayland).",
-    installCommand:
-      readStringField(setupGuide, "installCommand") ??
-      (session === "wayland"
-        ? "sudo apt install grim wtype ydotool"
-        : "sudo apt install scrot xdotool wmctrl"),
+    installCommand: readStringField(setupGuide, "installCommand"),
     missingTools: readArrayField(setupGuide, "missingTools") ?? [],
     tools: tools ?? null,
     sessionNotes: collectSessionNotes(setupGuide),
     afterInstall:
-      `After installing the listed packages, rerun ${COMPUTER_USE_TOOL_NAME} action=doctor. Wayland users may also need to start the ydotoold service and add their user to the 'input' group.`,
+      `Follow the reported setupGuide and rerun ${COMPUTER_USE_TOOL_NAME} action=doctor. Helper inventory does not verify daemon access, session permissions, or desktop effects.`,
     verification: { tool: COMPUTER_USE_TOOL_NAME, args: { action: "doctor" } },
   };
 }
@@ -840,16 +871,6 @@ function resolvePathBinary(name: string): string | undefined {
     }
   }
   return undefined;
-}
-
-function looksLikePermissionFailure(value: unknown): boolean {
-  const text = JSON.stringify(value ?? "");
-  return (
-    text.includes("PERMISSION_ERROR") ||
-    text.includes("Screen recording permission") ||
-    (text.includes("Screen Recording") && text.includes("isGranted") && text.includes("false")) ||
-    (text.includes("Accessibility") && text.includes("isGranted") && text.includes("false"))
-  );
 }
 
 function missingAdapterHint(adapterBin: string): string {

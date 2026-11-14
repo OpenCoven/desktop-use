@@ -1,0 +1,46 @@
+{
+  "valid": {
+    "maxItems": 256,
+    "maxItemBytes": 2048,
+    "joined": {
+      "maxBytes": 2048,
+      "separator": ","
+    },
+    "encoding": "utf-8"
+  },
+  "invalid": [
+    {
+      "maxItems": -1
+    },
+    {
+      "maxItems": 1.5
+    },
+    {
+      "maxItemBytes": -1
+    },
+    {
+      "joined": {
+        "maxBytes": -1,
+        "separator": ","
+      }
+    },
+    {
+      "joined": {
+        "maxBytes": 2048
+      }
+    },
+    {
+      "joined": {
+        "maxBytes": 2048,
+        "separator": " "
+      }
+    },
+    {
+      "joined": {
+        "maxBytes": 2048,
+        "separator": ",",
+        "unknown": 1
+      }
+    }
+  ]
+}

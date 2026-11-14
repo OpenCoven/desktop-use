@@ -13,8 +13,10 @@ function validatedProgress(output: Buffer): ActionProgress | undefined {
   } catch { return undefined; }
 }
 
+export type ProcessLifecycle = "not-started" | "spawn-failed" | "started" | "unknown";
+
 export class ProcessFailure extends Error {
-  constructor(readonly code: string, readonly exitCode?: number | null, readonly progress?: ActionProgress) {
+  constructor(readonly code: string, readonly exitCode?: number | null, readonly progress?: ActionProgress, readonly lifecycle: ProcessLifecycle = "unknown") {
     super(`Helper execution failed (${code}); raw arguments and diagnostics withheld.`);
     this.name = "ProcessFailure";
   }
@@ -33,8 +35,8 @@ export type ProcessOptions = {
 };
 
 export function runProcess(file: string, args: string[], options: ProcessOptions): Promise<{ stdout: string; stderr: string }> {
-  if (options.signal?.aborted) return Promise.reject(new ProcessFailure("CANCELLED"));
-  if (options.timeoutMs <= 0) return Promise.reject(new ProcessFailure("ETIMEDOUT"));
+  if (options.signal?.aborted) return Promise.reject(new ProcessFailure("CANCELLED", undefined, undefined, "not-started"));
+  if (options.timeoutMs <= 0) return Promise.reject(new ProcessFailure("ETIMEDOUT", undefined, undefined, "not-started"));
   return new Promise((resolve, reject) => {
     const unix = process.platform !== "win32";
     const child = spawn(file, args, {
@@ -42,6 +44,8 @@ export function runProcess(file: string, args: string[], options: ProcessOptions
       detached: unix,
       stdio: [options.input === undefined ? "ignore" : "pipe", options.capture === false ? "ignore" : "pipe", options.capture === false ? "ignore" : "pipe"],
     });
+    let started = false;
+    child.once("spawn", () => { started = true; });
     let out = Buffer.alloc(0);
     let err = Buffer.alloc(0);
     let failure: ProcessFailure | undefined;
@@ -63,7 +67,7 @@ export function runProcess(file: string, args: string[], options: ProcessOptions
       child.stderr?.destroy();
       if (error) {
         const progress = options.reportProgress && ["ETIMEDOUT", "CANCELLED"].includes(error.code) ? validatedProgress(out) : undefined;
-        reject(new ProcessFailure(error.code, error.exitCode, progress));
+        reject(new ProcessFailure(error.code, error.exitCode, progress, started ? "started" : "spawn-failed"));
       }
       else resolve({ stdout: out.toString("utf8"), stderr: err.toString("utf8") });
     };

@@ -1,0 +1,20 @@
+[
+  "health",
+  "stop",
+  "doctor",
+  "inspect",
+  "screenshot",
+  "click",
+  "type-text",
+  "keypress",
+  "scroll",
+  "focus",
+  "shell",
+  "file-list",
+  "file-read",
+  "file-write",
+  "clipboard-read",
+  "clipboard-write",
+  "browser-open",
+  "app-launch"
+]

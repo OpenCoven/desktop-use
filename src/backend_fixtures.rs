@@ -494,6 +494,90 @@ fn ydotool_only_input_skips_irrelevant_wayland_registry_probe() {
 }
 
 #[test]
+fn doctor_reports_share_one_observational_protocol_probe_without_desktop_input() {
+    let f = Fixture::new();
+    f.tool("wayland-info", r#"printf 'registry\n' >> "$FIXTURE_LOG"; printf 'interface: zwlr_screencopy_manager_v1\ninterface: zwp_virtual_keyboard_manager_v1\n'"#);
+    for helper in ["grim", "wtype", "ydotool", "swaymsg"] {
+        f.tool(
+            helper,
+            r#"printf 'unexpected-effect\n' >> "$FIXTURE_LOG"; exit 1"#,
+        );
+    }
+    let result =
+        f.run(json!({"platform":"wayland","args":["doctor"],"env":{"SWAYSOCK":"fixture-socket"}}));
+    assert_eq!(f.log(), "registry\n");
+    assert_eq!(result["capabilities"]["typing"]["state"], "available");
+    assert_eq!(
+        result["capabilitiesV1"]["actions"]["type-text"]["state"],
+        "available"
+    );
+    assert_eq!(
+        result["capabilitiesV1"]["actions"]["click"]["state"],
+        "unverified"
+    );
+    assert_eq!(
+        result["capabilitiesV1"]["environment"],
+        json!({"platform":"linux","session":"wayland"})
+    );
+    let screen: Vec<_> = result["capabilitiesV1"]["actions"]["screenshot"]["variants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|v| v["mode"] == "screen")
+        .collect();
+    assert_eq!(screen.len(), 2);
+    assert_eq!(screen[0]["state"], "available");
+    assert_eq!(
+        screen[0]["limits"]["parameters"]["format"]["values"],
+        json!(["png"])
+    );
+    assert_eq!(screen[1]["state"], "unverified");
+    assert_eq!(
+        screen[1]["reasonCodes"],
+        json!(["ENCODING_SUPPORT_UNVERIFIED"])
+    );
+    let schema: Value =
+        serde_json::from_str(include_str!("../contracts/v1/capabilities.schema.json")).unwrap();
+    assert!(jsonschema::is_valid(&schema, &result["capabilitiesV1"]));
+}
+
+#[test]
+fn help_inventory_does_not_run_helpers_and_preserves_legacy_commands_and_aliases() {
+    let f = Fixture::new();
+    for helper in ["peekaboo", "wayland-info", "grim", "wtype", "ydotool"] {
+        f.tool(
+            helper,
+            r#"printf 'unexpected-probe\n' >> "$FIXTURE_LOG"; exit 1"#,
+        );
+    }
+    let result =
+        f.run(json!({"platform":"cli","args":["--help"],"env":{"XDG_SESSION_TYPE":"wayland"}}));
+    assert!(f.log().is_empty());
+    assert_eq!(result["aliases"]["type"], "type-text");
+    assert_eq!(result["commands"].as_array().unwrap().len(), 8);
+    assert_eq!(result["capabilitiesV1"]["schemaVersion"], 1);
+    assert_eq!(
+        result["capabilitiesV1"]["actions"]["stop"]["policy"]["approval"],
+        "none"
+    );
+}
+
+#[test]
+fn macos_doctor_keeps_permission_denial_separate_from_implementation_and_profile() {
+    let f = Fixture::new();
+    f.tool("peekaboo",r#"printf '%s\n' "$@" >> "$FIXTURE_LOG"; printf '{"success":false,"error":{"code":"PERMISSION_ERROR"}}'"#);
+    let result = f.run(json!({"platform":"macos","args":["permissions"]}));
+    assert_eq!(result["code"], "PERMISSION_ERROR");
+    assert!(result.get("permissionGuide").is_some());
+    assert_eq!(f.log(), "permissions\n--json\n--no-remote\n");
+    let click = &result["capabilitiesV1"]["actions"]["click"];
+    assert_eq!(click["reasonCodes"], json!(["PERMISSION_DENIED"]));
+    assert_eq!(click["evidence"][0]["status"], "passed");
+    assert_eq!(click["policy"]["profile"], "unknown");
+    assert_eq!(click["variants"][0]["provider"]["version"], Value::Null);
+}
+
+#[test]
 fn wayland_capture_encoding_follows_requested_format_not_destination_suffix() {
     let f = Fixture::new();
     f.tool("grim",r#"printf '%s\n' "$@" >> "$FIXTURE_LOG"; for arg in "$@"; do target="$arg"; done; /bin/cp "$FIXTURE_IMAGE" "$target""#);

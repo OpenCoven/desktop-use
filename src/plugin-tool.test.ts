@@ -161,8 +161,8 @@ test("blocks dangerous shell attempts before adapter or host execution", async (
 
 test("names the canonical tool in every setup and repair guide", async () => {
   for (const doctor of [
-    { ok: true, platform: "linux", session: "wayland", setupGuide: { summary: "fixture" } },
-    { ok: true, platform: "macos" },
+    { ok: true, platform: "linux", session: "wayland", setupGuide: { summary: "fixture", missingTools: ["grim"] } },
+    { ok: true, platform: "macos", code: "PERMISSION_ERROR" },
   ]) {
     const tool = createComputerUseTool({
       ctx: { agentId: "computer-use", sessionKey: "agent:computer-use:main" },

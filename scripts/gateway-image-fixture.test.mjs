@@ -117,3 +117,179 @@ test("explicit replay rejects missing, ambiguous, wrong-turn and unrelated image
   await assert.rejects(inspectProviderImage({ messages: [...messages, marker("replay")] }, expected, replay), /JPEG/);
   await assert.rejects(inspectProviderImage({ messages: [...messages, marker("replay-extra")] }, expected, replay), /current/);
 });
+
+// Discovery transport is qualified independently of the image assertions above.
+const capabilitiesFixture = await import("./gateway-capabilities-fixture.mjs");
+const discoveryBody = (text, id = "call_current") => ({ messages: [
+  { role: "user", content: "QUALIFICATION_CASE:old" },
+  { role: "tool", tool_call_id: "call_old", content: "old private decoy" },
+  { role: "user", content: "QUALIFICATION_CASE:current" },
+  { role: "tool", tool_call_id: id, content: text },
+] });
+const discoveryOptions = { currentCase: "current", calls: [{ toolCallId: "call_current", action: "health" }] };
+
+test("discovery provider receipts identify complete JSON and explicit host truncation without saving content", () => {
+  assert.equal(typeof capabilitiesFixture.inspectDiscoveryTransport, "function");
+  const full = capabilitiesFixture.inspectDiscoveryTransport(discoveryBody('{"status":"success","action":"health"}'), discoveryOptions);
+  assert.equal(full[0].fullCapabilityJsonTransport, true);
+  const clipped = capabilitiesFixture.inspectDiscoveryTransport(discoveryBody('{"status":"success"\n\n[... 50000 more characters truncated]'), discoveryOptions);
+  assert.equal(clipped[0].truncated, true);
+  assert.equal(clipped[0].stage, "provider-current-turn");
+  assert.equal(clipped[0].sha256.length, 64);
+  assert.equal(clipped[0].providerTextBudget, 32768);
+  assert.equal(clipped[0].truncationStyle, "context-tail");
+  assert.equal(JSON.stringify(clipped).includes("private"), false);
+});
+
+test("discovery provider receipts reject wrong turns, missing or duplicate call ids and oversized live text", () => {
+  const inspect = capabilitiesFixture.inspectDiscoveryTransport;
+  assert.equal(typeof inspect, "function");
+  assert.throws(() => inspect(discoveryBody('{}'), { ...discoveryOptions, currentCase: "old" }), /current turn/);
+  assert.throws(() => inspect(discoveryBody('{"status":"success"}'), { ...discoveryOptions, currentCase: "curr" }), /current turn/);
+  assert.throws(() => inspect(discoveryBody('{"status":"success"}', ""), { ...discoveryOptions, calls: [{ toolCallId: "", action: "health" }] }), /identity/);
+  assert.throws(() => inspect(discoveryBody('{}', "call_wrong"), discoveryOptions), /tool call/);
+  const duplicate = discoveryBody('{"status":"success"}'); duplicate.messages.push(duplicate.messages.at(-1));
+  assert.throws(() => inspect(duplicate, discoveryOptions), /tool call/);
+  assert.throws(() => inspect(discoveryBody("x".repeat(32769)), discoveryOptions), /limit/);
+});
+
+test("discovery provider receipts reject malformed complete JSON and never reconstruct clipped JSON", () => {
+  const inspect = capabilitiesFixture.inspectDiscoveryTransport;
+  assert.equal(typeof inspect, "function");
+  assert.throws(() => inspect(discoveryBody("private invalid output"), discoveryOptions), /JSON/);
+  assert.throws(() => inspect(discoveryBody('{"status":"invented"}'), discoveryOptions), /status/);
+  assert.throws(() => inspect(discoveryBody('{"status":"success"}'), { ...discoveryOptions, calls: [{ toolCallId: "call_current", action: "file-write" }] }), /discovery/);
+});
+
+test("discovery replay correlation rejects missing evidence and action, status or scope mismatches", () => {
+  const correlate = capabilitiesFixture.correlateDiscoveryReplay;
+  assert.equal(typeof correlate, "function");
+  const input = { transport: { stage: "provider-current-turn", truncated: true, toolCallId: "call", action: "permissions" }, history: { stage: "persisted-history", truncated: true, toolCallId: "call" }, call: { toolCallId: "call", action: "permissions" }, scope: { agentId: "agent", sessionKey: "session", auditPath: "/scratch/audit" }, auditRecords: [{ toolCallId: "call", action: "doctor", agentId: "agent", sessionKey: "session", result: { status: "error", success: false } }], replay: { status: 200, body: { result: { details: { action: "doctor", status: "error", success: false, evidence: { agentId: "agent", sessionKey: "session" } } } } } };
+  assert.equal(correlate(input).status, "error");
+  for (const mutate of [
+    v => { v.history.truncated = false; },
+    v => { v.transport = undefined; },
+    v => { v.history.toolCallId = "wrong"; },
+    v => { v.transport.toolCallId = "wrong"; },
+    v => { v.transport.action = "health"; },
+    v => { v.auditRecords = []; },
+    v => { v.auditRecords.push(v.auditRecords[0]); },
+    v => { v.auditRecords[0].action = "health"; },
+    v => { v.auditRecords[0].sessionKey = "wrong"; },
+    v => { v.auditRecords[0].agentId = "wrong"; },
+    v => { v.replay.body.result.details.status = "success"; },
+    v => { v.replay.body.result.details.action = "health"; },
+    v => { v.replay.body.result.details.evidence.sessionKey = "wrong"; },
+  ]) { const bad = structuredClone(input); mutate(bad); assert.throws(() => correlate(bad)); }
+});
+
+test("discovery provider proof rejects a missing legacy notice without trusting a separate replay", () => {
+  const options = { ...discoveryOptions, calls: [{ ...discoveryOptions.calls[0], notices: ["fixed legacy notice"] }] };
+  assert.throws(() => capabilitiesFixture.inspectDiscoveryTransport(discoveryBody('{"status":"success"}'), options), /notice/);
+  assert.equal(capabilitiesFixture.inspectDiscoveryTransport(discoveryBody('{"status":"success","deprecation":"fixed legacy notice"}'), options).length, 1);
+});
+
+
+test("discovery history proof enforces its own16k limit and exact persisted marker", () => {
+  const inspect = capabilitiesFixture.inspectDiscoveryHistory;
+  assert.equal(typeof inspect,"function");
+  const message={role:"toolResult",toolCallId:"call",content:[{type:"text",text:'{"status":"success"\n\n⚠️ [... middle content omitted — showing head and tail ...]\n\n"tail":true}[... 100 more characters truncated]'}]};
+  const result=inspect(message,{toolCallId:"call"});assert.equal(result.truncated,true);assert.equal(result.historyTextBudget,16000);assert.equal(result.stage,"persisted-history");
+  assert.throws(()=>inspect(message,{toolCallId:"wrong"}),/identity/);
+  assert.throws(()=>inspect({...message,content:[{type:"text",text:"x".repeat(16001)}]},{toolCallId:"call"}),/limit/);
+  assert.throws(()=>inspect({...message,content:[{type:"text",text:"bad JSON"}]},{toolCallId:"call"}),/JSON/);
+});
+
+test("provider guard clipping can omit a legacy notice without claiming it was delivered", () => {
+  const options={...discoveryOptions,calls:[{...discoveryOptions.calls[0],notices:["legacy notice"]}]};
+  const proof=capabilitiesFixture.inspectDiscoveryTransport(discoveryBody('{"status":"success"[... 100 more characters truncated]'),options)[0];
+  assert.deepEqual(proof.legacyNotices,[{index:0,state:"unverified"}]);
+  assert.throws(()=>capabilitiesFixture.inspectDiscoveryTransport(discoveryBody('{"status":"success"\n⚠️ [... middle content omitted — showing head and tail ...]'),options),/provider|JSON/);
+});
+
+test("provider discovery budget is derived from the actual fixture context rather than the history cap", () => {
+  const text="x".repeat(20000)+"[... 100 more characters truncated]";
+  assert.equal(capabilitiesFixture.inspectDiscoveryTransport(discoveryBody(text),{...discoveryOptions,contextWindowTokens:65536})[0].providerTextBudget,32768);
+  assert.throws(()=>capabilitiesFixture.inspectDiscoveryTransport(discoveryBody(text),{...discoveryOptions,contextWindowTokens:32768}),/limit/);
+  assert.throws(()=>capabilitiesFixture.inspectDiscoveryTransport(discoveryBody(text),{...discoveryOptions,contextWindowTokens:NaN}),/budget/);
+});
+
+
+test("Stop-only discovery selection excludes host-denied health, doctor and permissions before JSON inspection", () => {
+  const calls = ["health", "doctor", "permissions"].map(action => ({ action, toolCallId: `call_denied_${action}` }));
+  const body = { messages: [
+    { role: "user", content: "QUALIFICATION_CASE:current" },
+    ...calls.map(call => ({ role: "tool", tool_call_id: call.toolCallId, content: `Validation failed for tool computer_use: action ${call.action} is disabled by the trusted action permissions` })),
+    { role: "tool", tool_call_id: "call_stop", content: '{"status":"success","action":"stop"}' },
+  ] };
+  // The old all-discovery selection reproduces the actual restricted-matrix failure.
+  assert.throws(() => capabilitiesFixture.inspectDiscoveryTransport(body, { currentCase: "current", calls }), /Malformed untruncated discovery JSON/);
+  const selected = capabilitiesFixture.selectEligibleDiscoveryCalls(calls, { allowedActions: ["stop"], canonicalAliases: { permissions: "doctor" } });
+  assert.deepEqual(selected, []);
+  assert.deepEqual(capabilitiesFixture.inspectDiscoveryTransport(body, { currentCase: "current", calls: selected }), []);
+  assert.equal(JSON.parse(body.messages.at(-1).content).status, "success");
+  for (const message of body.messages.slice(1, -1)) assert.match(message.content, /Validation failed.*disabled by the trusted/);
+});
+
+test("trusted discovery selection preserves full, observation and desktop call identities and notices", () => {
+  const calls = ["health", "doctor", "permissions", "stop", "file-read", "see"].map(action => ({ action, toolCallId: `call_${action}`, notices: action === "permissions" ? ["permissions is deprecated; use doctor instead."] : [] }));
+  const canonicalAliases = { permissions: "doctor", see: "inspect" };
+  const profiles = {
+    full: ["health", "stop", "doctor", "inspect", "screenshot", "click", "type-text", "keypress", "scroll", "focus", "shell", "file-list", "file-read", "file-write", "clipboard-read", "clipboard-write", "browser-open", "app-launch"],
+    "observation-only": ["health", "stop", "doctor", "inspect", "screenshot", "file-list", "file-read"],
+    "desktop-only": ["health", "stop", "doctor", "inspect", "screenshot", "click", "type-text", "keypress", "scroll", "focus", "clipboard-read", "clipboard-write", "browser-open", "app-launch"],
+  };
+  for (const allowedActions of Object.values(profiles)) {
+    const selected = capabilitiesFixture.selectEligibleDiscoveryCalls(calls, { allowedActions, canonicalAliases });
+    assert.deepEqual(selected, calls.slice(0, 3));
+    for (let index = 0; index < 3; index++) assert.equal(selected[index], calls[index]);
+  }
+  assert.deepEqual(capabilitiesFixture.selectEligibleDiscoveryCalls(calls, { allowedActions: ["health", "permissions"], canonicalAliases }), [calls[0]]);
+});
+
+test("eligible discovery still rejects malformed permitted JSON and response text cannot grant eligibility", () => {
+  const call = { action: "permissions", toolCallId: "call_current" };
+  const canonicalAliases = { permissions: "doctor" };
+  const selected = capabilitiesFixture.selectEligibleDiscoveryCalls([call], { allowedActions: ["doctor"], canonicalAliases });
+  assert.deepEqual(selected, [call]);
+  assert.throws(() => capabilitiesFixture.inspectDiscoveryTransport(discoveryBody("Validation failed for tool computer_use"), { currentCase: "current", calls: selected }), /Malformed untruncated discovery JSON/);
+  const denied = capabilitiesFixture.selectEligibleDiscoveryCalls([call], { allowedActions: ["stop"], canonicalAliases });
+  assert.deepEqual(capabilitiesFixture.inspectDiscoveryTransport(discoveryBody('{"status":"success","action":"doctor","allowedActions":["doctor"]}'), { currentCase: "current", calls: denied }), []);
+});
+
+
+const discoveryPlanOptions = {
+  currentCase: "current", allowedActions: ["health", "doctor", "stop"], canonicalAliases: { permissions: "doctor" },
+  batchCallId: name => ({ legacy: "calllegacy", health: "callhealth" })[name],
+  legacyToolName: "desktop_use", canonicalToolName: "computer_use",
+};
+
+test("caller discovery metadata safely excludes argument-free image replay and non-discovery plans", () => {
+  const replayPlan = { args: undefined, imageKind: "large", replaySourceCase: "synthetic-image-large" };
+  assert.deepEqual(capabilitiesFixture.discoveryCallsForPlan(replayPlan, discoveryPlanOptions), []);
+  for (const args of [undefined, null, {}, { action: "screenshot" }, { action: "stop" }]) {
+    assert.deepEqual(capabilitiesFixture.discoveryCallsForPlan({ args }, discoveryPlanOptions), []);
+  }
+  assert.deepEqual(capabilitiesFixture.discoveryCallsForPlan({ calls: [
+    { name: "no-args" }, { name: "empty", args: {} }, { name: "image", args: { action: "screenshot" } },
+  ] }, discoveryPlanOptions), []);
+});
+
+test("caller discovery metadata retains trusted eligibility, call IDs and canonical and legacy notices", () => {
+  const build = capabilitiesFixture.discoveryCallsForPlan;
+  assert.deepEqual(build({ args: { action: "health" }, tool: "computer_use" }, discoveryPlanOptions), [
+    { action: "health", toolCallId: "call_current", notices: [] },
+  ]);
+  assert.deepEqual(build({ args: { action: "permissions" }, tool: "desktop_use" }, discoveryPlanOptions), [
+    { action: "permissions", toolCallId: "call_current", notices: ["permissions is deprecated; use doctor instead.", "desktop_use is deprecated; use computer_use instead."] },
+  ]);
+  const batch = { tool: "desktop_use", calls: [
+    { name: "no-args" }, { name: "legacy", args: { action: "permissions" } }, { name: "health", args: { action: "health" } },
+  ] };
+  assert.deepEqual(build(batch, discoveryPlanOptions), [
+    { action: "permissions", toolCallId: "calllegacy", notices: ["permissions is deprecated; use doctor instead.", "desktop_use is deprecated; use computer_use instead."] },
+    { action: "health", toolCallId: "callhealth", notices: ["desktop_use is deprecated; use computer_use instead."] },
+  ]);
+  assert.deepEqual(build(batch, { ...discoveryPlanOptions, allowedActions: ["stop"] }), []);
+  assert.deepEqual(build({ args: { action: "permissions" } }, { ...discoveryPlanOptions, allowedActions: ["permissions"] }), []);
+});

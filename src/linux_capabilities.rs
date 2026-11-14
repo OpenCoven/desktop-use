@@ -1,7 +1,7 @@
 use super::*;
 use serde_json::{json, Value};
 
-#[derive(Default)]
+#[derive(Default, Clone, Copy)]
 pub struct Protocols {
     pub keyboard: Option<bool>,
     pub capture: Option<bool>,
@@ -45,11 +45,10 @@ pub fn use_wtype() -> bool {
     keyboard != Some(false) && (keyboard == Some(true) || resolve_path_binary("ydotool").is_none())
 }
 
-pub fn capabilities(session: LinuxSession, tools: &[LinuxToolStatus]) -> Value {
+pub fn with_protocols(session: LinuxSession, tools: &[LinuxToolStatus], p: Protocols) -> Value {
     let has = |name| tools.iter().any(|t| t.name == name && t.found);
     let cap = |state, reason| json!({"state":state, "reason":reason, "runtimeVerified":false});
     let mut value = if session == LinuxSession::Wayland {
-        let p = protocols();
         let capture = if !has("grim") || p.capture == Some(false) {
             "unsupported"
         } else if p.capture == Some(true) {
@@ -97,44 +96,63 @@ pub fn unsupported(message: &str) -> String {
     json!({"ok":false,"supported":false,"backend":"linux","error":message}).to_string()
 }
 
+// Shared by dispatch and discovery: these are key tokens, not complete chord strings.
+const NAMED_EVDEV_KEYS: &[(&[&str], u32)] = &[
+    (&["ctrl", "control"], 29),
+    (&["shift"], 42),
+    (&["alt"], 56),
+    (&["super", "meta", "win"], 125),
+    (&["enter", "return"], 28),
+    (&["tab"], 15),
+    (&["escape", "esc"], 1),
+    (&["space", "spacebar"], 57),
+    (&["backspace"], 14),
+    (&["delete", "del"], 111),
+    (&["home"], 102),
+    (&["end"], 107),
+    (&["up"], 103),
+    (&["down"], 108),
+    (&["left"], 105),
+    (&["right"], 106),
+    (&["pageup", "page_up", "pgup"], 104),
+    (&["pagedown", "page_down", "pgdn"], 109),
+];
+const EVDEV_LETTERS: &str = "qwertyuiopasdfghjklzxcvbnm";
+const EVDEV_LETTER_CODES: [u32; 26] = [
+    16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 30, 31, 32, 33, 34, 35, 36, 37, 38, 44, 45, 46, 47, 48,
+    49, 50,
+];
+
+pub fn evdev_key_names() -> Vec<String> {
+    NAMED_EVDEV_KEYS
+        .iter()
+        .flat_map(|(names, _)| names.iter().map(|name| name.to_string()))
+        .chain(
+            EVDEV_LETTERS
+                .chars()
+                .chain("1234567890".chars())
+                .map(|ch| ch.to_string()),
+        )
+        .collect()
+}
+
 pub fn evdev_args(key: &str) -> Option<Vec<OsString>> {
     fn code(key: &str) -> Option<u32> {
-        Some(match key.to_lowercase().as_str() {
-            "ctrl" | "control" => 29,
-            "shift" => 42,
-            "alt" => 56,
-            "super" | "meta" | "win" => 125,
-            "enter" | "return" => 28,
-            "tab" => 15,
-            "escape" | "esc" => 1,
-            "space" | "spacebar" => 57,
-            "backspace" => 14,
-            "delete" | "del" => 111,
-            "home" => 102,
-            "end" => 107,
-            "up" => 103,
-            "down" => 108,
-            "left" => 105,
-            "right" => 106,
-            "pageup" | "page_up" | "pgup" => 104,
-            "pagedown" | "page_down" | "pgdn" => 109,
-            k if k.len() == 1 => {
-                let ch = k.chars().next()?;
-                let letters = "qwertyuiopasdfghjklzxcvbnm";
-                let codes = [
-                    16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 30, 31, 32, 33, 34, 35, 36, 37, 38, 44,
-                    45, 46, 47, 48, 49, 50,
-                ];
-                if let Some(i) = letters.find(ch) {
-                    codes[i]
-                } else if let Some(i) = "1234567890".find(ch) {
-                    2 + i as u32
-                } else {
-                    return None;
-                }
-            }
-            _ => return None,
-        })
+        let key = key.to_lowercase();
+        if let Some((_, code)) = NAMED_EVDEV_KEYS
+            .iter()
+            .find(|(names, _)| names.contains(&key.as_str()))
+        {
+            return Some(*code);
+        }
+        if key.len() != 1 {
+            return None;
+        }
+        let ch = key.chars().next()?;
+        EVDEV_LETTERS
+            .find(ch)
+            .map(|i| EVDEV_LETTER_CODES[i])
+            .or_else(|| "1234567890".find(ch).map(|i| 2 + i as u32))
     }
     let codes: Vec<u32> = key.trim().split('+').map(code).collect::<Option<_>>()?;
     if codes.is_empty() {
