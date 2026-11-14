@@ -4,6 +4,7 @@ import { constants } from 'node:fs';
 import { join, isAbsolute, basename, dirname, delimiter } from 'node:path';
 import { createHash } from 'node:crypto';
 import { verifyArchiveFiles } from './archive-files.mjs';
+import { verifyHostRuntimeStage } from './runtime-stage.mjs';
 
 export const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 export async function readJson(path) {
@@ -45,6 +46,7 @@ export async function preflight(d, { runNative = false } = {}) {
     assert.equal('sha512-' + createHash('sha512').update(bytes).digest('base64'), official[d.hostVersion], 'Host archive must match pinned official registry integrity');
     hostInventory = await verifyArchiveFiles(host, bytes);
   }
+  const hostRuntimeStage = await verifyHostRuntimeStage(d.hostRuntimeStage, { host, hostVersion: d.hostVersion, officialHostVerified: Boolean(hostInventory) });
   let helper;
   if (d.helperExecutable) {
     assert.match(d.helperSha256, /^[a-f0-9]{64}$/);
@@ -72,5 +74,5 @@ export async function preflight(d, { runNative = false } = {}) {
     if (d.platform === 'darwin') assert.ok(helper, 'Pinned helper identity is required for native execution');
     process.kill(fixture.pid, 0);
   }
-  return { schemaVersion: 1, preflightOnly: !runNative, nativeExecuted: false, sourceAssociation: 'owner-handoff', sourceCommit: d.sourceCommit, sourceTree: d.sourceTree, packageVersion: pkg.version, packageSha256: d.packageSha256, adapterSha256: d.adapterSha256, helper, embeddedPackageIdentityChecked: Boolean(identity), installedPackageFilesChecked: packageInventory.files, hostInventory, hostVersion: hostPkg.version, platform: d.platform, node: process.version, selected: { pluginRoot, host, adapter, fixtureState } };
+  return { schemaVersion: 1, preflightOnly: !runNative, nativeExecuted: false, sourceAssociation: 'owner-handoff', sourceCommit: d.sourceCommit, sourceTree: d.sourceTree, packageVersion: pkg.version, packageSha256: d.packageSha256, adapterSha256: d.adapterSha256, helper, embeddedPackageIdentityChecked: Boolean(identity), installedPackageFilesChecked: packageInventory.files, hostInventory, hostRuntimeStage, hostVersion: hostPkg.version, platform: d.platform, node: process.version, selected: { pluginRoot, host, adapter, fixtureState } };
 }

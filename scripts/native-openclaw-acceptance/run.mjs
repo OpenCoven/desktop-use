@@ -11,6 +11,7 @@ import { proveWireObservation } from './wire-proof.mjs';
 import { assertFixtureLease } from './fixture-lease.mjs';
 import { cancellationScope, observeOwnedGateway, stopOwnedGateway } from './lifecycle.mjs';
 import { verifyLinuxFixtureBridge } from './linux-fixture-read.mjs';
+import { verifyHostRuntimeStage, runtimeStageEnvironment } from './runtime-stage.mjs';
 
 const [descriptorPath, mode = '--preflight', outputPath] = process.argv.slice(2);
 assert.ok(descriptorPath && ['--preflight', '--run-owned-fixture'].includes(mode), 'Usage: run.mjs descriptor.json [--preflight | --run-owned-fixture fresh-private-output]');
@@ -122,6 +123,9 @@ try {
   const env = Object.fromEntries(['PATH','TMPDIR','LANG','USER'].filter(key => process.env[key]).map(key => [key, process.env[key]]));
   if (descriptor.platform === 'linux') for (const key of ['DISPLAY','XDG_SESSION_TYPE','XDG_RUNTIME_DIR','WAYLAND_DISPLAY','SWAYSOCK']) if (process.env[key]) env[key] = process.env[key];
   Object.assign(env, { OPENCLAW_IMAGE_BACKEND: 'sharp', OPENCLAW_STATE_DIR: join(root, 'state'), OPENCLAW_CONFIG_PATH: join(root, 'openclaw.json'), OPENCLAW_HOME: join(root, 'home'), OPENCLAW_LIVE_GATEWAY: '1', OPENCLAW_LIVE_GATEWAY_PROVIDERS: 'qualification', COVEN_DESKTOP_USE_BIN: identity.selected.adapter, COVEN_HOME: join(root, 'coven-home') });
+  const stage = await control.setup(() => verifyHostRuntimeStage(descriptor.hostRuntimeStage, { host: identity.selected.host, hostVersion: descriptor.hostVersion, officialHostVerified: Boolean(identity.hostInventory) }));
+  assert.deepEqual(stage, identity.hostRuntimeStage, 'Selected stage must remain unchanged before gateway spawn');
+  Object.assign(env, runtimeStageEnvironment(stage));
   if (descriptor.captureEngine) env.PEEKABOO_CAPTURE_ENGINE = descriptor.captureEngine;
   if (descriptor.helperExecutable) env.PATH = `${dirname(descriptor.helperExecutable)}:${env.PATH}`;
   control.check();
