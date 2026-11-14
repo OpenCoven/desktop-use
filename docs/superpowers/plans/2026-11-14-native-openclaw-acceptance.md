@@ -50,3 +50,21 @@
 ## Execution ledger
 
 The detailed user goal already authorizes the implementation and autonomous checks. Inline execution preserves the current method. Task 1 proof is synthetic test evidence only. Task 2 native execution remains gated on the actual fixture/final-byte handoff; no elapsed time substitutes for that handoff.
+
+### Task 3: Independent complete-window extent qualification
+
+**Scope:** The native owner handed off only `scripts/native-openclaw-acceptance/**` and this plan from preserved `620b950`. Continue in a separate isolated worktree. No product, X11, release, fixture or active owner branch changes are authorized by this handoff. The current macOS adapter truthfully reports provider scope unavailable; retain that field verbatim.
+
+**Files:** Modify `wire-proof.mjs`, `wire-proof.test.mjs`, `fixture-lease.mjs`, `fixture-lease.test.mjs`, `run.mjs` and `README.md` under `scripts/native-openclaw-acceptance/`.
+
+**Interface:** `proveWireObservation(body, marker, { sharp, fixture, platform, expectedCallId, captureStartedAtMs, seenObservationIds })` requires independent macOS `windowFrameRect` and `backingScale`; it returns `independentWindowExtentVerified` separately from unchanged `actualScope`. The Linux frontmost scope assertion remains required. Lease checks freeze the frame and scale before capture and input.
+
+**Review focus:** Reject a broader screen containing the correct landmark, cropped images with correct target coordinates, missing or inconsistent frame/scale, contradictory scope metadata, and a frame or scale changed after capture. Full-window extent establishes footprint within declared tolerance, not semantic ownership of every pixel.
+
+- [x] Run the preserved focused suite as a baseline, then add real encoded-image regressions for broader/cropped rasters, absent frame/scale, nonuniform or unqualified scale, contradictory provider scope and changed lease metadata. Retain the expected failures before implementation.
+- [x] Require one region covering the complete decoded raster and matching the independent AppKit window frame within one point per edge; require uniform 1x or native backing scale within 0.01. Preserve the hash, freshness, current-call identity, target-edge and no-overlap checks. Assert the separate independent proof in the driver before emitting input.
+- [x] Run the entire focused suite and syntax checks, review the complete branch, and run the repository check before opening a focused PR. Native/gateway execution remains pending explicit unlock and a fresh final-byte fixture lease.
+
+Task 3 review: a fresh whole-branch reviewer reproduced three important findings. Both scale axes must satisfy the same allowed-scale tolerance; pending setup must settle before cancellation cleanup can finish; and a gateway that already exited cannot certify that no detached child survived. Four additional regressions failed before the fixes and the focused suite passed 52/52 afterward. The driver now retains observed child/start identities while the leader is alive and fails closed on incomplete ownership after an unexpected leader exit. No review findings were deferred. Full-window extent remains independent footprint evidence, without upgrading the provider's unavailable scope or certifying every pixel's semantic ownership.
+
+Task 3 validation: the full repository check passed after review fixes (326 TypeScript tests, 26 gateway-fixture tests, seven import-graph tests, 74 source/compiled boundary files, 94 Rust tests and one CLI cancellation integration; one preexisting ignored Rust fixture). All 52 focused harness tests also passed using dependencies supplied by a separately installed official OpenClaw 2026.4.26 package with Sharp 0.34.5. Read-only preflight verified all 91 installed plugin files and all 9,084 official host archive files on the retained source57 candidate. Native test binaries used synthetic helpers; no graphical fixture or official gateway was executed by this continuation.

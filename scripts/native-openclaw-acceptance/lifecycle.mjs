@@ -5,7 +5,15 @@ export function cancellationScope(expiresAt) {
   const abort = () => controller.abort(new Error('NATIVE21_CANCELLED'));
   const handlers = ['SIGINT','SIGTERM'].map(signal => { process.on(signal, abort); return [signal, abort]; });
   const timer = setTimeout(abort, Math.max(0, expiresAt - Date.now()));
+  const pendingSetup = new Set();
   function check() { if (Date.now() >= expiresAt) abort(); if (controller.signal.aborted) throw controller.signal.reason; }
+  function setup(operation) {
+    check();
+    const task = Promise.resolve().then(() => { check(); return operation(); });
+    pendingSetup.add(task);
+    return task.then(value => { check(); return value; }).finally(() => pendingSetup.delete(task));
+  }
+  async function settleSetup() { await Promise.allSettled([...pendingSetup]); }
   function wait(promise) {
     return new Promise((resolve, reject) => {
       const cancelled = () => reject(controller.signal.reason);
@@ -14,7 +22,7 @@ export function cancellationScope(expiresAt) {
       Promise.resolve(promise).then(resolve, reject).finally(() => controller.signal.removeEventListener('abort', cancelled));
     });
   }
-  return { check, wait, abort, dispose() { clearTimeout(timer); for (const [signal, handler] of handlers) process.removeListener(signal, handler); } };
+  return { check, wait, setup, settleSetup, abort, dispose() { clearTimeout(timer); for (const [signal, handler] of handlers) process.removeListener(signal, handler); } };
 }
 
 function processes() {
@@ -30,8 +38,23 @@ export function snapshotOwnedGateway(child) {
   do { added = false; for (const item of all) if (owned.has(item.ppid) && !owned.has(item.pid)) { owned.add(item.pid); added = true; } } while (added);
   return all.filter(item => owned.has(item.pid));
 }
+export function observeOwnedGateway(child, { intervalMs = 100 } = {}) {
+  const identities = new Map();
+  let inspectionFailed = false;
+  function remember() {
+    try { for (const item of snapshotOwnedGateway(child)) identities.set(`${item.pid}:${item.start}`, item); }
+    catch { inspectionFailed = true; }
+  }
+  remember();
+  const timer = setInterval(remember, intervalMs); timer.unref();
+  return { stop() { clearInterval(timer); remember(); return { known: [...identities.values()], inspectionFailed }; } };
+}
 export async function stopOwnedGateway(child, { known = [], graceMs = 5_000, killMs = 2_000 } = {}) {
   if (!child?.pid) return { allReaped: true, trackedProcesses: 0 };
+  // Once the leader has already exited, a process-table snapshot cannot prove
+  // that it left no previously unseen detached children. Reap retained owned
+  // identities, but never certify complete ownership from an empty snapshot.
+  const ownershipComplete = child.exitCode === null && child.signalCode === null;
   const tracked = new Map([...known, ...snapshotOwnedGateway(child)].map(item => [item.pid, item]));
   const groups = new Set([child.pid, ...[...tracked.values()].map(item => item.group)]);
   const ours = processes().find(item => item.pid === process.pid)?.group;
@@ -56,5 +79,5 @@ export async function stopOwnedGateway(child, { known = [], graceMs = 5_000, kil
   }
   signalOwned('SIGTERM'); let allReaped = await waitForGone(graceMs);
   if (!allReaped) { signalOwned('SIGKILL'); allReaped = await waitForGone(killMs); }
-  return { allReaped, trackedProcesses: tracked.size, trackedGroups: groups.size, detachedDescendantsChecked: true };
+  return { allReaped: allReaped && ownershipComplete, trackedProcessesGone: allReaped, ownershipComplete, trackedProcesses: tracked.size, trackedGroups: groups.size, detachedDescendantsChecked: ownershipComplete };
 }

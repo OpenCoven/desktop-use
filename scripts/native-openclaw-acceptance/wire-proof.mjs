@@ -14,7 +14,8 @@ const contains = (rect, point) => point[0] >= rect.x && point[1] >= rect.y && po
 
 // This verifies provider-wire content, not its native provenance or an effect.
 // The opt-in runner must separately bind actual helper/fixture identities.
-export async function proveWireObservation(body, marker, { sharp, fixture, expectedCallId, captureStartedAtMs, seenObservationIds }) {
+export async function proveWireObservation(body, marker, { sharp, fixture, platform, expectedCallId, captureStartedAtMs, seenObservationIds }) {
+  assert.ok(['darwin', 'linux'].includes(platform), 'Explicit native platform required');
   assert.ok(Array.isArray(body.messages) && body.messages.length <= 300, 'Bounded provider messages required');
   assert.match(marker, /^[a-z0-9-]{1,80}$/);
   const marked = body.messages.flatMap((message, index) => message.role === 'user'
@@ -70,6 +71,29 @@ export async function proveWireObservation(body, marker, { sharp, fixture, expec
     const a = regions[i].imageRect, b = regions[j].imageRect;
     assert.ok(a.x + a.width <= b.x || b.x + b.width <= a.x || a.y + a.height <= b.y || b.y + b.height <= a.y, 'Mapping regions must not overlap anywhere');
   }
+  let independentWindow;
+  if (platform === 'darwin') {
+    assert.equal(observation.requestedScope?.mode, 'window', 'Explicit fixture-window request required');
+    const scope = observation.actualScope;
+    assert.ok(scope?.state === 'unavailable' && scope.reasonCode === 'PROVIDER_SCOPE_UNVERIFIED'
+      || scope?.state === 'available' && scope.mode === 'window' && scope.evidence === 'PROVIDER_EXPLICIT_ARGUMENT', 'Provider scope must not contradict the independent window proof');
+    assert.equal(observation.geometry.coordinateUnits, 'macos-points', 'AppKit frame requires geometry in macOS points');
+    const frame = rectangle(fixture.windowFrameRect);
+    assert.ok(Number.isFinite(fixture.backingScale) && fixture.backingScale > 0, 'Independent fixture backing scale required');
+    assert.equal(regions.length, 1, 'One complete owned-window mapping required');
+    assert.deepEqual(regions[0].imageRect, { x: 0, y: 0, ...dimensions }, 'The complete raster must belong to the window mapping');
+    const mapped = regions[0].desktopRect;
+    const edges = rect => [rect.x, rect.y, rect.x + rect.width, rect.y + rect.height];
+    assert.ok(edges(mapped).every((value, edge) => Math.abs(value - edges(frame)[edge]) <= 1), 'Complete capture extent must match the independent AppKit window frame');
+    const scale = dimensions.width / frame.width;
+    assert.ok(Math.abs(scale - dimensions.height / frame.height) <= .01, 'Complete window must have uniform pixel scale');
+    assert.ok([1, fixture.backingScale].some(allowed => [scale, dimensions.height / frame.height].every(value => Math.abs(value - allowed) <= .01)), 'Both pixel-scale axes must match the same 1x or independent native backing scale');
+    independentWindow = { windowFrameRect: frame, deliveredPixelsPerPoint: scale, windowExtentTolerancePoints: 1, scaleTolerance: .01 };
+  } else {
+    assert.equal(observation.requestedScope?.mode, 'frontmost', 'Explicit frontmost request required');
+    assert.equal(observation.actualScope?.state, 'available', 'Verified Linux frontmost provider scope required');
+    assert.equal(observation.actualScope.mode, 'frontmost', 'Native capture must retain requested fixture scope');
+  }
   assert.ok(Number.isSafeInteger(fixture.clicks) && fixture.clicks >= 0, 'Known fixture counter required');
   const color = fixture.clicks === 0 ? [224, 48, 64] : [32, 192, 96];
   const { data, info } = await sharp(bytes, { limitInputPixels: 16 * 1024 * 1024, failOn: 'warning' }).toColourspace('srgb').removeAlpha().raw().toBuffer({ resolveWithObject: true });
@@ -99,5 +123,5 @@ export async function proveWireObservation(body, marker, { sharp, fixture, expec
   assert.ok(mappedBounds.every((value, edge) => Math.abs(value - expectedBounds[edge]) <= 2), 'Mapped target extent must match all independent fixture edges');
   assert.ok(contains(expected, desktopPoint), 'Mapped target must remain inside the fixture');
   seenObservationIds.add(observation.observationId);
-  return { actualProviderRequest: true, effectVerified: false, observationId: observation.observationId, capturedAtMs: observation.capturedAtMs, toolCallId: expectedCallId, sha256: primary.sha256, byteLength: bytes.length, mimeType, dimensions, imagePoint, desktopPoint, expectedDesktopPoint, targetPixelBounds, mappedBounds, colorTolerance: tolerance, colorManaged: Boolean(metadata.icc), geometryState: 'available', actualScope: observation.actualScope };
+  return { actualProviderRequest: true, effectVerified: false, observationId: observation.observationId, capturedAtMs: observation.capturedAtMs, toolCallId: expectedCallId, sha256: primary.sha256, byteLength: bytes.length, mimeType, dimensions, imagePoint, desktopPoint, expectedDesktopPoint, targetPixelBounds, mappedBounds, colorTolerance: tolerance, colorManaged: Boolean(metadata.icc), geometryState: 'available', actualScope: observation.actualScope, independentWindowExtentVerified: Boolean(independentWindow), ...independentWindow };
 }

@@ -9,7 +9,7 @@ import { resolve, join, dirname } from 'node:path';
 import { preflight, readJson } from './preflight.mjs';
 import { proveWireObservation } from './wire-proof.mjs';
 import { assertFixtureLease } from './fixture-lease.mjs';
-import { cancellationScope, snapshotOwnedGateway, stopOwnedGateway } from './lifecycle.mjs';
+import { cancellationScope, observeOwnedGateway, stopOwnedGateway } from './lifecycle.mjs';
 
 const [descriptorPath, mode = '--preflight', outputPath] = process.argv.slice(2);
 assert.ok(descriptorPath && ['--preflight', '--run-owned-fixture'].includes(mode), 'Usage: run.mjs descriptor.json [--preflight | --run-owned-fixture fresh-private-output]');
@@ -43,7 +43,7 @@ const captureArgs = { action: 'inspect', ...target, mode: descriptor.platform ==
 const listen = server => new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
 const plans = new Map(), images = [], approvals = [], events = [], activeRuns = new Set();
 const seenObservationIds = new Set();
-let modelFailure = false, gateway, gatewayExit, socket, rpc;
+let modelFailure = false, gateway, gatewayExit, socket, rpc, reservation, gatewayObserver;
 const pending = new Map();
 const receipt = { schemaVersion: 1, success: false, identity, actualProviderRequest: false, nativeExecuted: false, effectVerified: false, publicRelease: false, physicalDisplayVerified: false, decisionSource: 'scripted-operator-through-actual-OpenClaw-approval-RPC', captureEngine: descriptor.captureEngine ?? 'auto', cases: [] };
 const model = createServer(async (req, res) => {
@@ -67,8 +67,8 @@ const model = createServer(async (req, res) => {
       args = captureArgs; id = `native21-${marker}-capture`;
     }
     else if (results.length === 1) {
-      const proof = await proveWireObservation(body, marker, { sharp, fixture: plan.before, expectedCallId: `native21-${marker}-capture`, captureStartedAtMs: plan.captureStartedAtMs, seenObservationIds });
-      assert.equal(proof.actualScope?.mode, descriptor.platform === 'darwin' ? 'window' : 'frontmost', 'Native capture must retain requested fixture scope');
+      const proof = await proveWireObservation(body, marker, { sharp, fixture: plan.before, platform: descriptor.platform, expectedCallId: `native21-${marker}-capture`, captureStartedAtMs: plan.captureStartedAtMs, seenObservationIds });
+      if (descriptor.platform === 'darwin') assert.equal(proof.independentWindowExtentVerified, true, 'Independent complete-window extent proof required before input');
       assertFixtureLease(descriptor, await fixture(), plan.before);
       images.push({ marker, ...proof }); plan.proof = proof;
       receipt.actualProviderRequest = true; receipt.nativeExecuted = true;
@@ -100,10 +100,11 @@ let log;
 try {
   await control.wait((async () => {
   assert.equal((await fixture()).clicks, 0, 'A fresh red fixture is required for an observed red-to-green transition');
-  await listen(model);
-  const reservation = createServer(); await listen(reservation); const port = reservation.address().port; await new Promise(resolve => reservation.close(resolve));
+  await control.setup(() => listen(model));
+  reservation = createServer(); await control.setup(() => listen(reservation)); const port = reservation.address().port;
+  await control.setup(async () => { await new Promise(resolve => reservation.close(resolve)); reservation = undefined; });
   const token = randomBytes(24).toString('hex');
-  const workspace = join(root, 'workspace'); await mkdir(workspace);
+  const workspace = join(root, 'workspace'); await control.setup(() => mkdir(workspace));
   const template = await readJson(join(identity.selected.pluginRoot, 'agents/computer-use/openclaw-agent.json'));
   const config = {
     gateway: { mode: 'local', bind: 'loopback', port, auth: { mode: 'token', token }, controlUi: { enabled: false } },
@@ -114,17 +115,20 @@ try {
     models: { mode: 'merge', providers: { qualification: { baseUrl: `http://127.0.0.1:${model.address().port}/v1`, apiKey: 'disposable-local-qualification', api: 'openai-completions', models: [{ id: 'fixture', name: 'Local native acceptance transport', reasoning: false, input: ['text','image'], contextWindow: 65_536, maxTokens: 512, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] } } },
     agents: { defaults: { workspace, skipBootstrap: true, model: { primary: 'qualification/fixture' }, timeoutSeconds: 180, heartbeat: { every: '0m' } }, list: [{ id: 'computer-use', default: true, workspace, agentDir: join(root, 'state/agents/computer-use/agent'), tools: template.tools }] }
   };
-  await save('openclaw.json', config);
-  log = await open(join(root, 'console.log'), 'wx', 0o600);
+  await control.setup(() => save('openclaw.json', config));
+  await control.setup(async () => { log = await open(join(root, 'console.log'), 'wx', 0o600); });
   const env = Object.fromEntries(['PATH','TMPDIR','LANG','USER'].filter(key => process.env[key]).map(key => [key, process.env[key]]));
   if (descriptor.platform === 'linux') for (const key of ['DISPLAY','XDG_SESSION_TYPE','XDG_RUNTIME_DIR','WAYLAND_DISPLAY','SWAYSOCK']) if (process.env[key]) env[key] = process.env[key];
   Object.assign(env, { OPENCLAW_IMAGE_BACKEND: 'sharp', OPENCLAW_STATE_DIR: join(root, 'state'), OPENCLAW_CONFIG_PATH: join(root, 'openclaw.json'), OPENCLAW_HOME: join(root, 'home'), OPENCLAW_LIVE_GATEWAY: '1', OPENCLAW_LIVE_GATEWAY_PROVIDERS: 'qualification', COVEN_DESKTOP_USE_BIN: identity.selected.adapter, COVEN_HOME: join(root, 'coven-home') });
   if (descriptor.captureEngine) env.PEEKABOO_CAPTURE_ENGINE = descriptor.captureEngine;
   if (descriptor.helperExecutable) env.PATH = `${dirname(descriptor.helperExecutable)}:${env.PATH}`;
+  control.check();
   gateway = spawn(process.execPath, [join(identity.selected.host, 'openclaw.mjs'), 'gateway', 'run'], { cwd: workspace, env, detached: true, stdio: ['ignore', log.fd, log.fd] });
   gateway.on('exit', (code, signal) => { gatewayExit = { code, signal }; });
   gateway.on('error', () => { gatewayExit = { code: 'SPAWN_FAILED' }; });
+  gatewayObserver = observeOwnedGateway(gateway);
   await until(async () => { assert.equal(gatewayExit, undefined, 'Owned gateway exited'); return (await readFile(join(root, 'console.log'), 'utf8')).includes('[gateway] ready'); }, 600_000);
+  control.check();
   socket = new WebSocket(`ws://127.0.0.1:${port}`);
   rpc = (method, params = {}, timeout = 195_000, cleanup = false) => new Promise((resolve, reject) => {
     if (!cleanup) control.check();
@@ -185,9 +189,11 @@ try {
   process.exitCode = 1;
 } finally {
   try {
-  let known = [];
-  try { known = snapshotOwnedGateway(gateway); } catch { receipt.cleanupInspectionFailed = true; }
   control.abort();
+  await control.settleSetup();
+  const observation = gatewayObserver?.stop() ?? { known: [], inspectionFailed: false };
+  if (observation.inspectionFailed) receipt.cleanupInspectionFailed = true;
+  const known = observation.known;
   if (rpc && socket?.readyState === WebSocket.OPEN) for (const runId of activeRuns) await rpc('sessions.abort', { key: 'agent:computer-use:native21', runId }, 5_000, true).catch(() => {});
   socket?.terminate();
   for (const waiter of pending.values()) { clearTimeout(waiter.timer); waiter.reject(new Error('NATIVE21_CLOSED')); } pending.clear();
@@ -195,6 +201,7 @@ try {
   catch { receipt.gatewayCleanup = { allReaped: false, inspectionFailed: true }; }
   receipt.gatewayReaped = receipt.gatewayCleanup.allReaped && !receipt.cleanupInspectionFailed;
   if (!receipt.gatewayReaped) { receipt.success = false; process.exitCode = 1; }
+  if (reservation) await new Promise(resolve => reservation.close(resolve));
   model.closeAllConnections(); await new Promise(resolve => model.close(resolve)); await log?.close();
   for (const name of ['console.log','gateway.jsonl']) {
     try {
