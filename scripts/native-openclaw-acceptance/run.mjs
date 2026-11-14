@@ -10,6 +10,7 @@ import { preflight, readJson } from './preflight.mjs';
 import { proveWireObservation } from './wire-proof.mjs';
 import { assertFixtureLease } from './fixture-lease.mjs';
 import { cancellationScope, observeOwnedGateway, stopOwnedGateway } from './lifecycle.mjs';
+import { verifyLinuxFixtureBridge } from './linux-fixture-read.mjs';
 
 const [descriptorPath, mode = '--preflight', outputPath] = process.argv.slice(2);
 assert.ok(descriptorPath && ['--preflight', '--run-owned-fixture'].includes(mode), 'Usage: run.mjs descriptor.json [--preflight | --run-owned-fixture fresh-private-output]');
@@ -35,6 +36,7 @@ const fixture = async () => {
   control.check();
   const state = await readJson(identity.selected.fixtureState);
   assert.equal(state.ready, true); assert.equal(state.pid, descriptor.fixturePid); assert.equal(state.windowNumber, descriptor.fixtureWindowId);
+  if (descriptor.platform === 'linux') await verifyLinuxFixtureBridge(state, descriptor, { fixtureState: identity.selected.fixtureState });
   assert.ok(Date.parse(descriptor.fixtureLease.expiresAt) > Date.now(), 'Fixture lease expired');
   return state;
 };
