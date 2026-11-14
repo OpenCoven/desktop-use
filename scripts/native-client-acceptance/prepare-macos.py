@@ -28,6 +28,9 @@ def main():
     args = p.parse_args()
     assert os.uname().sysname == 'Darwin'
     source = Path(__file__).resolve().parents[2]
+    git = lambda *parts: subprocess.check_output(['git','-c','core.fsmonitor=false','-C',str(source),*parts],text=True).strip()
+    if git('status','--porcelain=v1','--','scripts/native-client-acceptance','src/mcp/fixtures/pty-host.py'):
+        raise RuntimeError('Commit and verify the acceptance harness before preparing a runtime.')
     package, adapter, helper = args.package.resolve(), args.adapter.resolve(), args.peekaboo_directory.resolve()
     with tarfile.open(package) as archive:
         members = archive.getmembers()
@@ -53,7 +56,9 @@ def main():
     if install.returncode:
         (root/'install-private.log').write_text(install.stdout+install.stderr)
         raise RuntimeError('Consumer installation failed; inspect the task-private log.')
-    for name in ['native-client.mjs','sdk-security.mjs','mcp-security.mjs','image-proof.py','identity-preflight.mjs','mac-control-proof.mjs']:
+    consumer_scripts = ['native-client.mjs','sdk-security.mjs','mcp-security.mjs','image-proof.py','identity-preflight.mjs','mac-control-proof.mjs',
+                        'mac-active-client.mjs','mac-active-cleanup.mjs','mac-active-coordinator.py','mac_owned_processes.py']
+    for name in consumer_scripts:
         shutil.copy2(Path(__file__).with_name(name), consumer/name)
     shutil.copy2(source/'src/mcp/fixtures/pty-host.py', consumer/'pty-host.py')
     bundle = root/'DesktopUseAcceptance.app'/'Contents'
@@ -62,6 +67,8 @@ def main():
     (bundle/'Info.plist').write_bytes(plistlib.dumps({'CFBundleExecutable':'DesktopUseAcceptance','CFBundleIdentifier':'org.opencoven.desktopuse.acceptance','CFBundleName':'Desktop Use Acceptance','CFBundleVersion':'1','CFBundlePackageType':'APPL','NSHighResolutionCapable':True}))
     (bundle/'Resources/runtime.json').write_text(json.dumps({'statePath':str(root/'fixture-state.json'),'observeControls':'true' if args.observe_controls else 'false'}))
     observation_source = Path(__file__).with_name('ControlObservation.swift')
+    if args.observe_controls:
+        subprocess.run(['clang','-fsyntax-only',str(Path(__file__).with_name('mac-process-abi-check.c'))],check=True,timeout=30,capture_output=True)
     subprocess.run(['swiftc','-parse-as-library',str(observation_source),str(Path(__file__).with_name('Fixture.swift')),'-o',str(bundle/'MacOS/DesktopUseAcceptance')], check=True, timeout=120, capture_output=True)
     subprocess.run(['swiftc','-parse-as-library',str(observation_source),str(Path(__file__).with_name('control-clock-probe.swift')),'-o',str(root/'bin/control-clock-probe')], check=True, timeout=120, capture_output=True)
     installed = consumer/'node_modules/@opencoven/openclaw-desktop-use'
@@ -71,10 +78,11 @@ def main():
                 assert (installed/member.name.removeprefix('package/')).read_bytes() == archive.extractfile(member).read()
     version = subprocess.run([str(root/'bin/peekaboo'),'--version','--json','--no-remote'],check=True,capture_output=True,text=True,timeout=10)
     identity = json.loads(version.stdout)['data']
-    git = lambda *parts: subprocess.check_output(['git','-C',str(source),*parts],text=True).strip()
     receipt = {'sourceCommit':git('rev-parse','HEAD'),'sourceTree':git('rev-parse','HEAD^{tree}'),'sourceDiffSha256':hashlib.sha256(git('diff','HEAD','--','src').encode()).hexdigest(),
+               'sourceCommitKind':'acceptance-harness','harnessSourceCommit':git('rev-parse','HEAD'),'harnessSourceTree':git('rev-parse','HEAD^{tree}'),
                'packageSha256':sha(package),'packageVersion':manifest['version'],'packageFiles':len(names),'allInstalledPackageFilesExact':True,'nativeSha256':sha(adapter),
                'helperSha256':sha(helper/'peekaboo'),'helperVersion':identity.get('current'),'helperSourceCommit':identity.get('sourceCommit'),
+               'consumerScriptsSha256':{name:sha(consumer/name) for name in consumer_scripts+['pty-host.py']},'processAbiChecked':args.observe_controls,
                'fixtureSourceSha256':sha(Path(__file__).with_name('Fixture.swift')),'controlObserverSourceSha256':sha(observation_source),'fixtureBinarySha256':sha(bundle/'MacOS/DesktopUseAcceptance'),'clockProbeSha256':sha(root/'bin/control-clock-probe'),'controlObservationEnabled':args.observe_controls,'pythonExecutable':sys.executable,'pythonVersion':sys.version.split()[0],'pillowVersion':PIL.__version__,'publication':False,'fixtureLaunched':False,'privacyChanges':False}
     (root/'baseline.json').write_text(json.dumps(receipt,indent=2)+'\n')
     (root/'run-env.json').write_text(json.dumps({'PATH':str(root/'bin')+os.pathsep+os.environ.get('PATH',''),'NATIVE_ACCEPTANCE_PYTHON':sys.executable,'NATIVE_ACCEPTANCE_ROOT':str(root),'NATIVE_ACCEPTANCE_ADAPTER':str(root/'bin/coven-desktop-use'),'NATIVE_ACCEPTANCE_FIXTURE_STATE':str(root/'fixture-state.json'),'NATIVE_ACCEPTANCE_IMAGE_PROOF':str(consumer/'image-proof.py'),'NATIVE_ACCEPTANCE_PTY':str(consumer/'pty-host.py')},indent=2)+'\n')
