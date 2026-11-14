@@ -35,11 +35,26 @@ class StateWriter:
         return False
 
 
-def app(state_path, session, title):
+class ControlTimeline:
+    """Observe applied control changes immediately, independently of file writes."""
+    def __init__(self, clock=time.monotonic_ns):
+        self.clock = clock
+        self.events = []
+
+    def changed(self, kind, *, text_length, scroll_offset, key_count):
+        self.events.append({'kind': kind, 'monotonicNs': self.clock(),
+                            'textLength': text_length, 'scrollOffset': scroll_offset,
+                            'keyCount': key_count})
+
+
+def app(state_path, session, title, observe_controls=False):
     import gi
     gi.require_version('Gtk', '3.0')
     from gi.repository import Gtk, Gdk, GLib
     state = {'clicks': [], 'keys': [], 'ready': False, 'pid': os.getpid(), 'text': '', 'scrollOffset': 0, 'landmarks': [], 'controls': {}}
+    control_timeline = ControlTimeline() if observe_controls else None
+    if control_timeline is not None:
+        state['controlChanges'] = control_timeline.events
     window = Gtk.Window(title=title)
     window.set_decorated(False)
     window.set_default_size(640, 480)
@@ -136,12 +151,15 @@ def app(state_path, session, title):
         writer.request()
         return False
 
-    def controls_changed(*_):
+    def controls_changed(kind):
+        if control_timeline is not None:
+            control_timeline.changed(kind, text_length=len(entry.get_text()),
+                                     scroll_offset=scroll_adjustment.get_value(), key_count=len(state['keys']))
         effect_label.set_text('Text: %d chars | Scroll offset: %d' % (len(entry.get_text()), scroll_adjustment.get_value()))
         writer.request()
 
-    entry.connect('changed', controls_changed)
-    scroll_adjustment.connect('value-changed', controls_changed)
+    entry.connect('changed', lambda *_: controls_changed('text'))
+    scroll_adjustment.connect('value-changed', lambda *_: controls_changed('scroll'))
 
     def ready():
         state['ready'] = True
@@ -176,5 +194,6 @@ if __name__ == '__main__':
     p.add_argument('--state', type=Path, required=True)
     p.add_argument('--session', choices=['x11', 'wayland'], required=True)
     p.add_argument('--title', default='DesktopuseFixture21')
+    p.add_argument('--observe-controls', action='store_true', help='retain scalar control-change timestamps for cancellation diagnostics')
     a = p.parse_args()
-    app(a.state, a.session, a.title)
+    app(a.state, a.session, a.title, a.observe_controls)

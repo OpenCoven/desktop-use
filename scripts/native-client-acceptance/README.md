@@ -38,6 +38,8 @@ Negative probes require a stable live fixture PID and actual fixture input focus
 
 The GTK fixture captures each event and its timestamps immediately, while coalescing complete state-file writes onto a 16 ms default-priority timer per burst, with a final pending flush on shutdown. This preserves every event and its order while avoiding repeated serialization of the growing history inside key handlers. File-only coalescer tests do not prove stable visible UI after Stop; repeat affected native cases with the same event classifier, deadlines and held-key boundary before making that acceptance claim. Previously queued events delivered after promise fulfillment remain a separate reported limit.
 
+For cancellation timing diagnostics, the fixture's optional `--observe-controls` flag also records each actual Entry `changed` and adjustment `value-changed` callback immediately in `controlChanges`, with a monotonic nanosecond timestamp, text length, scroll offset and key count. The existing coalesced writer publishes the complete ordered timeline; its file modification time is not the control-change time. This observer adds no per-event file writes and retains no input contents. Control callbacks establish when widget values changed; independent pixel observations are still needed to assess rendering, and callback timestamps alone do not prove visible stability at promise fulfillment.
+
 ## Owned virtual Linux X11
 
 Stage a minimal context instead of sending a checkout or private state to Docker. The pinned images describe this test environment, not the supported native release matrix. Start the resulting container without host mounts, published ports, devices or networking; the isolated Xvfb display is not a physical desktop.
