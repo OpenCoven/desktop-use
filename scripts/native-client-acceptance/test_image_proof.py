@@ -20,7 +20,7 @@ class NativeImageProofTests(unittest.TestCase):
         result = {'content': [{'type': 'image', 'mimeType': 'image/png', 'data': base64.b64encode(raw).decode()}], 'details': {'observationV1': {
             'primaryImage': {'byteLength': len(raw), 'sha256': hashlib.sha256(raw).hexdigest(), 'mimeType': 'image/png', 'sourceDimensions': {'width': 640, 'height': 512}},
             'actualScope': {'state': 'unavailable'}, 'geometry': {'state': 'available', 'regions': [{'imageRect': {'x': 0, 'y': 0, 'width': 640, 'height': 512}, 'desktopRect': {'x': 120, 'y': 388, 'width': 640, 'height': 512}}]}}}}
-        fixture = {'targetRect': [40, 40, 120, 80], 'desktopRect': {'x': 120, 'y': 420, 'width': 640, 'height': 480}}
+        fixture = {'targetRect': [40, 40, 120, 80], 'desktopRect': {'x': 120, 'y': 420, 'width': 640, 'height': 480}, 'windowFrameRect': {'x': 120, 'y': 388, 'width': 640, 'height': 512}, 'backingScale': 1}
         return result, fixture
 
     def test_real_pixel_geometry_and_client_resize_map_to_independent_target(self):
@@ -49,6 +49,17 @@ class NativeImageProofTests(unittest.TestCase):
     def test_red_pixels_cannot_prove_a_green_clicked_target(self):
         result, fixture = self.vector()
         with self.assertRaises(AssertionError): proof.inspect_image(result, fixture, 'clicked')
+
+    def test_broader_screen_capture_cannot_prove_requested_window_scope(self):
+        result, fixture = self.vector()
+        image = Image.new('RGB', (1280, 960), (20, 40, 80))
+        ImageDraw.Draw(image).rectangle((160, 460, 279, 539), fill=(224, 48, 64))
+        stream = io.BytesIO(); image.save(stream, format='PNG'); raw = stream.getvalue()
+        result['content'][0]['data'] = base64.b64encode(raw).decode()
+        receipt = result['details']['observationV1']
+        receipt['primaryImage'].update({'byteLength': len(raw), 'sha256': hashlib.sha256(raw).hexdigest(), 'sourceDimensions': {'width': 1280, 'height': 960}})
+        receipt['geometry']['regions'] = [{'imageRect': {'x': 0, 'y': 0, 'width': 1280, 'height': 960}, 'desktopRect': {'x': 0, 'y': 0, 'width': 1280, 'height': 960}}]
+        with self.assertRaises(AssertionError): proof.inspect_image(result, fixture)
 
 
 if __name__ == '__main__': unittest.main()

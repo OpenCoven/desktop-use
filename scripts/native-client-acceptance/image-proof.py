@@ -41,6 +41,14 @@ def inspect_image(result, fixture, expected='initial'):
     point = ((box[0]+box[2])/2, (box[1]+box[3])/2)
     geometry = receipt['geometry']
     assert geometry['state'] == 'available', 'unavailable mapping cannot become identity'
+    frame = fixture['windowFrameRect']
+    assert len(geometry['regions']) == 1, 'one owned window must fill the capture'
+    extent = geometry['regions'][0]
+    assert extent['imageRect'] == {'x': 0, 'y': 0, 'width': picture.width, 'height': picture.height}
+    assert all(abs(extent['desktopRect'][axis]-frame[axis]) <= 1 for axis in ['x', 'y', 'width', 'height']), 'capture extent must match the independent AppKit window frame'
+    scale = picture.width/frame['width']
+    assert abs(scale-picture.height/frame['height']) <= .01, 'window pixels must use uniform scale'
+    assert any(abs(scale-allowed) <= .01 for allowed in [1, fixture['backingScale']]), 'pixel scale must match the independent fixture display'
     matching = [r for r in geometry['regions'] if r['imageRect']['x'] <= point[0] < r['imageRect']['x']+r['imageRect']['width'] and r['imageRect']['y'] <= point[1] < r['imageRect']['y']+r['imageRect']['height']]
     assert len(matching) == 1, 'target must belong to one mapping region'
     region = matching[0]
@@ -60,6 +68,7 @@ def inspect_image(result, fixture, expected='initial'):
     return {'sha256': primary['sha256'], 'mimeType': image['mimeType'], 'byteLength': len(raw), 'dimensions': picture.size,
             'colorManaged': bool(icc), 'colorTolerance': tolerance, 'targetPixelBounds': box, 'imagePoint': point, 'desktopPoint': mapped,
             'independentExpectedDesktopPoint': expected_point, 'geometryState': geometry['state'], 'actualScope': receipt['actualScope'],
+            'independentWindowExtentVerified': True, 'windowFrameRect': frame, 'deliveredPixelsPerPoint': scale,
             'clientResize': {'dimensions': resized.size, 'targetPoint': resized_point, 'sampleSRGB': sample, 'normalizedMappingPreserved': True},
             'actualNativePixels': True, 'displayKind': fixture.get('session', 'macos-session'), 'physicalDisplayVerified': False, 'effectVerified': False}
 

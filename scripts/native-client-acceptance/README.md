@@ -17,7 +17,7 @@ Build and pack one source revision sequentially. Peekaboo 4.9.8 needs the compat
 pnpm run check
 cargo build
 pnpm pack --pack-destination /owned/artifacts
-python3 scripts/native-client-acceptance/prepare-macos.py --root /owned/new-run --package /owned/artifacts/candidate.tgz --adapter target/debug/coven-desktop-use --peekaboo-directory /owned/helper
+/owned/acceptance-venv/bin/python scripts/native-client-acceptance/prepare-macos.py --root /owned/new-run --package /owned/artifacts/candidate.tgz --adapter target/debug/coven-desktop-use --peekaboo-directory /owned/helper
 ```
 
 Launch only the generated `DesktopUseAcceptance.app`, then use every entry in its `run-env.json` as environment variables, including `PATH`. Before any native action, the clients verify the prepared adapter hash and the resolved helper path/hash; an ambient or changed helper fails preflight. Keep the Mac unlocked and put the fixture on the current Space before input, using its explicit window identity; do not weaken a helper's off-screen refusal. Run each client sequentially so it exclusively owns fixture effects. `PEEKABOO_CAPTURE_ENGINE=cg` selects an explicit helper backend and is recorded separately from `auto`; it does not turn a failed auto capture into a pass.
@@ -30,7 +30,7 @@ node /owned/new-run/consumer/sdk-security.mjs
 node /owned/new-run/consumer/mcp-security.mjs
 ```
 
-The positive clients require a real pixel-derived target mapping and observed fixture click, key, text and scroll changes. Pixel checks decode the actual received image and apply its ICC profile; the declared 16-level sRGB tolerance accommodates display conversion/dithering while the exact encoded bytes remain hash-bound. Resizing is performed by the test consumer and is not gateway-history qualification. Five verifier regressions reject missing pixels, wrong hashes, unsupported or wrong geometry and the wrong target state. Independently observe the fixture UI before accepting its result.
+The positive clients require a real pixel-derived target mapping and observed fixture click, key, text and scroll changes. The full capture extent and pixel scale must match the fixture's independent AppKit window frame and backing scale; a screen capture containing the right landmark cannot prove window scope. Pixel checks decode the actual received image and apply its ICC profile; the declared 16-level sRGB tolerance accommodates display conversion/dithering while the exact encoded bytes remain hash-bound. Resizing is performed by the test consumer and is not gateway-history qualification. Six verifier regressions reject missing pixels, wrong hashes, unsupported or wrong geometry, broader capture scope and the wrong target state. Independently observe the fixture UI before accepting its result.
 
 The SDK provider decisions and terminal broker operator decisions are scripted test decisions. They are not human approval acceptance. The MCP connector is the actual installed stdio executable behind the actual separate terminal reference host, on both wire revisions.
 

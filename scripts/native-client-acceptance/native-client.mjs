@@ -9,14 +9,14 @@ import { pathToFileURL } from 'node:url';
 import { createDesktopClient, resolveActionPermissions } from '@opencoven/openclaw-desktop-use/sdk';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
-import { verifyMacIdentity } from './identity-preflight.mjs';
+import { verifyMacIdentity, preparedPython } from './identity-preflight.mjs';
 
 const surface = process.argv[2];
 assert.ok(['sdk', 'mcp-modern', 'mcp-legacy'].includes(surface));
 const root = await realpath(process.env.NATIVE_ACCEPTANCE_ROOT);
 const adapter = await realpath(process.env.NATIVE_ACCEPTANCE_ADAPTER);
 await verifyMacIdentity(root, adapter);
-const python = await realpath(process.env.NATIVE_ACCEPTANCE_PYTHON);
+const python = await preparedPython(process.env.NATIVE_ACCEPTANCE_PYTHON);
 const fixturePath = await realpath(process.env.NATIVE_ACCEPTANCE_FIXTURE_STATE);
 const proofScript = await realpath(process.env.NATIVE_ACCEPTANCE_IMAGE_PROOF);
 const ptyScript = await realpath(process.env.NATIVE_ACCEPTANCE_PTY);

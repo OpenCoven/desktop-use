@@ -2,7 +2,14 @@ import assert from 'node:assert/strict';
 import { readFile, realpath, access } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { join } from 'node:path';
+import { join, isAbsolute, resolve } from 'node:path';
+
+export async function preparedPython(executable) {
+  assert.ok(typeof executable === 'string' && isAbsolute(executable), 'prepared Python must be an absolute executable path');
+  await access(executable, constants.X_OK);
+  // A venv's executable is a symlink; resolving it bypasses pyvenv.cfg.
+  return resolve(executable);
+}
 
 // Reject a changed/misconfigured consumer before any native action is invoked.
 export async function verifyMacIdentity(root, adapter, searchPath = process.env.PATH) {

@@ -71,6 +71,8 @@ final class FixtureView: NSView, NSTextFieldDelegate {
         if let window, let screen = NSScreen.screens.first {
             let frame = window.convertToScreen(bounds)
             state["desktopRect"] = ["x": frame.minX, "y": screen.frame.maxY-frame.maxY, "width": frame.width, "height": frame.height]
+            let windowFrame = window.frame
+            state["windowFrameRect"] = ["x": windowFrame.minX, "y": screen.frame.maxY-windowFrame.maxY, "width": windowFrame.width, "height": windowFrame.height]
             state["backingScale"] = window.backingScaleFactor
             state["focused"] = window.isKeyWindow
         }
