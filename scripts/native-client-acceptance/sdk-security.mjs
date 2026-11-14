@@ -2,26 +2,38 @@
 import assert from 'node:assert/strict';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
 import { createDesktopClient, resolveActionPermissions } from '@opencoven/openclaw-desktop-use/sdk';
-import { verifyMacIdentity } from './identity-preflight.mjs';
+import { verifyMacIdentity, nativeHarnessEnvironment, focusedFixture } from './identity-preflight.mjs';
 
 const root = resolve(process.env.NATIVE_ACCEPTANCE_ROOT);
 const adapterPath = resolve(process.env.NATIVE_ACCEPTANCE_ADAPTER);
 if (process.platform === 'darwin') await verifyMacIdentity(root, adapterPath);
+if (process.platform === 'linux') nativeHarnessEnvironment(root);
 const fixturePath = resolve(process.env.NATIVE_ACCEPTANCE_FIXTURE_STATE);
 const workspace = join(root, 'security-workspace');
 await mkdir(workspace, { recursive: true, mode: 0o700 });
 const audits = [];
 const scope = { principalId: 'native-security', sessionId: 'controlled-fixture' };
 const options = { workspaceDir: workspace, adapterPath, scope, actionPermissions: resolveActionPermissions({ actionProfile: 'full' }), auditSink: async event => { audits.push(event); } };
+let fixturePid;
 const state = async () => {
-  const s = JSON.parse(await readFile(fixturePath));
+  const s = await focusedFixture(fixturePath, fixturePid);
+  fixturePid ??= s.pid;
   return { clicks: s.clicks, keys: s.keys, text: s.text, scrollOffset: s.scrollOffset };
 };
 const initial = await state();
 const fixture = JSON.parse(await readFile(fixturePath));
 const request = { action: 'keypress', keys: ['a'], ...(process.platform === 'darwin' ? { app: 'org.opencoven.desktopuse.acceptance', windowId: fixture.windowNumber } : {}) };
 const results = [];
+const readyClient = createDesktopClient(options);
+const backendObservation = await readyClient.execute({ action: 'screenshot', mode: process.platform === 'darwin' ? 'window' : 'screen', ...(process.platform === 'darwin' ? { app: 'org.opencoven.desktopuse.acceptance', windowId: fixture.windowNumber } : {}) }, { callId: 'backend-readiness' });
+assert.equal(backendObservation.details.success, true, 'negative probe requires an available actual native backend');
+const images = backendObservation.content.filter(c => c.type === 'image'); assert.equal(images.length, 1);
+const bytes = Buffer.from(images[0].data, 'base64'), primary = backendObservation.details.observationV1.primaryImage;
+assert.equal(createHash('sha256').update(bytes).digest('hex'), primary.sha256); assert.equal(bytes.length, primary.byteLength);
+const backendReadiness = { mimeType: images[0].mimeType, sha256: primary.sha256, byteLength: primary.byteLength, dimensions: primary.sourceDimensions, actualNativeImage: true };
+assert.deepEqual(await state(), initial, 'observation precondition must not change the fixture');
 async function check(label, client, expected) {
   const result = await client.execute(request, { callId: label });
   assert.equal(result.details.status, expected);
@@ -74,6 +86,6 @@ assert.deepEqual(await state(), initial);
 results.push({ label: 'abort-pending-and-late-approval', noFixtureEffect: true });
 const auditText = JSON.stringify(audits);
 assert.doesNotMatch(auditText, /"(?:nonce|mac|approvalId|screenshot_raw|data)"|base64/);
-const receipt = { success: true, surface: 'installed-sdk', decisionSource: 'scripted-trusted-host', nativeAdapterConfigured: true, cases: results, auditEvents: audits.length, noFixtureEffect: true, publication: false };
+const receipt = { success: true, surface: 'installed-sdk', adapterSha256: createHash('sha256').update(await readFile(adapterPath)).digest('hex'), decisionSource: 'scripted-trusted-host', nativeAdapterConfigured: true, backendReadiness, cases: results, auditEvents: audits.length, noFixtureEffect: true, publication: false };
 await writeFile(join(root, 'sdk-security-receipt.json'), JSON.stringify(receipt, null, 2)+'\n');
 console.log(JSON.stringify(receipt));

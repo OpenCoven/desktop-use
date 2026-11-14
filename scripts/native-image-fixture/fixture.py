@@ -63,8 +63,15 @@ def app(state_path, session, title):
         save()
         return False
 
+    def configured(*_):
+        # A window manager can finish placement after the initial ready event.
+        # Persist the applied GDK position before consumers map returned pixels.
+        GLib.idle_add(save)
+        return False
+
     target.connect('button-press-event', click)
     window.connect('key-press-event', key)
+    window.connect('configure-event', configured)
     GLib.timeout_add(300, ready)
     window.connect('destroy', Gtk.main_quit)
     window.show_all()

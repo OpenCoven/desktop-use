@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { verifyMacIdentity, preparedPython } from './identity-preflight.mjs';
+import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
+import { verifyMacIdentity, preparedPython, nativeHarnessEnvironment, focusedFixture } from './identity-preflight.mjs';
 
 test('native preflight rejects a substituted PATH helper or changed adapter before execution', async () => {
   const root = await mkdtemp(join(tmpdir(), 'native-identity-'));
@@ -35,5 +36,34 @@ test('prepared Python keeps a real virtual environment active', async () => {
     const checked = spawnSync(python, ['-c', 'import sys;assert sys.prefix != sys.base_prefix'], { encoding: 'utf8', timeout: 10_000 });
     assert.equal(checked.status, 0, checked.stderr);
     await assert.rejects(preparedPython('python3'), /absolute executable/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('real stdio child receives the owned display without unrelated environment data', async () => {
+  const env = { PATH: process.env.PATH, DISPLAY: ':91', XDG_SESSION_TYPE: 'x11', NATIVE_OWNED_DISPOSABLE_DISPLAY: 'yes', NATIVE_TEST_SECRET: 'fixture-only-marker' };
+  const transport = new StdioClientTransport({ command: process.execPath, args: ['-e', 'console.log(JSON.stringify({jsonrpc:"2.0",method:"fixture/env",params:{display:process.env.DISPLAY??null,session:process.env.XDG_SESSION_TYPE??null,secretPresent:process.env.NATIVE_TEST_SECRET!==undefined}}));setInterval(()=>{},1000)'], env: nativeHarnessEnvironment(tmpdir(), env, 'linux'), stderr: 'pipe' });
+  let timeout;
+  const observed = new Promise((resolve, reject) => {
+    transport.onmessage = message => resolve(message.params);
+    transport.onerror = reject;
+    timeout = setTimeout(() => reject(new Error('Actual stdio child did not report readiness')), 5000);
+  });
+  try {
+    await transport.start();
+    assert.deepEqual(await observed, { display: ':91', session: 'x11', secretPresent: false });
+  } finally { clearTimeout(timeout); await transport.close(); }
+});
+
+test('Linux negative probes reject an unowned or implicit display before dispatch', () => {
+  assert.throws(() => nativeHarnessEnvironment(tmpdir(), { DISPLAY: ':91', XDG_SESSION_TYPE: 'x11' }, 'linux'), /owned disposable display/);
+  assert.throws(() => nativeHarnessEnvironment(tmpdir(), { NATIVE_OWNED_DISPOSABLE_DISPLAY: 'yes' }, 'linux'), /explicit owned X11 session/);
+});
+
+test('stale fixture state cannot provide a no-effect oracle', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'native-stale-fixture-'));
+  try {
+    const path = join(root, 'fixture.json');
+    await writeFile(path, JSON.stringify({ ready: true, pid: 2147483647, focused: true, windowNumber: 1 }));
+    await assert.rejects(focusedFixture(path), /ESRCH/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

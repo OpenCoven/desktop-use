@@ -7,23 +7,25 @@ import {dirname,join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {Client} from '@modelcontextprotocol/client';
 import {StdioClientTransport} from '@modelcontextprotocol/client/stdio';
-import {verifyMacIdentity,preparedPython} from './identity-preflight.mjs';
+import {verifyMacIdentity,preparedPython,nativeHarnessEnvironment,focusedFixture} from './identity-preflight.mjs';
 const root=await realpath(process.env.NATIVE_ACCEPTANCE_ROOT),adapter=await realpath(process.env.NATIVE_ACCEPTANCE_ADAPTER);
 if(process.platform==='darwin')await verifyMacIdentity(root,adapter);
+if(process.platform==='linux')nativeHarnessEnvironment(root);
 const python=process.platform==='darwin'?await preparedPython(process.env.NATIVE_ACCEPTANCE_PYTHON):'python3';
 const fixturePath=await realpath(process.env.NATIVE_ACCEPTANCE_FIXTURE_STATE),pty=await realpath(process.env.NATIVE_ACCEPTANCE_PTY);
-const state=async()=>{const s=JSON.parse(await readFile(fixturePath));return {clicks:s.clicks,keys:s.keys,text:s.text,scrollOffset:s.scrollOffset};};
+let fixturePid;
+const state=async()=>{const s=await focusedFixture(fixturePath,fixturePid);fixturePid??=s.pid;return {clicks:s.clicks,keys:s.keys,text:s.text,scrollOffset:s.scrollOffset};};
 const initial=await state(),fixture=JSON.parse(await readFile(fixturePath));
 const request={action:'keypress',keys:['a'],...(process.platform==='darwin'?{app:'org.opencoven.desktopuse.acceptance',windowId:fixture.windowNumber}:{})};
 const packageRoot=dirname(createRequire(import.meta.url).resolve('@opencoven/openclaw-desktop-use/package.json'));
 const {createJsonSchemaValidator}=await import(pathToFileURL(join(packageRoot,'dist/src/mcp/schema.js')));
-const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));const results=[];const attempt=Date.now();
+const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));const results=[],backendReadiness=[];const attempt=Date.now();
 async function connect(era,mode){
  const dir=join(root,`negative-${attempt}-${era}-${mode}`);await mkdir(dir,{mode:0o700});
  const workspace=join(dir,'workspace'),stateDir=join(dir,'state');await mkdir(workspace,{mode:0o700});await mkdir(stateDir,{mode:0o700});
  const config=join(dir,'config.json');await writeFile(config,JSON.stringify({workspaceDir:workspace,stateDir,principalId:'native-negative',sessionId:era+'-'+mode,adapterPath:adapter,actionProfile:'full',approvalTimeoutMs:mode==='expiry'?100:300000}),{mode:0o600});
  const modern=era==='modern';const client=new Client({name:'native-negative',version:'1'},{jsonSchemaValidator:createJsonSchemaValidator(),...(modern?{versionNegotiation:{mode:{pin:'2026-07-28'}}}:{supportedProtocolVersions:['2025-11-25']})});
- const broker=mode!=='missing';const transport=new StdioClientTransport({command:broker?python:process.execPath,args:broker?[pty,mode==='denied'?'deny':'wait',process.execPath,join(packageRoot,'dist/examples/approval-host/main.js'),'--config',config]:[join(packageRoot,'dist/src/mcp/main.js'),'--config',config],stderr:'pipe',env:{PATH:process.env.PATH,TMPDIR:root}});
+ const broker=mode!=='missing';const transport=new StdioClientTransport({command:broker?python:process.execPath,args:broker?[pty,mode==='denied'?'deny':'wait',process.execPath,join(packageRoot,'dist/examples/approval-host/main.js'),'--config',config]:[join(packageRoot,'dist/src/mcp/main.js'),'--config',config],stderr:'pipe',env:nativeHarnessEnvironment(root)});
  let terminal='';transport.stderr?.on('data',c=>{terminal+=c;if(terminal.length>128*1024)terminal=terminal.slice(-128*1024);});
  try{await client.connect(transport);}catch(error){await client.close();throw error;}
  return{client,stateDir,terminal:()=>terminal,close:()=>client.close()};
@@ -33,6 +35,13 @@ for(const era of ['modern','legacy']){
   const f=await connect(era,mode);
   try{
    if(mode==='missing'){
+    const observed=await f.client.callTool({name:'computer_use',arguments:{action:'screenshot',mode:process.platform==='darwin'?'window':'screen',...(process.platform==='darwin'?{app:'org.opencoven.desktopuse.acceptance',windowId:fixture.windowNumber}:{})}});
+    assert.equal(observed.structuredContent.success,true,'negative probe requires an available actual native backend');
+    const images=observed.content.filter(c=>c.type==='image');assert.equal(images.length,1);
+    const bytes=Buffer.from(images[0].data,'base64'),primary=observed.structuredContent.observationV1.primaryImage;
+    assert.equal(createHash('sha256').update(bytes).digest('hex'),primary.sha256);assert.equal(bytes.length,primary.byteLength);
+    backendReadiness.push({protocol:era==='modern'?'2026-07-28':'2025-11-25',mimeType:images[0].mimeType,sha256:primary.sha256,byteLength:primary.byteLength,dimensions:primary.sourceDimensions,actualNativeImage:true});
+    assert.deepEqual(await state(),initial,'observation precondition must not change the fixture');
     const r=await f.client.callTool({name:'computer_use',arguments:request});assert.equal(r.structuredContent.status,'needsApproval');
     for(const forged of [{...request,confirm:true},{...request,workspaceDir:root}]){
      let refused=false;try{const r=await f.client.callTool({name:'computer_use',arguments:forged});refused=r.isError===true;}catch{refused=true;}assert.equal(refused,true);
@@ -56,5 +65,5 @@ for(const era of ['modern','legacy']){
   }finally{await f.close();}
  }
 }
-const receipt={success:true,surface:'installed-mcp',adapterSha256:createHash('sha256').update(await readFile(adapter)).digest('hex'),decisionSource:'scripted-operator-through-real-terminal-broker',cases:results,noFixtureEffect:true,humanAcceptance:false,publication:false};
+const receipt={success:true,surface:'installed-mcp',adapterSha256:createHash('sha256').update(await readFile(adapter)).digest('hex'),decisionSource:'scripted-operator-through-real-terminal-broker',backendReadiness,cases:results,noFixtureEffect:true,humanAcceptance:false,publication:false};
 await writeFile(join(root,'mcp-security-receipt.json'),JSON.stringify(receipt,null,2)+'\n');console.log(JSON.stringify({success:true,cases:results.length}));

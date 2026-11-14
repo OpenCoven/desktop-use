@@ -34,6 +34,8 @@ The positive clients require a real pixel-derived target mapping and observed fi
 
 The SDK provider decisions and terminal broker operator decisions are scripted test decisions. They are not human approval acceptance. The MCP connector is the actual installed stdio executable behind the actual separate terminal reference host, on both wire revisions.
 
+Negative probes require a stable live fixture PID and actual fixture input focus before and after cases, plus a real image through their own configured client/connector. Stale state, changed focus or an unavailable backend fails the probe. Linux also binds the recorded fixture PID to its running command and active X11 window, requires the explicit owned X11 flag/session, and forwards that display to the connector; unrelated environment values are not forwarded. Configure-event tracking keeps the GTK fixture's reported origin current after window-manager placement.
+
 ## Owned virtual Linux X11
 
 Stage a minimal context instead of sending a checkout or private state to Docker. The pinned images describe this test environment, not the supported native release matrix. Start the resulting container without host mounts, published ports, devices or networking; the isolated Xvfb display is not a physical desktop.
@@ -50,6 +52,17 @@ Inside that owned container, start `Xvfb :91 -screen 0 1280x960x24 -nolisten tcp
 node /owned/consumer/linux-client.mjs
 python3 /owned/active-cancellation.py
 node /owned/consumer/input-queue-diagnostic.mjs
+```
+
+For the negative clients, first complete the positive client flow so the fixture and its keyboard oracle have been observed working. Keep that same fixture focused; these probes verify focus and never move it themselves.
+
+```sh
+mkdir -p /owned/negative-sdk /owned/negative-mcp
+export NATIVE_ACCEPTANCE_ADAPTER=/owned/source/target/debug/coven-desktop-use
+export NATIVE_ACCEPTANCE_FIXTURE_STATE=/owned/fixture-client-state.json
+export NATIVE_ACCEPTANCE_PTY=/owned/pty-host.py
+NATIVE_ACCEPTANCE_ROOT=/owned/negative-sdk node /owned/consumer/sdk-security.mjs
+NATIVE_ACCEPTANCE_ROOT=/owned/negative-mcp node /owned/consumer/mcp-security.mjs
 ```
 
 The active-cancellation outer guard adopts detached descendants as a Linux subreaper and terminates/reaps every owned descendant before resuming the same dedicated Xvfb server. It also handles SIGTERM and SIGINT; a cleanup failure retains the exclusive display lease for recovery and must not be treated as a pass. Capture cases check actual helper liveness, cancellation/timeout, reaping and destination preservation. Input cases require a matching ready fixture, successful focus, observed input before Stop and no later fixture input. A failed input case remains failed even when its helper was reaped; preserve held-key and event-timestamp evidence. Never disable auto-repeat to mask that result. On failure, release only synthetic keys introduced by the test in this isolated display and verify that key state and fixture counters return to a stable baseline before another owner uses it.
