@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "observationId": "fixture-jpg",
+  "capturedAtMs": 0,
+  "producer": {
+    "name": "coven-desktop-use",
+    "version": "0.1.3"
+  },
+  "provider": {
+    "name": "fixture",
+    "version": null
+  },
+  "requestedScope": {
+    "mode": "screen",
+    "annotationRequested": false
+  },
+  "actualScope": {
+    "state": "available",
+    "mode": "screen",
+    "evidence": "PROVIDER_EXPLICIT_ARGUMENT"
+  },
+  "primaryImage": {
+    "mimeType": "image/jpeg",
+    "byteLength": 1174,
+    "sha256": "89e2cc5b2acc1297d824e1fd097401da8bb2fbe744bf48f2c6a4c636f73da4c1",
+    "sourceDimensions": {
+      "width": 32,
+      "height": 24
+    },
+    "deliveredDimensions": {
+      "width": 32,
+      "height": 24
+    },
+    "annotationKind": "raw"
+  },
+  "coordinateReference": {
+    "units": "normalized",
+    "extent": {
+      "x": 0,
+      "y": 0,
+      "width": 1,
+      "height": 1
+    },
+    "sourceExtent": {
+      "x": 0,
+      "y": 0,
+      "width": 32,
+      "height": 24
+    }
+  },
+  "geometry": {
+    "state": "unavailable",
+    "reasonCode": "PROVIDER_GEOMETRY_UNVERIFIED"
+  }
+}

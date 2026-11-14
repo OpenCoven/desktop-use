@@ -1,0 +1,149 @@
+[
+  {
+    "name": "sway-mixed-negative",
+    "producer": "sway",
+    "version": "1.7",
+    "raster": [
+      3200,
+      1200
+    ],
+    "input": [
+      {
+        "name": "HEADLESS-1",
+        "active": true,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "width": 800,
+          "height": 600
+        },
+        "scale": 1,
+        "transform": "normal"
+      },
+      {
+        "name": "HEADLESS-2",
+        "active": true,
+        "rect": {
+          "x": -800,
+          "y": 0,
+          "width": 800,
+          "height": 600
+        },
+        "scale": 2,
+        "transform": "normal"
+      }
+    ],
+    "units": "desktop-logical-pixels",
+    "regions": [
+      {
+        "displayId": "HEADLESS-1",
+        "imageRect": {
+          "x": 1600,
+          "y": 0,
+          "width": 1600,
+          "height": 1200
+        },
+        "desktopRect": {
+          "x": 0,
+          "y": 0,
+          "width": 800,
+          "height": 600
+        }
+      },
+      {
+        "displayId": "HEADLESS-2",
+        "imageRect": {
+          "x": 0,
+          "y": 0,
+          "width": 1600,
+          "height": 1200
+        },
+        "desktopRect": {
+          "x": -800,
+          "y": 0,
+          "width": 800,
+          "height": 600
+        }
+      }
+    ]
+  },
+  {
+    "name": "peekaboo-retina-negative",
+    "producer": "peekaboo-coordinate-context",
+    "version": "1",
+    "raster": [
+      3200,
+      1800
+    ],
+    "input": {
+      "version": 1,
+      "logical_space": "global_display_points",
+      "origin": "top_left",
+      "logical_bounds": [
+        [
+          -800,
+          100
+        ],
+        [
+          1600,
+          900
+        ]
+      ],
+      "delivered_image_size": [
+        3200,
+        1800
+      ],
+      "display": {
+        "index": 1
+      },
+      "output_scale": 2
+    },
+    "units": "macos-points",
+    "regions": [
+      {
+        "displayId": "1",
+        "imageRect": {
+          "x": 0,
+          "y": 0,
+          "width": 3200,
+          "height": 1800
+        },
+        "desktopRect": {
+          "x": -800,
+          "y": 100,
+          "width": 1600,
+          "height": 900
+        }
+      }
+    ]
+  },
+  {
+    "name": "x11-borderless-window-offset",
+    "producer": "xwininfo-window",
+    "version": "1.1.5",
+    "raster": [
+      640,
+      480
+    ],
+    "input": {
+      "info": "xwininfo: Window id: 0x123\n  Absolute upper-left X: 100\n  Absolute upper-left Y: 120\n  Width: 640\n  Height: 480\n  Border width: 0\n"
+    },
+    "units": "desktop-physical-pixels",
+    "regions": [
+      {
+        "imageRect": {
+          "x": 0,
+          "y": 0,
+          "width": 640,
+          "height": 480
+        },
+        "desktopRect": {
+          "x": 100,
+          "y": 120,
+          "width": 640,
+          "height": 480
+        }
+      }
+    ]
+  }
+]

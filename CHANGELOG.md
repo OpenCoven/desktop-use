@@ -2,6 +2,7 @@
 
 ## 0.1.3 - 2026-11-13
 
+- Deliver validated PNG/JPEG image blocks with content hashes and explicit capture/coordinate metadata; reject stale or malformed image artifacts and report unavailable geometry honestly.
 - Add trusted action eligibility profiles and canonical action allowlists, with permission-aware schemas, health probes, alias parity, and an always-available scoped Stop.
 - Advertise only implemented Stop and health controls, document every panel field's producer, and qualify the packaged plugin's policy, approvals, cancellation, and redacted audits through the minimum supported OpenClaw gateway on macOS and Linux.
 

@@ -3,6 +3,26 @@ import { lstat, mkdir, mkdtemp, open, opendir, rename, link, rm } from "node:fs/
 import { dirname, join } from "node:path";
 
 const MAX_FILE_BYTES = 1024 * 1024;
+export type CleanupStage = "file-write-staging" | "observation-staging";
+export type CleanupLimitation = { code: "TEMPORARY_CLEANUP_FAILED"; stages: CleanupStage[]; reason: string };
+export function cleanupLimitation(stage: CleanupStage, previous?: CleanupLimitation): CleanupLimitation {
+  return { code: "TEMPORARY_CLEANUP_FAILED", stages: [...new Set([...(previous?.stages ?? []), stage])],
+    reason: "Temporary artifact cleanup failed; retained files may remain. Raw diagnostics withheld." };
+}
+// Preserve the operation failure independently of a later cleanup failure.
+export class CleanupFailure extends Error {
+  readonly #failure: unknown;
+  get failure(): unknown { return this.#failure; }
+  readonly cleanup: CleanupLimitation;
+  readonly code: string;
+  constructor(failure: unknown, stage: CleanupStage) {
+    super("Temporary artifact cleanup failed; raw diagnostics withheld.");
+    this.#failure = failure instanceof CleanupFailure ? failure.failure : failure;
+    this.cleanup = cleanupLimitation(stage, failure instanceof CleanupFailure ? failure.cleanup : undefined);
+    const code = (this.failure as { code?: unknown } | null)?.code;
+    this.code = typeof code === "string" ? code : "ACTION_FAILED";
+  }
+}
 export class FileActionError extends Error {
   constructor(readonly code: "CANCELLED" | "ETIMEDOUT" | "NOT_REGULAR_FILE" | "FILE_TOO_LARGE") {
     super(`File action failed (${code}).`); this.name = "FileActionError";
@@ -50,7 +70,7 @@ export async function listDirectory(target: string, signal: AbortSignal | undefi
   } finally { await directory.close(); }
 }
 
-export async function writeRegularFile(target: string, content: string, overwrite: boolean, signal: AbortSignal | undefined, deadline: number): Promise<void> {
+export async function writeRegularFile(target: string, content: string | Buffer, overwrite: boolean, signal: AbortSignal | undefined, deadline: number): Promise<{ cleanup?: CleanupLimitation }> {
   check(signal, deadline);
   let mode = 0o600;
   try {
@@ -61,6 +81,9 @@ export async function writeRegularFile(target: string, content: string, overwrit
   check(signal, deadline);
   await mkdir(dirname(target), { recursive: true }); check(signal, deadline);
   const staging = await mkdtemp(join(dirname(target), ".desktopuse-write-"));
+  const outcome: { cleanup?: CleanupLimitation } = {};
+  let committed = false;
+  let failure: unknown;
   try {
     check(signal, deadline);
     const source = join(staging, "content");
@@ -73,5 +96,14 @@ export async function writeRegularFile(target: string, content: string, overwrit
     check(signal, deadline);
     if (overwrite) await rename(source, target);
     else await link(source, target); // atomic no-overwrite, including a concurrent target creation
-  } finally { await rm(staging, { recursive: true, force: true }); }
+    committed = true;
+  } catch (error) { failure = error; throw error; }
+  finally {
+    try { await rm(staging, { recursive: true, force: true }); }
+    catch {
+      if (!committed) throw new CleanupFailure(failure, "file-write-staging");
+      outcome.cleanup = cleanupLimitation("file-write-staging");
+    }
+  }
+  return outcome;
 }

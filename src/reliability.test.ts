@@ -66,7 +66,13 @@ test("actual adapter envelopes control action status, retries, and durable audit
       assert.equal(result.details.success, expected === "success");
       const calls = (await readFile(receipt, "utf8")).trim().split("\n").map(line => JSON.parse(line));
       assert.equal(calls.length, count);
-      assert.deepEqual(calls[0].slice(0, -2), action === "click" ? ["click", "--confirm", "--on", "B1"] : [action]);
+      const argv = calls[0].slice(0, -2);
+      if (action === "inspect") {
+        assert.equal(argv.at(-2), "--path");
+        assert.match(argv.at(-1), /desktopuse-observation-[^/]+\/primary.image$/);
+        argv.splice(-2);
+      }
+      assert.deepEqual(argv, action === "click" ? ["click", "--confirm", "--on", "B1"] : [action]);
       assert.equal(calls[0].at(-2), "--timeout-ms");
     }
     const events = (await readFile(join(dir, "audit/computer-use.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
@@ -135,7 +141,9 @@ test("valid UTF-8 limits and literal argv are preserved", async () => {
   await assert.rejects(tool.execute("oversize", { action: "type-text", text: text + "é", confirm: true }), { name: "ToolInputError" });
   const app = "é".repeat(1024);
   await tool.execute("arg-boundary", { action: "inspect", app });
-  assert.deepEqual(calls[1], ["inspect", "--app", app]);
+  assert.deepEqual(calls[1].slice(0, -2), ["inspect", "--app", app]);
+  assert.equal(calls[1].at(-2), "--path");
+  assert.match(calls[1].at(-1)!, /desktopuse-observation-[^/]+\/primary.image$/);
 });
 
 test("failed adapter process does not echo typed text from process diagnostics", async () => {

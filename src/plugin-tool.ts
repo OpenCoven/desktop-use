@@ -1,7 +1,8 @@
+import { withOwnedObservation, type ObservationImage } from "./observation.js";
 import { CANONICAL_ACTIONS, LEGACY_ACTION_ALIASES, type LegacyAction } from "./computer-use-actions.js";
 import { ACTION_PROFILE_DENIED_REASON, isActionAllowed, resolveActionPermissions, validateActionPermissions, type ActionPermissions } from "./action-permissions.js";
 import { installedBinary, planHostAction } from "./host-actions.js";
-import { FileActionError, listDirectory, readRegularFile, writeRegularFile } from "./file-actions.js";
+import { CleanupFailure, FileActionError, listDirectory, readRegularFile, writeRegularFile } from "./file-actions.js";
 import { runProcess, ProcessFailure } from "./process-runner.js";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -41,7 +42,7 @@ const CAPTURE_TIMEOUT_MS = 45_000;
 const DEFAULT_ADAPTER_BIN = "coven-desktop-use";
 
 type ToolResult = {
-  content: [{ type: "text"; text: string }];
+  content: [{ type: "text"; text: string }, ...ObservationImage[]];
   details: Record<string, unknown> & {
     status: string;
     success?: boolean;
@@ -189,6 +190,7 @@ function createTool(options: CreateComputerUseToolOptions, legacyTool = false) {
       if (params.action !== "stop") calls.add(controller);
       let decision = classifyComputerUseRequest(params, ctx);
       let details: ToolResult["details"];
+      const images: ObservationImage[] = [];
       try {
         if (!isActionAllowed(actionPermissions, params.action)) {
           decision = { ...decision, status: "blocked", requiresApproval: false,
@@ -209,16 +211,18 @@ function createTool(options: CreateComputerUseToolOptions, legacyTool = false) {
             };
           } else {
             const boundedAdapter: AdapterRunner = (args, request) => runAdapter(args, request, controller.signal);
-            details = await executeAllowedAction(params, ctx, actionPermissions, boundedAdapter, controller.signal);
+            details = await executeAllowedAction(params, ctx, actionPermissions, boundedAdapter, controller.signal, image => images.push(image));
             if (normalizeComputerUseAction(params.action) === "health") {
               details.actionPermissions = { scope: "adapter-eligibility", ...actionPermissions, gatewayAuthorization: "not-reported" };
             }
           }
         }
-      } catch (error) {
+      } catch (caught) {
+        const error = caught instanceof CleanupFailure ? caught.failure : caught;
         const code = error instanceof ProcessFailure || error instanceof FileActionError ? error.code : error instanceof ToolInputError ? "INVALID_INPUT" : ["ENOENT", "EACCES", "EPERM", "EISDIR", "ENOTDIR", "EEXIST", "EIO", "ENOSPC"].includes((error as NodeJS.ErrnoException)?.code ?? "") ? (error as NodeJS.ErrnoException).code! : "ACTION_FAILED";
         details = { status: code === "CANCELLED" ? "cancelled" : code === "ETIMEDOUT" ? "timeout" : "error", success: false,
-          action: params.action, code, error: error instanceof ToolInputError ? error.message : "Action failed; raw diagnostics withheld." };
+          action: params.action, code, error: error instanceof ToolInputError ? error.message : "Action failed; raw diagnostics withheld.",
+          ...(caught instanceof CleanupFailure ? { cleanup: caught.cleanup } : {}) };
       } finally {
         calls.delete(controller);
         if (!calls.size) activeCalls.delete(scope);
@@ -239,7 +243,7 @@ function createTool(options: CreateComputerUseToolOptions, legacyTool = false) {
         notices.push("clipboard-write text is deprecated; use clipboardText instead.");
       }
       if (notices.length) details.deprecation = notices.join(" ");
-      return jsonResult(details);
+      return jsonResult(details, images);
     },
   };
 }
@@ -254,6 +258,7 @@ async function executeAllowedAction(
   permissions: ActionPermissions,
   runAdapter: AdapterRunner,
   signal?: AbortSignal,
+  onImage?: (image: ObservationImage) => void,
 ): Promise<ToolResult["details"]> {
   const action = normalizeComputerUseAction(params.action);
   const evidence = {
@@ -263,18 +268,18 @@ async function executeAllowedAction(
   };
 
   if (DESKTOP_ADAPTER_ACTIONS.has(action)) {
-    const raw = await runAdapterWithTransientObservationRetry(
-      buildAdapterArgs(params),
-      params,
-      runAdapter,
-      action,
-    );
+    const observation = ["inspect", "screenshot"].includes(action)
+      ? await withOwnedObservation(params, ctx, request => runAdapterWithTransientObservationRetry(buildAdapterArgs(request), request, runAdapter, action), signal)
+      : undefined;
+    const raw = observation ? observation.raw : await runAdapterWithTransientObservationRetry(buildAdapterArgs(params), params, runAdapter, action);
+    if (observation?.image) onImage?.(observation.image);
     const safe = action === "type-text" ? redactTypeDiagnostics(decodeAdapterAction(raw)) : raw;
     const normalized = normalizeAdapterResult(safe, { evidence });
     return {
       ...normalized,
       action,
       permissionFlow: permissionFlowForResult(safe, action),
+      ...(observation ? { observationV1: observation.observationV1, observationUnavailable: observation.observationUnavailable, outputPublication: observation.outputPublication, cleanup: observation.cleanup, modelImageSupport: observation.modelImageSupport } : {}),
     };
   }
 
@@ -366,7 +371,7 @@ function stopComputerUse(ctx: ComputerUsePolicyContext): ToolResult["details"] {
   const count = calls?.size ?? 0;
   for (const controller of calls ?? []) controller.abort();
   return { status: "success", success: true, action: "stop", cancellationRequested: count,
-    state: count ? "cancelling" : "idle", result: { message: "Cancellation requested for active calls in this agent/session/workspace. Owned helpers terminate within the 250 ms cleanup grace. Completed side effects are not undone; injected runners must honor AbortSignal." } };
+    state: count ? "cancelling" : "idle", result: { message: "Cancellation requested for active calls in this agent/session/workspace. The built-in runner schedules KILL escalation after a 250 ms grace; a blocked host event loop can delay dispatch. Completed side effects are not undone; injected runners must honor AbortSignal." } };
 }
 
 async function runAdapterWithTransientObservationRetry(
@@ -453,9 +458,9 @@ async function writeTextFile(params: ComputerUseParams, ctx: ComputerUsePolicyCo
   const existed = existsSync(target);
   if (existed && params.overwrite !== true) return { status: "needsApproval", success: false, action: "file-write", path: target,
     reason: "file exists; repeat with overwrite:true after reviewing the existing file." };
-  await writeRegularFile(target, content, params.overwrite === true, signal, Date.now() + (params.timeoutMs ?? DEFAULT_TIMEOUT_MS));
+  const written = await writeRegularFile(target, content, params.overwrite === true, signal, Date.now() + (params.timeoutMs ?? DEFAULT_TIMEOUT_MS));
   return { status: "success", success: true, action: "file-write", path: target, bytes: Buffer.byteLength(content, "utf8"),
-    sha256: createHash("sha256").update(content).digest("hex"), overwrote: existed };
+    sha256: createHash("sha256").update(content).digest("hex"), overwrote: existed, ...written };
 }
 
 async function runHostAction(params: ComputerUseParams, signal?: AbortSignal): Promise<ToolResult["details"]> {
@@ -547,7 +552,7 @@ export function normalizeParams(params: unknown): ComputerUseParams {
   if (Array.isArray(record.keys)) {
     assertMaxBytes(record.keys.join(","), "keys", MAX_ARG_BYTES);
   }
-  if (record.coords && !/^\d{1,5},\d{1,5}$/.test((record.coords as string).trim())) {
+  if (record.coords !== undefined && (!/^-?\d{1,10},-?\d{1,10}$/.test((record.coords as string).trim()) || (record.coords as string).split(",").some(n => Number(n) < -2147483648 || Number(n) > 2147483647))) {
     throw new ToolInputError("coords must be in x,y form, for example 120,240.");
   }
   const normalized = record as ComputerUseParams;
@@ -865,9 +870,9 @@ function adapterSetupGuide(adapterBin: string): unknown {
 }
 
 
-function jsonResult(details: ToolResult["details"]): ToolResult {
+function jsonResult(details: ToolResult["details"], images: ObservationImage[] = []): ToolResult {
   return {
-    content: [{ type: "text", text: JSON.stringify(details, null, 2) }],
+    content: [{ type: "text", text: JSON.stringify(details, null, 2) }, ...images],
     details,
   };
 }

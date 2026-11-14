@@ -11,7 +11,11 @@ name = "coven-desktop-use"
 path = "src/main.rs"
 
 [dependencies]
+crc32fast = "=1.5.0"
+image = { version = "=0.25.10", default-features = false, features = ["png"] }
+jpeg-decoder = { version = "=0.3.2", path = "vendor/jpeg-decoder", default-features = false }
 serde_json = "1"
+sha2 = "=0.10.9"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
