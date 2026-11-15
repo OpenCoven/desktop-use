@@ -27,12 +27,6 @@ export async function createImageFixture(repo, root) {
 }
 
 export async function inspectProviderImage(body, expected, options = {}) {
-  const urls = [];
-  function walk(value) {
-    if (typeof value === "string" && /^data:image\/(png|jpeg);base64,/.test(value)) urls.push(value);
-    else if (Array.isArray(value)) value.forEach(walk);
-    else if (value && typeof value === "object") Object.values(value).forEach(walk);
-  }
   const stage = options.stage ?? "initial-delivery";
   assert.ok(["initial-delivery", "history-replay"].includes(stage), "Known image stage");
   const markedTurns = body.messages.flatMap((message, index) => {
@@ -49,8 +43,12 @@ export async function inspectProviderImage(body, expected, options = {}) {
   if (stage === "history-replay") assert.ok(source.index < current.index, "Replay requires a prior source turn");
   const nextTurn = markedTurns.find(turn => turn.index > source.index);
   const messages = body.messages.slice(source.index + 1, nextTurn?.index);
-  walk(messages);
+  // The pinned provider transport delivers tool images in user image_url
+  // blocks. Text or metadata containing identical bytes is not image delivery.
+  const urls = messages.filter(message => message.role === "user" && Array.isArray(message.content))
+    .flatMap(message => message.content.filter(block => block?.type === "image_url").map(block => block.image_url?.url));
   assert.equal(urls.length, 1, "Actual provider request contains one image");
+  assert.equal(typeof urls[0], "string", "Provider image URL must be a string");
   const [, mimeType, data] = urls[0].match(/^data:(image\/(?:png|jpeg));base64,(.*)$/s) ?? [];
   const providerBytes = Buffer.from(data, "base64");
   let resizeProof = {};
