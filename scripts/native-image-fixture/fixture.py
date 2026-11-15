@@ -47,7 +47,7 @@ class ControlTimeline:
                             'keyCount': key_count})
 
 
-def app(state_path, session, title, observe_controls=False):
+def app(state_path, session, title, observe_controls=False, observe_entry_focus=False):
     import gi
     gi.require_version('Gtk', '3.0')
     from gi.repository import Gtk, Gdk, GLib
@@ -124,6 +124,8 @@ def app(state_path, session, title, observe_controls=False):
                 _, x, y = native_window.get_origin()
                 state['origin'] = [x, y]
         state['text'] = entry.get_text()
+        if observe_entry_focus:
+            state['entryFocused'] = entry.has_focus()
         adjustment = scroll_adjustment
         state['scrollOffset'] = adjustment.get_value()
         state['scrollUpper'] = adjustment.get_upper()
@@ -136,6 +138,9 @@ def app(state_path, session, title, observe_controls=False):
         temp.replace(state_path)
 
     writer = StateWriter(lambda callback: schedule_state_write(GLib, callback), save)
+    if observe_entry_focus:
+        entry.connect('focus-in-event', lambda *_: (writer.request(), False)[1])
+        entry.connect('focus-out-event', lambda *_: (writer.request(), False)[1])
 
     def click(widget, event):
         state['clicks'].append({'x': event.x+20, 'y': event.y+20, 'button': event.button})
@@ -195,5 +200,6 @@ if __name__ == '__main__':
     p.add_argument('--session', choices=['x11', 'wayland'], required=True)
     p.add_argument('--title', default='DesktopuseFixture21')
     p.add_argument('--observe-controls', action='store_true', help='retain scalar control-change timestamps for cancellation diagnostics')
+    p.add_argument('--observe-entry-focus', action='store_true', help='report editable focus for the owned Wayland client probe')
     a = p.parse_args()
-    app(a.state, a.session, a.title, a.observe_controls)
+    app(a.state, a.session, a.title, a.observe_controls, a.observe_entry_focus)
