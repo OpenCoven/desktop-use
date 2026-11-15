@@ -1,0 +1,43 @@
+name: Native provider contract
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/native-provider-contract.yml'
+      - 'scripts/native-openclaw-acceptance/**'
+      - 'scripts/native-wayland-openclaw/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-provider-contract-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Stage pinned official host for decoder and replay tests
+        run: npm install --prefix "$RUNNER_TEMP/native-provider-host" --ignore-scripts --no-audit --no-fund openclaw@2026.4.26 sharp@0.34.5
+      - name: Run provider and owned-lifecycle contract tests without a desktop
+        shell: bash
+        run: |
+          NATIVE_OPENCLAW_HOST="$RUNNER_TEMP/native-provider-host/node_modules/openclaw" node --test scripts/native-openclaw-acceptance/*.test.mjs scripts/native-wayland-openclaw/*.test.mjs
+          python3 -I -B scripts/native-wayland-openclaw/operator.test.py
