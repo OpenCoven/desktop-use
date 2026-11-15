@@ -38,7 +38,7 @@ def contained(root, path):
     return root != path and root in path.parents
 
 
-def digest(path, limit=64 * 1024 * 1024):
+def digest(path, limit=256 * 1024 * 1024):
     info = path.lstat()
     require(stat.S_ISREG(info.st_mode) and info.st_size <= limit, 'REGULAR_BOUNDED_ARTIFACT_REQUIRED')
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)

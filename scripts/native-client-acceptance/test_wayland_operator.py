@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import tarfile
@@ -50,6 +51,13 @@ class CleanupTests(unittest.TestCase):
 
 
 class PreparedTests(unittest.TestCase):
+    def test_bounded_digest_accepts_prepared_node_sized_binaries_above64mib(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'node'
+            path.touch()
+            os.truncate(path, 65 * 1024 * 1024)
+            self.assertEqual(len(operator.digest(path)), 64)
+
     def test_copy_cannot_rebind_bytes_changed_after_preflight(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

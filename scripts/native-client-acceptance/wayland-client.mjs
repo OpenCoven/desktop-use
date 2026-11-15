@@ -17,12 +17,12 @@ const require=createRequire(import.meta.url),packageRoot=dirname(require.resolve
 validateWaylandRun(config,{packageRoot,workerPath:fileURLToPath(new URL('./wayland-peer-observer.py',import.meta.url)),platform:process.platform,uid:process.getuid(),environment:process.env});
 const remaining=waylandLease(config.leaseExpiresAt),sha=value=>createHash('sha256').update(value).digest('hex');
 for(const binding of config.fileBindings) {
-  const info=lstatSync(binding.path);assert.ok(info.isFile() && !info.isSymbolicLink() && info.size<=64*1024*1024);
+  const info=lstatSync(binding.path);assert.ok(info.isFile() && !info.isSymbolicLink() && info.size<=256*1024*1024);
   const descriptor=openSync(binding.path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
   try {
     const opened=fstatSync(descriptor);assert.equal(opened.dev,info.dev);assert.equal(opened.ino,info.ino);
     const hash=createHash('sha256'),buffer=Buffer.alloc(65536);let total=0,count;
-    while((count=readSync(descriptor,buffer,0,buffer.length,null))>0) {total+=count;assert.ok(total<=64*1024*1024);hash.update(buffer.subarray(0,count));remaining();}
+    while((count=readSync(descriptor,buffer,0,buffer.length,null))>0) {total+=count;assert.ok(total<=256*1024*1024);hash.update(buffer.subarray(0,count));remaining();}
     assert.equal(hash.digest('hex'),binding.sha256,'prepared source or artifact bytes changed');
   } finally {closeSync(descriptor);}
 }
