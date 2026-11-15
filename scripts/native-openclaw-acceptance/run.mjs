@@ -16,6 +16,7 @@ import { nativeToolCallId } from './call-identity.mjs';
 import { removeOwnedPrivateFiles } from './private-files.mjs';
 import { safeFailure } from './failure.mjs';
 import { assertClickResult } from './click-result.mjs';
+import { captureX11ScopeSnapshot } from './linux-scope-proof.mjs';
 
 const [descriptorPath, mode = '--preflight', outputPath] = process.argv.slice(2);
 assert.ok(descriptorPath && ['--preflight', '--run-owned-fixture'].includes(mode), 'Usage: run.mjs descriptor.json [--preflight | --run-owned-fixture fresh-private-output]');
@@ -37,11 +38,16 @@ const hostRequire = createRequire(join(identity.selected.host, 'package.json'));
 const WebSocket = hostRequire('ws'), sharp = hostRequire('sharp');
 assert.equal(hostRequire('sharp/package.json').version, '0.34.5');
 const control = cancellationScope(Date.parse(descriptor.fixtureLease.expiresAt));
+let rawLinuxFixtureState;
 const fixture = async () => {
   control.check();
   const state = await readJson(identity.selected.fixtureState);
   assert.equal(state.ready, true); assert.equal(state.pid, descriptor.fixturePid); assert.equal(state.windowNumber, descriptor.fixtureWindowId);
-  if (descriptor.platform === 'linux') await verifyLinuxFixtureBridge(state, descriptor, { fixtureState: identity.selected.fixtureState });
+  if (descriptor.platform === 'linux') {
+    const verified = await verifyLinuxFixtureBridge(state, descriptor, { fixtureState: identity.selected.fixtureState });
+    assert.ok(!rawLinuxFixtureState || rawLinuxFixtureState === verified.rawFixtureState, 'Raw GTK state selection changed');
+    rawLinuxFixtureState = verified.rawFixtureState;
+  }
   assert.ok(Date.parse(descriptor.fixtureLease.expiresAt) > Date.now(), 'Fixture lease expired');
   return state;
 };
@@ -76,13 +82,19 @@ const model = createServer(async (req, res) => {
     providerPhase = 'tool-results';
     if (results.length === 0) {
       assertFixtureLease(descriptor, await fixture(), plan.before);
+      if (descriptor.platform === 'linux') {
+        plan.linuxScopeBefore = await captureX11ScopeSnapshot(rawLinuxFixtureState);
+        assert.equal(plan.linuxScopeBefore.pid, descriptor.fixturePid);
+        assert.equal(plan.linuxScopeBefore.windowId, descriptor.fixtureWindowId);
+      }
       plan.captureStartedAtMs = Date.now();
       args = captureArgs; id = nativeToolCallId(marker, 'capture');
     }
     else if (results.length === 1) {
       providerPhase = 'wire-image-proof';
-      const proof = await proveWireObservation(body, marker, { sharp, fixture: plan.before, platform: descriptor.platform, expectedCallId: nativeToolCallId(marker, 'capture'), captureStartedAtMs: plan.captureStartedAtMs, seenObservationIds });
-      if (descriptor.platform === 'darwin') assert.equal(proof.independentWindowExtentVerified, true, 'Independent complete-window extent proof required before input');
+      const linuxScope = descriptor.platform === 'linux' ? {before:plan.linuxScopeBefore,after:await captureX11ScopeSnapshot(rawLinuxFixtureState)} : undefined;
+      const proof = await proveWireObservation(body, marker, { sharp, fixture: plan.before, platform: descriptor.platform, expectedCallId: nativeToolCallId(marker, 'capture'), captureStartedAtMs: plan.captureStartedAtMs, seenObservationIds, linuxScope });
+      assert.equal(proof.independentWindowExtentVerified, true, 'Independent complete-window extent proof required before input');
       assertFixtureLease(descriptor, await fixture(), plan.before);
       images.push({ marker, ...proof }); plan.proof = proof;
       receipt.actualProviderRequest = true; receipt.nativeExecuted = true;

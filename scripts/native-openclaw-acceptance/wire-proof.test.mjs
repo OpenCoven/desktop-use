@@ -93,15 +93,13 @@ test('a 1x complete window passes on a native 2x fixture', async () => {
   assert.deepEqual(proof.desktopPoint, [-75, 50]);
 });
 
-test('Linux verified frontmost scope remains accepted without AppKit metadata', async () => {
+test('Linux provider scope without an independent bracket must not authorize input', async () => {
   const sample = await example(); sample.options.platform = 'linux';
   sample.receipt.requestedScope.mode = 'frontmost';
   sample.receipt.actualScope = { state: 'available', mode: 'frontmost', evidence: 'PROVIDER_EXPLICIT_ARGUMENT' };
   delete sample.fixture.windowFrameRect; delete sample.fixture.backingScale;
   sample.update();
-  const proof = await proveWireObservation(sample.body, 'allowed', sample.options);
-  assert.equal(proof.independentWindowExtentVerified, false);
-  assert.equal(proof.actualScope.mode, 'frontmost');
+  await assert.rejects(proveWireObservation(sample.body, 'allowed', sample.options), /Independent Linux capture bracket required/);
 });
 
 test('both pixel-scale axes must meet the same native-scale tolerance', async () => {
@@ -143,4 +141,41 @@ for (const variant of ['stale', 'wrong-call', 'reused-id', 'tiny-target', 'off-t
   if (variant === 'off-target-overlap') sample.receipt.geometry.regions.push(...[1,2].map(() => ({imageRect:{x:150,y:0,width:40,height:20},desktopRect:{x:0,y:0,width:40,height:20}})));
   sample.update();
   await assert.rejects(proveWireObservation(sample.body, 'allowed', sample.options));
+});
+
+async function linuxExample() {
+  const s = await example();
+  s.options.platform = 'linux';
+  s.fixture.desktopRect = { x: -100, y: 20, width: 200, height: 160 };
+  s.fixture.targetRect = [20, 40, 60, 40];
+  delete s.fixture.windowFrameRect; delete s.fixture.backingScale;
+  s.receipt.requestedScope.mode = 'frontmost';
+  s.receipt.actualScope = { state: 'available', mode: 'frontmost', evidence: 'PROVIDER_EXPLICIT_ARGUMENT' };
+  s.receipt.geometry.coordinateUnits = 'desktop-physical-pixels';
+  s.receipt.geometry.regions[0].desktopRect = { ...s.fixture.desktopRect };
+  const at = s.receipt.capturedAtMs;
+  const before = {pid:s.fixture.pid,processStartTicks:'123',windowId:s.fixture.windowNumber,window:{...s.fixture.desktopRect},root:{x:0,y:0,width:1280,height:960},startedAtMs:at-4,finishedAtMs:at-2,startedMonotonicMs:10,finishedMonotonicMs:12};
+  const after = {...structuredClone(before),startedAtMs:at+2,finishedAtMs:at+4,startedMonotonicMs:14,finishedMonotonicMs:16};
+  s.options.linuxScope = {before,after}; s.update(); return s;
+}
+
+test('Linux provider proof requires independently bracketed complete window extent', async () => {
+  const s = await linuxExample();
+  const proof = await proveWireObservation(s.body, 'allowed', s.options);
+  assert.equal(proof.independentWindowExtentVerified, true);
+  assert.equal(proof.linuxCaptureScope.independentExtentVerified, true);
+  assert.equal(proof.linuxCaptureScope.windowId, s.fixture.windowNumber);
+});
+for (const variant of ['missing-bracket','changed-window','changed-process-birth','wrong-window-id','broader-screen','cropped-window','expired-bracket','reversed-clock','capture-outside-bracket']) test(`rejects Linux provider footprint: ${variant}`, async () => {
+  const s = await linuxExample();
+  if (variant === 'missing-bracket') delete s.options.linuxScope;
+  if (variant === 'changed-window') s.options.linuxScope.after.window.width++;
+  if (variant === 'changed-process-birth') s.options.linuxScope.after.processStartTicks = '124';
+  if (variant === 'wrong-window-id') { s.options.linuxScope.before.windowId++; s.options.linuxScope.after.windowId++; }
+  if (variant === 'broader-screen') await replaceRaster(s,400,320,[120,140,180,180],{x:-200,y:-80,width:400,height:320});
+  if (variant === 'cropped-window') await replaceRaster(s,100,80,[20,40,80,80],{x:-100,y:20,width:100,height:80});
+  if (variant === 'expired-bracket') s.options.linuxScope.after.finishedMonotonicMs += 21_000;
+  if (variant === 'reversed-clock') s.options.linuxScope.after.startedMonotonicMs = 1;
+  if (variant === 'capture-outside-bracket') s.options.linuxScope.before.finishedAtMs = s.receipt.capturedAtMs+1;
+  await assert.rejects(proveWireObservation(s.body,'allowed',s.options));
 });

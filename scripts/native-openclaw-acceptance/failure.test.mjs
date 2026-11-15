@@ -18,3 +18,9 @@ test('only fixed driver error codes survive failure classification', () => {
   assert.deepEqual(safeFailure(new Error('NATIVE21_RPC_TIMEOUT'), 'rpc-connect'), { phase: 'rpc-connect', errorClass: 'Error', code: 'NATIVE21_RPC_TIMEOUT' });
   assert.equal(safeFailure(new Error('NATIVE21_RPC_TIMEOUT private'), 'rpc-connect').code, 'WITHHELD');
 });
+
+for (const module of ['linux-scope-proof','identity-preflight']) test(`new verifier ${module} retains only allowlisted failure location`, () => {
+  const error = new Error('secret-input data:image/png;base64,AAAA /private/operator');
+  error.stack = `Error: secret-input\n at probe (file:///private/operator/${module}.mjs:71:3)\n at file:///private/operator/run.mjs:90:4`;
+  assert.deepEqual(safeFailure(error, 'wire-image-proof'), {phase:'wire-image-proof',errorClass:'Error',code:'WITHHELD',module,line:71,column:3});
+});

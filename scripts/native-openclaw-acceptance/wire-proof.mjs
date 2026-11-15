@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { proveCaptureScope } from './linux-scope-proof.mjs';
 
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 function text(content) {
@@ -14,7 +15,7 @@ const contains = (rect, point) => point[0] >= rect.x && point[1] >= rect.y && po
 
 // This verifies provider-wire content, not its native provenance or an effect.
 // The opt-in runner must separately bind actual helper/fixture identities.
-export async function proveWireObservation(body, marker, { sharp, fixture, platform, expectedCallId, captureStartedAtMs, seenObservationIds }) {
+export async function proveWireObservation(body, marker, { sharp, fixture, platform, expectedCallId, captureStartedAtMs, seenObservationIds, linuxScope }) {
   assert.ok(['darwin', 'linux'].includes(platform), 'Explicit native platform required');
   assert.ok(Array.isArray(body.messages) && body.messages.length <= 300, 'Bounded provider messages required');
   assert.match(marker, /^[a-z0-9-]{1,80}$/);
@@ -93,6 +94,11 @@ export async function proveWireObservation(body, marker, { sharp, fixture, platf
     assert.equal(observation.requestedScope?.mode, 'frontmost', 'Explicit frontmost request required');
     assert.equal(observation.actualScope?.state, 'available', 'Verified Linux frontmost provider scope required');
     assert.equal(observation.actualScope.mode, 'frontmost', 'Native capture must retain requested fixture scope');
+    assert.ok(linuxScope?.before && linuxScope?.after, 'Independent Linux capture bracket required before input');
+    assert.equal(linuxScope.before.windowId, fixture.windowNumber, 'Independent X11 window must be the selected owned fixture');
+    const frame = rectangle(fixture.desktopRect);
+    const scope = proveCaptureScope({mode:'frontmost',before:linuxScope.before,after:linuxScope.after,receipt:observation,fixture:{pid:fixture.pid,origin:[frame.x,frame.y],size:[frame.width,frame.height]},decodedDimensions:dimensions});
+    independentWindow = {linuxCaptureScope:scope};
   }
   assert.ok(Number.isSafeInteger(fixture.clicks) && fixture.clicks >= 0, 'Known fixture counter required');
   const color = fixture.clicks === 0 ? [224, 48, 64] : [32, 192, 96];

@@ -68,3 +68,9 @@ for (const variant of ['expiry-during-validation', 'fixture-dies-during-validati
     await assert.rejects(verifyLinuxFixtureBridge(s.state, s.descriptor, s.options));
   } finally { await s.cleanup(); }
 });
+
+test('verified bridge returns only its exact raw GTK input for independent probes', async () => {
+  const s = await sample();
+  try { assert.deepEqual(await verifyLinuxFixtureBridge(s.state, s.descriptor, s.options), {rawFixtureState:'/owned/fixture-state.json'}); }
+  finally { await s.cleanup(); }
+});

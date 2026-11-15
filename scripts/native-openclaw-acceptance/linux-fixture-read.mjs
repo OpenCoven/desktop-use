@@ -40,4 +40,6 @@ export async function verifyLinuxFixtureBridge(state, descriptor, { fixtureState
   assert.deepEqual(closingBridge, actual, 'Bridge identity changed during validation');
   assert.deepEqual(closingFixture, fixture, 'GTK identity changed during validation');
   freshAndLive();
+  assert.ok(isAbsolute(actual.argv[2]), 'Independent probes require the absolute raw GTK state path');
+  return { rawFixtureState: actual.argv[2] };
 }
