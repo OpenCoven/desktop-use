@@ -93,3 +93,18 @@ test('privacy file checks preserve the rejection of actual private text and imag
   const result=await api.checkDiagnosticPrivacy(async kind=>kind==='console'?'owned-private-fixture':'data:image/png;base64,AAAA','owned-private-fixture');
   assert.deepEqual(result,{safe:false,checks:[{kind:'console',reason:'private-text'},{kind:'gateway',reason:'image-data'}]});
 });
+
+test('observation workflow selection is bound to the explicit fixture lease before execution',async()=>{
+  const api=await import('./run-contract.mjs');assert.equal(typeof api.assertProviderWorkflowMode,'function');
+  assert.equal(api.assertProviderWorkflowMode({observationOnly:true,fixtureLease:{observationOnly:true}},true),true);
+  assert.equal(api.assertProviderWorkflowMode({fixtureLease:{}},false),true);
+  for(const descriptor of [{observationOnly:false,fixtureLease:{observationOnly:false}},{observationOnly:true,fixtureLease:{}},{observationOnly:'private-value',fixtureLease:{observationOnly:true}}])assert.throws(()=>api.assertProviderWorkflowMode(descriptor,true),/WAYLAND_PROVIDER_MODE_REJECTED/);
+  for(const descriptor of [{observationOnly:null,fixtureLease:{}},{fixtureLease:{observationOnly:null}},{observationOnly:true,fixtureLease:{observationOnly:true}}])assert.throws(()=>api.assertProviderWorkflowMode(descriptor,false),/WAYLAND_PROVIDER_MODE_REJECTED/);
+});
+
+test('observation provider guard rejects a miswired input plan before emission',async()=>{
+  const api=await import('./run-contract.mjs');assert.equal(typeof api.assertProviderWorkflowStep,'function');
+  for(const step of ['capture','complete'])assert.equal(api.assertProviderWorkflowStep(true,{captureOnly:true},step),true);
+  for(const [plan,step] of [[{captureOnly:false},'capture'],[{captureOnly:true},'input'],[{},'complete']])assert.throws(()=>api.assertProviderWorkflowStep(true,plan,step),/WAYLAND_PROVIDER_MODE_REJECTED/);
+  assert.equal(api.assertProviderWorkflowStep(false,{captureOnly:false},'input'),true);
+});

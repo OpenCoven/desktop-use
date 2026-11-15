@@ -223,7 +223,30 @@ def reap_descendants(timeout=DESCENDANT_WAIT):
         time.sleep(.01)
 
 
-def execute(prepared, bindings, search, output, scale, expires):
+def validate_provider_receipt(receipt, observation_only):
+    code = 'COMPLETE_PROVIDER_RECEIPT_REQUIRED'
+    require(type(observation_only) is bool and isinstance(receipt, dict), code)
+    require(all(receipt.get(key) is True for key in ('success', 'actualProviderRequest', 'auditPayloadsAbsent', 'gatewayReaped')), code)
+    require(receipt.get('observationOnly') is observation_only, code)
+    require(not receipt.get('diagnosticPrivacyFailure') and not receipt.get('privateCleanupFailed'), code)
+    cases, images = receipt.get('cases'), receipt.get('images')
+    require(isinstance(cases, list) and isinstance(images, list), code)
+    if observation_only:
+        require(receipt.get('workflowKind') == 'observation-only' and receipt.get('readOnlyObservationVerified') is True, code)
+        require(all(receipt.get(key) is False for key in ('fullQualificationPassed', 'effectVerified', 'approvedInputTested', 'inputPrivacyTested')), code)
+        require(receipt.get('approvals') == [] and len(cases) == len(images) == 2, code)
+        for row, (marker, fmt) in zip(cases, (('observe-png', 'png'), ('observe-jpg', 'jpg'))):
+            require(isinstance(row, dict) and row.get('marker') == marker and row.get('format') == fmt and row.get('captureOnly') is True, code)
+            effect = row.get('effect', {})
+            require(isinstance(effect, dict) and type(effect.get('charactersAdded')) is int and effect['charactersAdded'] == 0 and type(effect.get('keyEventsAdded')) is int and effect['keyEventsAdded'] == 0 and effect.get('unrelatedControlsUnchanged') is True, code)
+    else:
+        require(receipt.get('workflowKind') == 'full-qualification' and receipt.get('readOnlyObservationVerified') is False, code)
+        require(all(receipt.get(key) is True for key in ('fullQualificationPassed', 'effectVerified', 'approvedInputTested', 'inputPrivacyTested')), code)
+        require(len(cases) == len(images) == 5, code)
+
+
+def execute(prepared, bindings, search, output, scale, expires, observation_only=False):
+    require(type(observation_only) is bool, 'WAYLAND_PROVIDER_MODE_REJECTED')
     require(sys.platform == 'linux' and os.getuid() > 0, 'NONROOT_LINUX_EXECUTION_REQUIRED')
     require(os.environ.get('NATIVE_OWNED_DISPOSABLE_DISPLAY') == 'yes', 'OWNED_DISPOSABLE_DISPLAY_OPT_IN_REQUIRED')
     require(not Path('/dev/input').exists() and not Path('/dev/uinput').exists(), 'SOFTWARE_NAMESPACE_WITHOUT_INPUT_DEVICES_REQUIRED')
@@ -238,7 +261,7 @@ def execute(prepared, bindings, search, output, scale, expires):
     home.mkdir(mode=0o700)
     harness = Path(prepared['consumerRoot']) / ('.native-wayland-' + uuid.uuid4().hex)
     harness.mkdir(mode=0o700)
-    status = {'schemaVersion': 1, 'success': False, 'scale': scale, 'physicalDisplayVerified': False, 'children': []}
+    status = {'schemaVersion': 1, 'success': False, 'observationOnly': observation_only, 'fullQualificationPassed': False, 'readOnlyObservationVerified': False, 'scale': scale, 'physicalDisplayVerified': False, 'children': []}
     children = []
 
     def save():
@@ -321,16 +344,17 @@ def execute(prepared, bindings, search, output, scale, expires):
                    'peerObserverPath': str(provider / 'wayland-peer-observer.py'), 'peerObserverSha256': prepared['harnessSources']['scripts/native-wayland-openclaw/wayland-peer-observer.py'], 'swayConfigPath': str(config_path), 'swayConfigSha256': digest(config_path)}
         manifest = json.loads((Path(prepared['packageRoot']) / 'package.json').read_text())
         descriptor = {**prepared['openclaw'], 'schemaVersion': 1, 'sourceCommit': prepared['sourceCommit'], 'sourceTree': prepared['sourceTree'], 'packageVersion': manifest['version'], 'pluginRoot': prepared['packageRoot'], 'packageArchive': prepared['packageArchivePath'], 'packageSha256': prepared['packageArchiveSha256'], 'adapter': prepared['adapterPath'], 'adapterSha256': prepared['nativeSha256'], 'platform': 'linux', 'ownedDisposableDisplay': True, 'fixtureState': str(flat), 'fixturePid': fixture.pid, 'fixtureWindowId': window_id, 'wayland': wayland}
-        descriptor['fixtureLease'] = {'acknowledgement': 'native-openclaw-fixture-exclusive', 'ownerThread': prepared['ownerThread'], 'expiresAt': expires, **{key: descriptor[key] for key in ('fixturePid', 'fixtureWindowId', 'adapterSha256', 'packageSha256', 'sourceCommit')}, **{key: wayland[key] for key in ('fixtureStartTicks', 'compositorPid', 'compositorStartTicks', 'scale')}}
+        descriptor['observationOnly'] = observation_only
+        descriptor['fixtureLease'] = {'acknowledgement': 'native-openclaw-fixture-exclusive', 'observationOnly': observation_only, 'ownerThread': prepared['ownerThread'], 'expiresAt': expires, **{key: descriptor[key] for key in ('fixturePid', 'fixtureWindowId', 'adapterSha256', 'packageSha256', 'sourceCommit')}, **{key: wayland[key] for key in ('fixtureStartTicks', 'compositorPid', 'compositorStartTicks', 'scale')}}
         descriptor_path = output / 'execution-descriptor-private.json'; descriptor_path.write_text(json.dumps(descriptor))
-        client = start([prepared['tools']['node']['path'], str(provider / 'run.mjs'), str(descriptor_path), '--run-owned-fixture', str(output / 'provider')], 'provider')
+        client = start([prepared['tools']['node']['path'], str(provider / 'run.mjs'), str(descriptor_path), '--observe-owned-fixture' if observation_only else '--run-owned-fixture', str(output / 'provider')], 'provider')
         code = client.wait(timeout=min(360, lease.remaining()))
         require(code == 0, 'OWNED_PROVIDER_WORKFLOW_FAILED')
         receipt = json.loads((output / 'provider/receipt.json').read_text())
-        require(receipt['success'] and receipt['actualProviderRequest'] and receipt['effectVerified'] and receipt['auditPayloadsAbsent'] and receipt['gatewayReaped'] and len(receipt['cases']) == 5 and len(receipt['images']) == 5, 'COMPLETE_PROVIDER_RECEIPT_REQUIRED')
+        validate_provider_receipt(receipt, observation_only)
         independent = subprocess.run([prepared['tools']['grim']['path'], '-t', 'png', '-s', str(scale), '--', str(output / 'independent-after.png')], env=env, capture_output=True, timeout=min(5, lease.remaining()))
         require(independent.returncode == 0, 'INDEPENDENT_FIXTURE_CAPTURE_FAILED')
-        status.update(success=True, sourceCommit=prepared['sourceCommit'], sourceTree=prepared['sourceTree'], harnessCommit=prepared['harnessCommit'], harnessTree=prepared['harnessTree'], harnessSources=prepared['harnessSources'], keyboardSetupNoInputRequested=True, softwareRendering=True, noInputDevicesPresent=True, independentAfterSha256=digest(output / 'independent-after.png'))
+        status.update(success=True, fullQualificationPassed=receipt['fullQualificationPassed'], readOnlyObservationVerified=receipt['readOnlyObservationVerified'], sourceCommit=prepared['sourceCommit'], sourceTree=prepared['sourceTree'], harnessCommit=prepared['harnessCommit'], harnessTree=prepared['harnessTree'], harnessSources=prepared['harnessSources'], keyboardSetupNoInputRequested=True, softwareRendering=True, noInputDevicesPresent=True, independentAfterSha256=digest(output / 'independent-after.png'))
     except BaseException as error:
         status['failureClass'] = type(error).__name__
         raise
@@ -360,8 +384,10 @@ def execute(prepared, bindings, search, output, scale, expires):
         status['cleanupErrors'] = cleanup_errors
         status['allKnownChildrenReaped'] = all(row['reaped'] for row in status['children']) and not cleanup_errors
         status['success'] = status['success'] and status['allKnownChildrenReaped']
+        status['fullQualificationPassed'] = status['fullQualificationPassed'] and status['success']
+        status['readOnlyObservationVerified'] = status['readOnlyObservationVerified'] and status['success']
         save()
-        print(json.dumps({'success': status['success'], 'scale': scale, 'allKnownChildrenReaped': status['allKnownChildrenReaped']}), flush=True)
+        print(json.dumps({'success': status['success'], 'observationOnly': observation_only, 'fullQualificationPassed': status['fullQualificationPassed'], 'scale': scale, 'allKnownChildrenReaped': status['allKnownChildrenReaped']}), flush=True)
         if cleanup_errors:
             raise RuntimeError('OWNED_CLEANUP_INCOMPLETE_RETAIN_RUNTIME_LEASE')
 
@@ -396,15 +422,16 @@ def main():
     parser.add_argument('--scale', type=int, choices=(1, 2), default=1)
     parser.add_argument('--lease-expires-at')
     parser.add_argument('--execute', action='store_true')
+    parser.add_argument('--observe-only', action='store_true')
     parser.add_argument('--owned-disposable-display', action='store_true')
     args = parser.parse_args()
     value = json.loads(args.prepared.read_text())
     prepared, bindings, search = prepared_descriptor(value)
     if not args.execute:
-        print(json.dumps({'schemaVersion': 1, 'preflightPassed': True, 'nativeExecuted': False, 'installedPackageFilesChecked': len(value['installedFiles']), 'scaleRequested': args.scale, 'officialHostArchiveVerification': 'deferred-to-provider-preflight', 'requiresFreshLeaseAndExplicitExecution': True}))
+        print(json.dumps({'schemaVersion': 1, 'preflightPassed': True, 'nativeExecuted': False, 'observationOnlyRequested': args.observe_only, 'fullQualificationPassed': False, 'installedPackageFilesChecked': len(value['installedFiles']), 'scaleRequested': args.scale, 'officialHostArchiveVerification': 'deferred-to-provider-preflight', 'requiresFreshLeaseAndExplicitExecution': True}))
         return
     require(args.owned_disposable_display and args.output_root is not None and args.lease_expires_at is not None, 'EXECUTION_REQUIRES_OWNED_DISPLAY_FRESH_ROOT_AND_LEASE')
-    execute(prepared, bindings, search, args.output_root.absolute(), args.scale, args.lease_expires_at)
+    execute(prepared, bindings, search, args.output_root.absolute(), args.scale, args.lease_expires_at, args.observe_only)
 
 
 if __name__ == '__main__':

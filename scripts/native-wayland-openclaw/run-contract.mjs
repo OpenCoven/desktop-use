@@ -2,6 +2,20 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { proveNoEffect } from './effect-proof.mjs';
 
+// Both trusted descriptor and lease must agree with the explicit CLI selection.
+// Missing flags preserve the original full workflow, never opt into observation.
+export function assertProviderWorkflowMode(descriptor,observationOnly) {
+  if(typeof observationOnly!=='boolean'||!descriptor?.fixtureLease||
+    (descriptor.observationOnly===undefined?false:descriptor.observationOnly)!==observationOnly||
+    (descriptor.fixtureLease.observationOnly===undefined?false:descriptor.fixtureLease.observationOnly)!==observationOnly)throw new Error('WAYLAND_PROVIDER_MODE_REJECTED');
+  return true;
+}
+
+export function assertProviderWorkflowStep(observationOnly,plan,step) {
+  if(typeof observationOnly!=='boolean'||(observationOnly&&(plan?.captureOnly!==true||!['capture','complete'].includes(step))))throw new Error('WAYLAND_PROVIDER_MODE_REJECTED');
+  return true;
+}
+
 export function providerToolCallId(marker, action) {
   assert.match(marker, /^[a-z0-9-]{1,24}$/);
   assert.ok(action === 'capture' || action === 'type');

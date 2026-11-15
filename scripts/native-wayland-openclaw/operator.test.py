@@ -44,6 +44,34 @@ class ProviderOperatorTests(unittest.TestCase):
             proof=json.loads(result.stdout);self.assertTrue(proof['preflightPassed']);self.assertFalse(proof['nativeExecuted']);self.assertTrue(proof['requiresFreshLeaseAndExplicitExecution'])
             self.assertEqual(proof['officialHostArchiveVerification'],'deferred-to-provider-preflight');self.assertFalse(output.exists());self.assertFalse(sentinel.exists())
 
+    def test_observation_selection_without_execute_remains_metadata_only(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary).resolve();value,sentinel=self.prepared_fixture(root);prepared=root/'prepared.json';prepared.write_text(json.dumps(value));output=root/'must-not-exist'
+            result=subprocess.run([sys.executable,'-I','-B',str(Path(__file__).with_name('provider-operator.py')),'--prepared',str(prepared),'--output-root',str(output),'--observe-only'],capture_output=True,text=True,timeout=5)
+            self.assertEqual(result.returncode,0,result.stderr)
+            proof=json.loads(result.stdout);self.assertTrue(proof['preflightPassed']);self.assertTrue(proof['observationOnlyRequested']);self.assertFalse(proof['nativeExecuted']);self.assertFalse(proof['fullQualificationPassed']);self.assertFalse(output.exists());self.assertFalse(sentinel.exists())
+
+    def observation_receipt(self):
+        return {'success':True,'actualProviderRequest':True,'auditPayloadsAbsent':True,'gatewayReaped':True,'workflowKind':'observation-only','observationOnly':True,'fullQualificationPassed':False,'effectVerified':False,'approvedInputTested':False,'inputPrivacyTested':False,'readOnlyObservationVerified':True,'approvals':[],'images':[{},{}],'cases':[{'marker':marker,'format':fmt,'captureOnly':True,'effect':{'charactersAdded':0,'keyEventsAdded':0,'unrelatedControlsUnchanged':True}} for marker,fmt in [('observe-png','png'),('observe-jpg','jpg')]]}
+
+    def test_observation_receipt_can_never_qualify_the_full_input_workflow(self):
+        receipt=self.observation_receipt()
+        operator.validate_provider_receipt(receipt,True)
+        with self.assertRaisesRegex(ValueError,'COMPLETE_PROVIDER_RECEIPT_REQUIRED'):operator.validate_provider_receipt(receipt,False)
+
+    def test_observation_receipt_rejects_input_or_promoted_acceptance_claims(self):
+        for field,value in [('fullQualificationPassed',True),('effectVerified',True),('approvedInputTested',True),('inputPrivacyTested',True),('approvals',[{'decision':'allow-once'}]),('success',False),('diagnosticPrivacyFailure',True),('privateCleanupFailed',True),('observationOnly',False),('readOnlyObservationVerified',False)]:
+            receipt=self.observation_receipt();receipt[field]=value
+            with self.assertRaisesRegex(ValueError,'COMPLETE_PROVIDER_RECEIPT_REQUIRED'):operator.validate_provider_receipt(receipt,True)
+        receipt=self.observation_receipt();receipt['cases'][0]['effect']['charactersAdded']=1
+        with self.assertRaisesRegex(ValueError,'COMPLETE_PROVIDER_RECEIPT_REQUIRED'):operator.validate_provider_receipt(receipt,True)
+
+    def test_full_provider_receipt_keeps_all_five_cases_and_effect_requirements(self):
+        receipt=self.observation_receipt();receipt.update(workflowKind='full-qualification',observationOnly=False,fullQualificationPassed=True,effectVerified=True,approvedInputTested=True,inputPrivacyTested=True,readOnlyObservationVerified=False,images=[{}]*5,cases=[{}]*5)
+        operator.validate_provider_receipt(receipt,False)
+        receipt['fullQualificationPassed']=False
+        with self.assertRaisesRegex(ValueError,'COMPLETE_PROVIDER_RECEIPT_REQUIRED'):operator.validate_provider_receipt(receipt,False)
+
     def test_provider_shutdown_reserve_leaves_gateway_and_actor_cleanup_time(self):
         self.assertGreaterEqual(operator.TERM_WAIT, 30)
         self.assertGreaterEqual(operator.CLEANUP_RESERVE, operator.MAX_OWNED_CHILDREN * (operator.TERM_WAIT + operator.KILL_WAIT) + operator.DESCENDANT_WAIT + 10)

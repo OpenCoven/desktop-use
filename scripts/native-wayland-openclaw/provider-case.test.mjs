@@ -57,3 +57,15 @@ test('a failed initial JPEG proof cannot reach input or approval',async()=>{
   await assert.rejects(api.runProviderCases(h.context,row=>rows.push(row)),/CONTROLLED_IMAGE_PROOF_FAILED/);
   assert.deepEqual([...h.context.plans.keys()],['jpeg-before-input']);assert.equal(h.context.approvals.length,0);assert.equal(rows.length,0);assert.equal(h.context.expectedObservation.control.textLength,0);
 });
+
+test('explicit observation mode cannot reach input or approval and preserves both image formats',async()=>{
+  const api=await import('./provider-case.mjs'),h=harness(),rows=[];
+  await api.runProviderCases(h.context,row=>rows.push(row),true);
+  assert.deepEqual(rows.map(row=>[row.marker,row.format,row.captureOnly]),[['observe-png','png',true],['observe-jpg','jpg',true]]);
+  assert.equal(h.context.approvals.length,0);assert.equal(h.context.expectedObservation.control.textLength,0);assert.equal(h.context.expectedObservation.control.keyCount,0);
+  assert.ok(rows.every(row=>row.effect.charactersAdded===0&&row.effect.keyEventsAdded===0&&row.effect.unrelatedControlsUnchanged));
+});
+test('observation selection rejects non-Boolean mode before creating a provider case',async()=>{
+  const api=await import('./provider-case.mjs');
+  for(const mode of ['yes',null,0]){const h=harness();await assert.rejects(api.runProviderCases(h.context,()=>{},mode),/WAYLAND_PROVIDER_MODE_REJECTED/);assert.equal(h.context.plans.size,0);assert.equal(h.context.approvals.length,0);}
+});

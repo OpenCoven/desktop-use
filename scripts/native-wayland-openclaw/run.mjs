@@ -11,18 +11,18 @@ import { proveProviderImage, providerImageFailureStage, providerImageFailureEvid
 import { readOwnedFixture } from './fixture-observation.mjs';
 import { proveTextEffect } from './effect-proof.mjs';
 import {runProviderCases} from './provider-case.mjs';
-import { providerToolCallId, assertProviderLease, acceptProviderStep, providerGatewayHelperEnvironment, checkDiagnosticPrivacy } from './run-contract.mjs';
+import { providerToolCallId, assertProviderLease, assertProviderWorkflowMode, assertProviderWorkflowStep, acceptProviderStep, providerGatewayHelperEnvironment, checkDiagnosticPrivacy } from './run-contract.mjs';
 import { cancellationScope, observeOwnedGateway, stopOwnedGateway } from '../native-openclaw-acceptance/lifecycle.mjs';
 import { verifyHostRuntimeStage, runtimeStageEnvironment } from '../native-openclaw-acceptance/runtime-stage.mjs';
 import { removeOwnedPrivateFiles } from '../native-openclaw-acceptance/private-files.mjs';
 import { safeFailure } from '../native-openclaw-acceptance/failure.mjs';
 import { assertClickResult as assertInputResult } from '../native-openclaw-acceptance/click-result.mjs';
 
-let descriptor, identity, native, root;
+let descriptor, identity, native, root, observationOnly;
 try {
   const [descriptorPath, mode = '--preflight', outputPath] = process.argv.slice(2);
-  assert.ok(descriptorPath && ['--preflight', '--run-owned-fixture'].includes(mode));
-  descriptor = await readJson(resolve(descriptorPath)); native = mode === '--run-owned-fixture';
+  assert.ok(descriptorPath && ['--preflight', '--run-owned-fixture', '--observe-owned-fixture'].includes(mode));
+  descriptor = await readJson(resolve(descriptorPath)); native = mode !== '--preflight'; observationOnly = mode === '--observe-owned-fixture';
   assert.equal(descriptor.platform, 'linux'); assert.equal(process.platform, 'linux');
   assert.ok(descriptor.wayland && [1,2].includes(descriptor.wayland.scale));
   identity = await preflight(descriptor, { runNative: native });
@@ -30,6 +30,7 @@ try {
     console.log(JSON.stringify({ schemaVersion:1, preflightOnly:true, nativeExecuted:false, sourceCommit:identity.sourceCommit, packageSha256:identity.packageSha256, adapterSha256:identity.adapterSha256, installedPackageFilesChecked:identity.installedPackageFilesChecked, hostVersion:identity.hostVersion, scale:descriptor.wayland.scale })); process.exit(0);
   }
   assert.equal(process.env.NATIVE_OWNED_DISPOSABLE_DISPLAY, 'yes'); assert.equal(process.env.XDG_SESSION_TYPE, 'wayland');
+  assertProviderWorkflowMode(descriptor,observationOnly);
   for (const [key,value] of Object.entries({ XDG_RUNTIME_DIR:descriptor.wayland.runtimeRoot, SWAYSOCK:descriptor.wayland.swaySocket, WAYLAND_DISPLAY:descriptor.wayland.waylandDisplay, PATH:descriptor.wayland.helperSearchPath })) assert.equal(process.env[key],value);
   assertProviderLease(descriptor, readOwnedFixture(descriptor.wayland));
   assert.ok(outputPath); root = resolve(outputPath); await mkdir(root,{mode:0o700});
@@ -59,7 +60,7 @@ let phase = 'fixture-precondition', providerPhase = 'request-method', providerFa
 let modelFailure = false, gateway, gatewayExit, socket, rpc, reservation, gatewayObserver;
 const pending = new Map();
 const {selected: _selected, hostRuntimeStage: _stage, ...publicIdentity} = identity;
-const receipt = { schemaVersion: 1, success: false, identity:publicIdentity, scale:descriptor.wayland.scale, providerHttpRequests: 0, actualProviderRequest: false, nativeExecuted: false, effectVerified: false, publicRelease: false, physicalDisplayVerified: false, decisionSource: 'scripted-operator-through-actual-OpenClaw-approval-RPC', captureEngine:'grim', cases: [] };
+const receipt = { schemaVersion: 1, success: false, identity:publicIdentity, scale:descriptor.wayland.scale, providerHttpRequests: 0, actualProviderRequest: false, nativeExecuted: false, workflowKind:observationOnly?'observation-only':'full-qualification', observationOnly, fullQualificationPassed:false, approvedInputTested:false, inputPrivacyTested:false, readOnlyObservationVerified:false, effectVerified: false, publicRelease: false, physicalDisplayVerified: false, decisionSource: observationOnly?'none-observation-only':'scripted-operator-through-actual-OpenClaw-approval-RPC', captureEngine:'grim', cases: [] };
 const model = createServer(async (req, res) => {
   try {
     providerPhase = 'request-method'; receipt.providerHttpRequests++;
@@ -79,6 +80,7 @@ const model = createServer(async (req, res) => {
     const results = body.messages.slice(userIndex + 1).filter(message => message.role === 'tool');
     assert.ok(plan.responses++ < 3, 'Do not retry native actions');
     const step = acceptProviderStep(plan, results.length);
+    assertProviderWorkflowStep(observationOnly,plan,step);
     let args, id, complete = false;
     providerPhase = 'tool-results';
     if (results.length === 0) {
@@ -129,7 +131,7 @@ try {
     gateway: { mode: 'local', bind: 'loopback', port, auth: { mode: 'token', token }, controlUi: { enabled: false } },
     logging: { file: join(root, 'gateway.jsonl'), level: 'info' },
     discovery: { mdns: { mode: 'off' } }, browser: { enabled: false }, cron: { enabled: false }, canvasHost: { enabled: false }, update: { checkOnStart: false },
-    plugins: { allow: ['opencoven-desktop-use'], load: { paths: [identity.selected.pluginRoot] }, slots: { memory: 'none' }, entries: { 'opencoven-desktop-use': { enabled: true, config: { actionProfile: 'desktop-only' } } } },
+    plugins: { allow: ['opencoven-desktop-use'], load: { paths: [identity.selected.pluginRoot] }, slots: { memory: 'none' }, entries: { 'opencoven-desktop-use': { enabled: true, config: observationOnly?{actionProfile:'observation-only',allowedActions:['screenshot']}:{actionProfile:'desktop-only'} } } },
     skills: { allowBundled: [] }, tools: { profile: 'minimal' },
     models: { mode: 'merge', providers: { qualification: { baseUrl: `http://127.0.0.1:${model.address().port}/v1`, apiKey: 'disposable-local-qualification', api: 'openai-completions', models: [{ id: 'fixture', name: 'Local native acceptance transport', reasoning: false, input: ['text','image'], contextWindow: 65_536, maxTokens: 512, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] } } },
     agents: { defaults: { workspace, skipBootstrap: true, model: { primary: 'qualification/fixture' }, timeoutSeconds: 180, heartbeat: { every: '0m' } }, list: [{ id: 'computer-use', default: true, workspace, agentDir: join(root, 'state/agents/computer-use/agent'), tools: template.tools }] }
@@ -177,15 +179,18 @@ try {
   const inventory = await rpc('tools.effective', { sessionKey: session });
   assert.deepEqual(inventory.groups.flatMap(group => group.tools.map(tool => tool.id)), ['computer_use']);
   const caseContext={control,fixture,plans,events,rpc,activeRuns,descriptor,plannedText,until,delay,session,approvals,expectedObservation,setPhase(value){phase=value;},assertHealthy(){assert.equal(modelFailure,false,'Provider proof failed before input');}};
-  await runProviderCases(caseContext,row=>receipt.cases.push(row));
+  await runProviderCases(caseContext,row=>receipt.cases.push(row),observationOnly);
   phase = 'audit-proof';
   const audits = await readFile(join(root, 'state/agents/computer-use/audit/computer-use.jsonl'), 'utf8');
   assert.doesNotMatch(audits, /data:image|base64|"(?:nonce|mac|approvalId|screenshot_raw)"/);
   const records = audits.trim().split('\n').map(line => JSON.parse(line));
-  assert.equal(records.filter(record=>record.action==='type-text'&&record.result.status==='success').length,1);
+  if(observationOnly) {
+    assert.equal(records.length,2); assert.ok(records.every(record=>record.action==='screenshot'&&record.result.status==='success'));
+    assert.equal(approvals.length,0); assert.ok(!events.some(event=>event.event==='plugin.approval.requested'));
+  } else assert.equal(records.filter(record=>record.action==='type-text'&&record.result.status==='success').length,1);
   assert.ok(!audits.includes(plannedText),'Private fixture text must not enter audit');
   control.check();
-  receipt.success = true; receipt.effectVerified = true; receipt.auditPayloadsAbsent = true; receipt.images = images; receipt.approvals = approvals;
+  receipt.success = true; receipt.effectVerified = !observationOnly; receipt.approvedInputTested = !observationOnly; receipt.auditPayloadsAbsent = true; receipt.images = images; receipt.approvals = approvals;
   })());
 } catch (error) {
   receipt.failureDiagnostic = { ...safeFailure(error, phase), providerFailure, gatewayExit };
@@ -210,10 +215,13 @@ try {
   model.closeAllConnections(); await new Promise(resolve => model.close(resolve)); await log?.close();
   const privacy=await checkDiagnosticPrivacy(kind=>readFile(join(root,kind==='console'?'console.log':'gateway.jsonl'),'utf8'),plannedText);
   receipt.diagnosticPrivacyChecks=privacy.checks;
+  receipt.inputPrivacyTested=!observationOnly&&receipt.approvedInputTested;
   if(!privacy.safe) {receipt.success=false;receipt.diagnosticPrivacyFailure=true;process.exitCode=1;}
   // Only the fresh root's known private files are removed; retain metadata receipts.
   if (!await removeOwnedPrivateFiles(root)) { receipt.success = false; receipt.privateCleanupFailed = true; process.exitCode = 1; }
+  receipt.fullQualificationPassed=receipt.success&&!observationOnly;
+  receipt.readOnlyObservationVerified=receipt.success&&observationOnly;
   await save('receipt.json', receipt);
-  console.log(JSON.stringify({ success: receipt.success, actualProviderRequest: receipt.actualProviderRequest, effectVerified: receipt.effectVerified, caseCount:receipt.cases.length,scale:descriptor.wayland.scale }));
+  console.log(JSON.stringify({ success: receipt.success, observationOnly, fullQualificationPassed:receipt.fullQualificationPassed, actualProviderRequest: receipt.actualProviderRequest, effectVerified: receipt.effectVerified, caseCount:receipt.cases.length,scale:descriptor.wayland.scale }));
   } finally { control.dispose(); }
 }

@@ -49,6 +49,10 @@ export async function runProviderCase(marker, { denied = false, captureOnly = fa
   }
 
 // Exercise JPEG before any input while preserving all four original qualification cases.
-export async function runProviderCases(context,record) {
-  for(const [marker,options] of [['jpeg-before-input',{captureOnly:true,format:'jpg'}],['allowed',{}],['allowed-after',{captureOnly:true}],['forged-confirm-denied',{denied:true,format:'jpg'}],['denied-after',{captureOnly:true,format:'jpg'}]])record(await runProviderCase(marker,options,context));
+export async function runProviderCases(context,record,observationOnly=false) {
+  if(typeof observationOnly!=='boolean')throw new Error('WAYLAND_PROVIDER_MODE_REJECTED');
+  const cases=observationOnly
+    ? [['observe-png',{captureOnly:true,format:'png'}],['observe-jpg',{captureOnly:true,format:'jpg'}]]
+    : [['jpeg-before-input',{captureOnly:true,format:'jpg'}],['allowed',{}],['allowed-after',{captureOnly:true}],['forged-confirm-denied',{denied:true,format:'jpg'}],['denied-after',{captureOnly:true,format:'jpg'}]];
+  for(const [marker,options] of cases)record(await runProviderCase(marker,options,context));
 }
