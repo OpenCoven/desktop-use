@@ -9,7 +9,8 @@ import { resolve, join } from 'node:path';
 import { preflight, readJson } from '../native-openclaw-acceptance/preflight.mjs';
 import { proveProviderImage } from './provider-image.mjs';
 import { readOwnedFixture } from './fixture-observation.mjs';
-import { proveTextEffect, proveNoEffect } from './effect-proof.mjs';
+import { proveTextEffect } from './effect-proof.mjs';
+import {runProviderCase} from './provider-case.mjs';
 import { providerToolCallId, assertProviderLease, acceptProviderStep } from './run-contract.mjs';
 import { cancellationScope, observeOwnedGateway, stopOwnedGateway } from '../native-openclaw-acceptance/lifecycle.mjs';
 import { verifyHostRuntimeStage, runtimeStageEnvironment } from '../native-openclaw-acceptance/runtime-stage.mjs';
@@ -113,11 +114,11 @@ const model = createServer(async (req, res) => {
     res.end(JSON.stringify({ error: { code: 'NATIVE21_PROVIDER_PROOF_FAILED' } }));
   }
 });
-let log;
+let log, expectedObservation;
 try {
   await control.wait((async () => {
   const initial = fixture();
-  proveTextEffect({before:initial.control,after:initial.control,text:plannedText,decision:'deny'});
+  proveTextEffect({before:initial.control,after:initial.control,text:plannedText,decision:'deny'}); expectedObservation=initial;
   await control.setup(() => listen(model));
   reservation = createServer(); await control.setup(() => listen(reservation)); const port = reservation.address().port;
   await control.setup(async () => { await new Promise(resolve => reservation.close(resolve)); reservation = undefined; });
@@ -175,46 +176,8 @@ try {
   phase = 'effective-tools';
   const inventory = await rpc('tools.effective', { sessionKey: session });
   assert.deepEqual(inventory.groups.flatMap(group => group.tools.map(tool => tool.id)), ['computer_use']);
-  async function runCase(marker, { denied = false, captureOnly = false, format = 'png' } = {}) {
-    control.check();
-    const before = await fixture();
-    plans.set(marker, { before, denied, captureOnly, format, responses: 0, nextResultCount:0 }); const eventStart = events.length;
-    phase = 'agent-start';
-    const accepted = await rpc('agent', { message: `WAYLAND21_CASE:${marker}`, agentId: 'computer-use', sessionKey: session, idempotencyKey: randomUUID(), deliver: false, timeout: 180 });
-    activeRuns.add(accepted.runId);
-    const completed = rpc('agent.wait', { runId: accepted.runId, timeoutMs: 180_000 }); completed.catch(() => {});
-    if (!captureOnly) {
-      phase = 'approval-request';
-      const approval = await until(() => {
-        assert.equal(modelFailure, false, 'Provider proof failed before input');
-        return events.slice(eventStart).find(event => event.event === 'plugin.approval.requested' && event.payload.request.toolCallId === providerToolCallId(marker, 'type'));
-      });
-      assertProviderLease(descriptor,fixture(),before);
-      control.check();
-      await rpc('plugin.approval.resolve', { id: approval.payload.id, decision: denied ? 'deny' : 'allow-once' });
-      approvals.push({ marker, toolCallId: providerToolCallId(marker, 'type'), decision: denied ? 'deny' : 'allow-once', actualHostApproval: true });
-    }
-    phase = 'agent-completion';
-    const outcome = await completed; activeRuns.delete(accepted.runId);
-    assert.equal(outcome.status, 'ok'); assert.equal(modelFailure, false);
-    let after, effect;
-    if (!captureOnly && !denied) {
-      after = await until(() => {
-        const current = fixture(), value = current.control, prior = before.control;
-        assert.equal(value.fixtureIdentity,prior.fixtureIdentity); assert.equal(value.clickCount,prior.clickCount); assert.equal(value.scrollOffset,prior.scrollOffset);
-        assert.ok(value.textLength<=plannedText.length && value.keyCount<=plannedText.length);
-        if(value.textLength!==plannedText.length || value.keyCount!==plannedText.length)return false;
-        effect=proveTextEffect({before:prior,after:value,text:plannedText,decision:'allow'}); return current;
-      },5_000);
-    } else {
-      const end = Date.now()+250;
-      do { after=fixture(); effect=proveNoEffect({before:before.control,after:after.control,decision:denied?'deny':'capture-only'}); await delay(25); } while(Date.now()<end);
-      after=fixture(); effect=proveNoEffect({before:before.control,after:after.control,decision:denied?'deny':'capture-only'});
-    }
-    assert.equal(plans.get(marker).responses,captureOnly?2:3);
-    assert.equal(plans.get(marker).nextResultCount,null);
-    receipt.cases.push({marker,denied,captureOnly,format,effect,actualProviderResponses:plans.get(marker).responses,noEffectObservationMs:captureOnly||denied?250:undefined});
-  }
+  const caseContext={control,fixture,plans,events,rpc,activeRuns,descriptor,plannedText,until,delay,session,approvals,expectedObservation,setPhase(value){phase=value;},assertHealthy(){assert.equal(modelFailure,false,'Provider proof failed before input');}};
+  const runCase=async(marker,options)=>receipt.cases.push(await runProviderCase(marker,options,caseContext));
   await runCase('allowed'); await runCase('allowed-after',{captureOnly:true});
   await runCase('forged-confirm-denied',{denied:true,format:'jpg'}); await runCase('denied-after',{captureOnly:true,format:'jpg'});
   phase = 'audit-proof';

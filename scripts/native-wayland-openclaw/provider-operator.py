@@ -19,7 +19,7 @@ import time
 import uuid
 
 HERE = Path(__file__).resolve().parent
-RUNTIME_FILES = ('run.mjs', 'run-contract.mjs', 'fixture-observation.mjs', 'provider-image.mjs', 'effect-proof.mjs',
+RUNTIME_FILES = ('run.mjs', 'run-contract.mjs', 'provider-case.mjs', 'fixture-observation.mjs', 'provider-image.mjs', 'effect-proof.mjs',
                  'wayland-owned-snapshot.mjs', 'wayland-peer-observer.py', 'wayland-scope-proof.mjs',
                  'linux-scope-proof.mjs', 'identity-preflight.mjs', 'fixture.py')
 SHARED_FILES = ('preflight.mjs', 'archive-files.mjs', 'runtime-stage.mjs', 'lifecycle.mjs', 'private-files.mjs', 'failure.mjs', 'click-result.mjs')
@@ -355,15 +355,7 @@ def execute(prepared, bindings, search, output, scale, expires):
             status['adoptedDescendantsReaped'] = reap_descendants()
         except BaseException as error:
             cleanup_errors.append(type(error).__name__)
-        for private in ('fixture-state-private.json', 'execution-descriptor-private.json', 'provider-fixture-binding.json'):
-            try: (output / private).unlink(missing_ok=True)
-            except BaseException as error: cleanup_errors.append(type(error).__name__)
-        for private in output.glob('*-private.log'):
-            try: private.unlink()
-            except BaseException as error: cleanup_errors.append(type(error).__name__)
-        try: shutil.rmtree(home)
-        except FileNotFoundError: pass
-        except BaseException as error: cleanup_errors.append(type(error).__name__)
+        cleanup_errors.extend(cleanup_private_state(output))
         status['privateStateCleanupComplete'] = not cleanup_errors
         status['cleanupErrors'] = cleanup_errors
         status['allKnownChildrenReaped'] = all(row['reaped'] for row in status['children']) and not cleanup_errors
@@ -372,6 +364,29 @@ def execute(prepared, bindings, search, output, scale, expires):
         print(json.dumps({'success': status['success'], 'scale': scale, 'allKnownChildrenReaped': status['allKnownChildrenReaped']}), flush=True)
         if cleanup_errors:
             raise RuntimeError('OWNED_CLEANUP_INCOMPLETE_RETAIN_RUNTIME_LEASE')
+
+
+def cleanup_private_state(output):
+    errors = []
+    def remove(path):
+        try:
+            if path.is_dir() and not path.is_symlink(): shutil.rmtree(path)
+            else: path.unlink(missing_ok=True)
+        except BaseException as error: errors.append(type(error).__name__)
+    provider = output / 'provider'
+    if provider.is_symlink() or (provider.exists() and not provider.is_dir()):
+        remove(provider)
+    elif provider.is_dir():
+        try:
+            for path in list(provider.iterdir()):
+                if path.name == 'receipt.json' and path.is_file() and not path.is_symlink(): continue
+                remove(path)
+            if any(path.name != 'receipt.json' or path.is_symlink() for path in provider.iterdir()): errors.append('PRIVATE_PROVIDER_STATE_REMAINS')
+        except BaseException as error: errors.append(type(error).__name__)
+    for name in ('fixture-state-private.json', 'fixture-state-private.tmp', 'execution-descriptor-private.json', 'provider-fixture-binding.json', 'home', 'runtime'):
+        remove(output / name)
+    for path in output.glob('*-private.log'): remove(path)
+    return errors
 
 
 def main():

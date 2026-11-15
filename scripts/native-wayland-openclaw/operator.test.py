@@ -93,5 +93,26 @@ class ProviderOperatorTests(unittest.TestCase):
     def test_provider_default_preflight_rejects_invalid_source_without_any_actor(self):
         with self.assertRaises(ValueError): operator.prepared_descriptor({'schemaVersion': 1, 'sourceCommit': 'private-invalid'})
 
+    def test_outer_cleanup_removes_killed_provider_private_state_and_atomic_fixture_temp(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);provider=root/'provider';provider.mkdir()
+            receipt=b'{"schemaVersion":1,"success":false,"failureCode":"NATIVE21_ACCEPTANCE_INCOMPLETE"}'
+            (provider/'receipt.json').write_bytes(receipt)
+            program="from pathlib import Path;import os,signal,sys;p=Path(sys.argv[1]);(p/'state').mkdir();(p/'state/session.jsonl').write_text('private-fixture-input');(p/'openclaw.json').write_text('private-token');(p/'console.log').write_text('private-fixture-input');os.kill(os.getpid(),signal.SIGKILL)"
+            child=subprocess.Popen([sys.executable,'-I','-B','-c',program,str(provider)]);self.assertEqual(child.wait(timeout=5),-9)
+            for name in ['fixture-state-private.json','fixture-state-private.tmp','execution-descriptor-private.json','provider-fixture-binding.json','provider-private.log']:(root/name).write_text('private-fixture-input')
+            (root/'home').mkdir();(root/'home/credential').write_text('private-token')
+            self.assertEqual(operator.cleanup_private_state(root),[])
+            self.assertEqual(sorted(p.name for p in root.iterdir()),['provider'])
+            self.assertEqual(sorted(p.name for p in provider.iterdir()),['receipt.json']);self.assertEqual((provider/'receipt.json').read_bytes(),receipt)
+
+    def test_outer_cleanup_never_follows_provider_or_nested_symlinks(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);outside=root/'outside';outside.mkdir();sentinel=outside/'keep';sentinel.write_text('unrelated')
+            owned=root/'owned';owned.mkdir();(owned/'provider').symlink_to(outside,target_is_directory=True)
+            self.assertEqual(operator.cleanup_private_state(owned),[]);self.assertFalse((owned/'provider').exists());self.assertEqual(sentinel.read_text(),'unrelated')
+            provider=owned/'provider';provider.mkdir();(provider/'nested').symlink_to(outside,target_is_directory=True)
+            self.assertEqual(operator.cleanup_private_state(owned),[]);self.assertEqual(list(provider.iterdir()),[]);self.assertEqual(sentinel.read_text(),'unrelated')
+
 
 if __name__ == '__main__': unittest.main()
