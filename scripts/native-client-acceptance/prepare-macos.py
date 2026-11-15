@@ -47,6 +47,7 @@ def main():
         assert 'package/dist/examples/approval-host/main.js' in names
     root = args.root.resolve()
     root.mkdir(mode=0o700)  # Refuse to reuse another run's files.
+    helper_home = root/'home'; helper_home.mkdir(mode=0o700)
     (root/'bin').mkdir(mode=0o700)
     shutil.copy2(adapter, root/'bin/coven-desktop-use')
     shutil.copytree(helper, root/'peekaboo')
@@ -79,7 +80,7 @@ def main():
         for member in archive.getmembers():
             if member.isfile():
                 assert (installed/member.name.removeprefix('package/')).read_bytes() == archive.extractfile(member).read()
-    version = subprocess.run([str(root/'bin/peekaboo'),'--version','--json','--no-remote'],check=True,capture_output=True,text=True,timeout=10)
+    version = subprocess.run([str(root/'bin/peekaboo'),'--version','--json','--no-remote'],check=True,capture_output=True,text=True,timeout=10,env={**os.environ,'HOME':str(helper_home),'CFFIXED_USER_HOME':str(helper_home)})
     identity = json.loads(version.stdout)['data']
     receipt = {'sourceCommit':git('rev-parse','HEAD'),'sourceTree':git('rev-parse','HEAD^{tree}'),'sourceDiffSha256':hashlib.sha256(git('diff','HEAD','--','src').encode()).hexdigest(),
                'sourceCommitKind':'acceptance-harness','harnessSourceCommit':git('rev-parse','HEAD'),'harnessSourceTree':git('rev-parse','HEAD^{tree}'),
@@ -87,10 +88,11 @@ def main():
                'helperSha256':sha(helper/'peekaboo'),'helperVersion':identity.get('current'),'helperSourceCommit':identity.get('sourceCommit'),
                'consumerScriptsSha256':{name:sha(consumer/name) for name in consumer_scripts+['pty-host.py']},'processAbiChecked':args.observe_controls,
                'fixtureSourceSha256':sha(Path(__file__).with_name('Fixture.swift')),'controlObserverSourceSha256':sha(observation_source),'fixtureBinarySha256':sha(bundle/'MacOS/DesktopUseAcceptance'),'clockProbeSha256':sha(root/'bin/control-clock-probe'),'controlObservationEnabled':args.observe_controls,'pythonExecutable':sys.executable,'pythonVersion':sys.version.split()[0],'pillowVersion':PIL.__version__,'publication':False,'fixtureLaunched':False,'privacyChanges':False}
+    receipt['helperHome']=str(helper_home)
     if args.isolated_fixture:
         receipt.update(fixtureBundleIdentifier=bundle_id,fixtureInfoPlistSha256=sha(bundle/'Info.plist'))
     (root/'baseline.json').write_text(json.dumps(receipt,indent=2)+'\n')
-    (root/'run-env.json').write_text(json.dumps({'PATH':str(root/'bin')+os.pathsep+os.environ.get('PATH',''),'NATIVE_ACCEPTANCE_PYTHON':sys.executable,'NATIVE_ACCEPTANCE_ROOT':str(root),'NATIVE_ACCEPTANCE_ADAPTER':str(root/'bin/coven-desktop-use'),'NATIVE_ACCEPTANCE_FIXTURE_STATE':str(root/'fixture-state.json'),'NATIVE_ACCEPTANCE_IMAGE_PROOF':str(consumer/'image-proof.py'),'NATIVE_ACCEPTANCE_PTY':str(consumer/'pty-host.py')},indent=2)+'\n')
+    (root/'run-env.json').write_text(json.dumps({'PATH':str(root/'bin')+os.pathsep+os.environ.get('PATH',''),'HOME':str(helper_home),'CFFIXED_USER_HOME':str(helper_home),'NATIVE_ACCEPTANCE_PYTHON':sys.executable,'NATIVE_ACCEPTANCE_ROOT':str(root),'NATIVE_ACCEPTANCE_ADAPTER':str(root/'bin/coven-desktop-use'),'NATIVE_ACCEPTANCE_FIXTURE_STATE':str(root/'fixture-state.json'),'NATIVE_ACCEPTANCE_IMAGE_PROOF':str(consumer/'image-proof.py'),'NATIVE_ACCEPTANCE_PTY':str(consumer/'pty-host.py')},indent=2)+'\n')
     print(json.dumps({'root':str(root),'fixtureApp':str(bundle.parent),'baseline':receipt}))
 
 

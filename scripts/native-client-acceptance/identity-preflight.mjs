@@ -40,7 +40,7 @@ export async function preparedMacFixtureTarget(...args) {
   return target.preparedMacFixtureTarget(...args);
 }
 
-export function nativeHarnessEnvironment(root, env = process.env, platform = process.platform) {
+export function nativeHarnessEnvironment(root, env = process.env, platform = process.platform, preparedRoot = root) {
   const selected = { PATH: env.PATH, TMPDIR: root };
   if (platform === 'linux') {
     assert.equal(env.NATIVE_OWNED_DISPOSABLE_DISPLAY, 'yes', 'Linux probes require an owned disposable display');
@@ -49,12 +49,29 @@ export function nativeHarnessEnvironment(root, env = process.env, platform = pro
     selected.XDG_SESSION_TYPE = env.XDG_SESSION_TYPE;
   }
   if (platform === 'darwin' && env.PEEKABOO_CAPTURE_ENGINE) selected.PEEKABOO_CAPTURE_ENGINE = env.PEEKABOO_CAPTURE_ENGINE;
+  if (platform === 'darwin' && env.CFFIXED_USER_HOME !== undefined) {
+    const home = join(preparedRoot, 'home');
+    assert.equal(env.HOME, home, 'POSIX home must be the owned task home');
+    assert.equal(env.CFFIXED_USER_HOME, home, 'Foundation home must be the owned task home');
+    selected.HOME = home;
+    selected.CFFIXED_USER_HOME = home;
+  }
   return selected;
 }
 
 // Reject a changed/misconfigured consumer before any native action is invoked.
 export async function verifyMacIdentity(root, adapter, searchPath = process.env.PATH, selectedEnvironment = process.env) {
   const baseline = JSON.parse(await readFile(join(root, 'baseline.json')));
+  if (baseline.fixtureBundleIdentifier?.startsWith('org.opencoven.desktopuse.acceptance.run-')) {
+    assert.equal(baseline.helperHome, join(await realpath(root), 'home'), 'isolated fixture requires a prepared helper home');
+  }
+  if (baseline.helperHome !== undefined) {
+    const home = join(await realpath(root), 'home');
+    assert.equal(baseline.helperHome, home, 'prepared helper home must remain in the owned root');
+    assert.equal(await realpath(home), home, 'prepared helper home cannot alias another directory');
+    assert.equal(selectedEnvironment.HOME, home, 'POSIX home differs from prepared helper home');
+    assert.equal(selectedEnvironment.CFFIXED_USER_HOME, home, 'Foundation home differs from prepared helper home');
+  }
   const hash = async path => createHash('sha256').update(await readFile(path)).digest('hex');
   assert.equal(await realpath(adapter), await realpath(join(root, 'bin/coven-desktop-use')));
   assert.equal(await hash(adapter), baseline.nativeSha256, 'native adapter differs from prepared bytes');

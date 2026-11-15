@@ -22,6 +22,16 @@ def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def prepared_home_environment(root, baseline):
+    home = baseline.get('helperHome')
+    if home is None:
+        return {}  # Preserve historical, unqualified preparations as recorded.
+    expected = Path(root).resolve(strict=True) / 'home'
+    if home != str(expected) or Path(home).resolve(strict=True) != expected:
+        raise ValueError('helper home must remain in the prepared root')
+    return {'HOME': home, 'CFFIXED_USER_HOME': home}
+
+
 def load_private(path, limit=32 * 1024 * 1024):
     data = Path(path).read_bytes()
     if len(data) > limit:
@@ -161,6 +171,7 @@ def main():
                    'NATIVE_ACCEPTANCE_PTY': str(root / 'consumer/pty-host.py'),
                    'NATIVE_ACCEPTANCE_IMAGE_PROOF': str(root / 'consumer/image-proof.py'),
                    'NATIVE_ACCEPTANCE_OWNED_MAC_INPUT': 'yes'}
+    environment.update(prepared_home_environment(root, baseline))
     if os.environ.get('PEEKABOO_CAPTURE_ENGINE'):
         environment['PEEKABOO_CAPTURE_ENGINE'] = os.environ['PEEKABOO_CAPTURE_ENGINE']
     log_path = root / f'mac-active-{case_id}-stderr-private.log'

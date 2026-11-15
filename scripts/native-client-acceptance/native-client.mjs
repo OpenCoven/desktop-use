@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url';
 import { createDesktopClient, resolveActionPermissions } from '@opencoven/openclaw-desktop-use/sdk';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
-import { verifyMacIdentity, preparedPython, focusedFixture, preparedMacFixtureTarget } from './identity-preflight.mjs';
+import { verifyMacIdentity, preparedPython, focusedFixture, preparedMacFixtureTarget, nativeHarnessEnvironment } from './identity-preflight.mjs';
 
 const surface = process.argv[2];
 assert.ok(['sdk', 'mcp-modern', 'mcp-legacy'].includes(surface));
@@ -49,7 +49,7 @@ if (surface === 'sdk') {
   const { createJsonSchemaValidator } = await import(pathToFileURL(join(packageRoot, 'dist/src/mcp/schema.js')));
   const modern = surface === 'mcp-modern';
   const client = new Client({ name: 'native-acceptance', version: '1' }, { jsonSchemaValidator: createJsonSchemaValidator(), ...(modern ? { versionNegotiation: { mode: { pin: '2026-07-28' } } } : { supportedProtocolVersions: ['2025-11-25'] }) });
-  const transport = new StdioClientTransport({ command: python, args: [ptyScript, 'allow', process.execPath, join(packageRoot, 'dist/examples/approval-host/main.js'), '--config', config], stderr: 'pipe', env: { PATH: process.env.PATH, TMPDIR: root, ...(process.env.PEEKABOO_CAPTURE_ENGINE ? { PEEKABOO_CAPTURE_ENGINE: process.env.PEEKABOO_CAPTURE_ENGINE } : {}) } });
+  const transport = new StdioClientTransport({ command: python, args: [ptyScript, 'allow', process.execPath, join(packageRoot, 'dist/examples/approval-host/main.js'), '--config', config], stderr: 'pipe', env: nativeHarnessEnvironment(root) });
   let terminalBytes = 0;
   transport.stderr?.on('data', bytes => { terminalBytes += bytes.length; });
   await client.connect(transport);

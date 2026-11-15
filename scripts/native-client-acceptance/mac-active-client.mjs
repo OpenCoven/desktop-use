@@ -96,7 +96,7 @@ try {
       ...(modern ? { versionNegotiation: { mode: { pin: '2026-07-28' } } } : { supportedProtocolVersions: ['2025-11-25'] }) });
     const transport = new StdioClientTransport({ command: python,
       args: [ptyScript, 'allow', process.execPath, join(packageRoot, 'dist/examples/approval-host/main.js'), '--config', config],
-      stderr: 'pipe', env: nativeHarnessEnvironment(caseRoot) });
+      stderr: 'pipe', env: nativeHarnessEnvironment(caseRoot, process.env, process.platform, root) });
     close = () => transport.close(); // Also clean up a partially failed connect.
     transport.stderr?.on('data', () => {});
     await client.connect(transport);

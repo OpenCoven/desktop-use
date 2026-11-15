@@ -3,6 +3,7 @@ import importlib.util
 from pathlib import Path
 import signal
 import subprocess
+import tempfile
 import unittest
 
 spec = importlib.util.spec_from_file_location('mac_active_coordinator', Path(__file__).with_name('mac-active-coordinator.py'))
@@ -63,6 +64,15 @@ class FakeTracker:
 
 
 class CleanupTests(unittest.TestCase):
+    def test_case_environment_preserves_prepared_home_without_adopting_global_home(self):
+        function=getattr(coordinator,'prepared_home_environment',None)
+        self.assertTrue(callable(function),'coordinator must forward prepared POSIX and Foundation homes')
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory).resolve();home=root/'home';home.mkdir()
+            self.assertEqual(function(root,{'helperHome':str(home)}),{'HOME':str(home),'CFFIXED_USER_HOME':str(home)})
+            with self.assertRaises(ValueError):function(root,{'helperHome':'/global/home'})
+            self.assertEqual(function(root,{}),{})
+
     def test_case_deadline_reserves_cleanup_inside_the_exclusive_lease(self):
         function = getattr(coordinator, 'case_deadline', None)
         self.assertTrue(callable(function), 'lease admission must reserve bounded cleanup')

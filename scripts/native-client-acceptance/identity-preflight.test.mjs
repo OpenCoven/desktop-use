@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, chmod, symlink, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, chmod, symlink, rm, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -88,6 +88,45 @@ test('real stdio child receives the owned display without unrelated environment 
     await transport.start();
     assert.deepEqual(await observed, { display: ':91', session: 'x11', secretPresent: false });
   } finally { clearTimeout(timeout); await transport.close(); }
+});
+
+test('real Mac stdio child receives the isolated Foundation and POSIX home without unrelated data', async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'native-mac-home-')));
+  const home = join(root, 'home');
+  const env = { PATH: process.env.PATH, HOME: home, CFFIXED_USER_HOME: home, NATIVE_TEST_SECRET: 'fixture-only-marker' };
+  const transport = new StdioClientTransport({ command: process.execPath, args: ['-e', 'console.log(JSON.stringify({jsonrpc:"2.0",method:"fixture/env",params:{home:process.env.HOME??null,foundationHome:process.env.CFFIXED_USER_HOME??null,secretPresent:process.env.NATIVE_TEST_SECRET!==undefined}}));setInterval(()=>{},1000)'], env: nativeHarnessEnvironment(root, env, 'darwin'), stderr: 'pipe' });
+  let timeout;
+  const observed = new Promise((resolve, reject) => { transport.onmessage = message => resolve(message.params); transport.onerror = reject; timeout = setTimeout(() => reject(new Error('Actual stdio child did not report isolated homes')), 5000); });
+  try { await transport.start(); assert.deepEqual(await observed, { home, foundationHome: home, secretPresent: false }); }
+  finally { clearTimeout(timeout); await transport.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('Mac helper home must be the exact prepared task home before native execution', async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'native-mac-bound-home-')));
+  try {
+    await mkdir(join(root, 'bin')); const adapter=join(root, 'bin/coven-desktop-use');
+    await writeFile(adapter, 'adapter'); await writeFile(join(root, 'bin/peekaboo'), 'helper'); await chmod(join(root, 'bin/peekaboo'), 0o700);
+    const hash = text => createHash('sha256').update(text).digest('hex'); const home=join(root, 'home'); await mkdir(home);
+    await writeFile(join(root, 'baseline.json'), JSON.stringify({ nativeSha256: hash('adapter'), helperSha256: hash('helper'), helperHome: home }));
+    await verifyMacIdentity(root, adapter, join(root, 'bin'), { HOME: home, CFFIXED_USER_HOME: home });
+    for (const env of [{ HOME: home }, { HOME: '/other', CFFIXED_USER_HOME: home }, { HOME: home, CFFIXED_USER_HOME: '/other' }]) {
+      await assert.rejects(verifyMacIdentity(root, adapter, join(root, 'bin'), env), /home/);
+    }
+    await writeFile(join(root, 'baseline.json'), JSON.stringify({ nativeSha256: hash('adapter'), helperSha256: hash('helper'), fixtureBundleIdentifier:'org.opencoven.desktopuse.acceptance.run-1234' }));
+    await assert.rejects(verifyMacIdentity(root, adapter, join(root, 'bin'), { HOME: home, CFFIXED_USER_HOME: home }), /home/);
+    assert.throws(() => nativeHarnessEnvironment(root, { PATH:process.env.PATH, HOME: '/other', CFFIXED_USER_HOME: home }, 'darwin'), /home/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('nested Mac case temporaries preserve the prepared Foundation home through real stdio', async () => {
+  const root=await realpath(await mkdtemp(join(tmpdir(),'native-mac-case-home-')));const caseRoot=join(root,'case');await mkdir(caseRoot);
+  const home=join(root,'home');const env={PATH:process.env.PATH,HOME:home,CFFIXED_USER_HOME:home};
+  let transport;let timeout;
+  try {
+    transport=new StdioClientTransport({command:process.execPath,args:['-e','console.log(JSON.stringify({jsonrpc:"2.0",method:"fixture/env",params:{temporary:process.env.TMPDIR,home:process.env.HOME,foundationHome:process.env.CFFIXED_USER_HOME}}));setInterval(()=>{},1000)'],env:nativeHarnessEnvironment(caseRoot,env,'darwin',root),stderr:'pipe'});
+    const observed=new Promise((resolve,reject)=>{transport.onmessage=m=>resolve(m.params);transport.onerror=reject;timeout=setTimeout(()=>reject(new Error('nested stdio environment unavailable')),5000);});
+    await transport.start();assert.deepEqual(await observed,{temporary:caseRoot,home,foundationHome:home});
+  } finally {clearTimeout(timeout);if(transport)await transport.close();await rm(root,{recursive:true,force:true});}
 });
 
 test('Linux negative probes reject an unowned or implicit display before dispatch', () => {
