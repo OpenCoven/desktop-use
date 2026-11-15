@@ -1,5 +1,5 @@
 """Disposable PTY operator: drives the real reference UI, never an approval provider stub."""
-import re, errno, fcntl, os, pty, select, signal, subprocess, sys, termios, time
+import re, errno, fcntl, os, pty, select, signal, subprocess, sys, termios
 if sys.argv[1] == 'no-tty':
     child = subprocess.Popen(sys.argv[2:], stdin=sys.stdin.buffer, stdout=sys.stdout.buffer, stderr=sys.stderr.buffer, start_new_session=True)
     signal.signal(signal.SIGTERM, lambda signum, frame: child.send_signal(signum))
@@ -30,14 +30,18 @@ def stop(signum, frame):
     child.send_signal(signum)
 signal.signal(signal.SIGTERM, stop)
 signal.signal(signal.SIGINT, stop)
+# gated-allow: hold every answer until the test sends SIGUSR1, so a second review is provably queued behind the first.
+gate = {'open': False, 'held': []}
+def release(signum, frame):
+    gate['open'] = True
+signal.signal(signal.SIGUSR1, release)
 pending = b''
 prompts = 0
-scheduled = []  # slow-allow: answer each prompt after a delay, so a second review can arrive while one is displayed
 while child.poll() is None:
-    for when, answer in list(scheduled):
-        if when <= time.monotonic():
+    if gate['open'] and gate['held']:
+        for answer in gate['held']:
             os.write(master, answer)
-            scheduled.remove((when, answer))
+        gate['held'] = []
     if not select.select([master], [], [], 0.05)[0]:
         continue
     try:
@@ -54,8 +58,8 @@ while child.poll() is None:
     if match:
         pending = b''
         prompts += 1
-        if mode == 'slow-allow':
-            scheduled.append((time.monotonic() + 0.5, b'allow ' + match.group(1) + b'\n'))
+        if mode == 'gated-allow':
+            gate['held'].append(b'allow ' + match.group(1) + b'\n')
         elif mode == 'stale':
             if prompts == 2:
                 os.write(master, b'allow\n')

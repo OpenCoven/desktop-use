@@ -100,20 +100,21 @@ for (const decision of ['allow', 'deny', 'cancel', 'wait']) test(`attached harne
 });
 
 test('two attached harness sessions get separate connectors and scopes, and their reviews queue instead of failing busy', { timeout: 20_000 }, async t => {
-  const f = await startApprover(t, 'slow-allow');
+  const f = await startApprover(t, 'gated-allow');
   const first = await attachClient(t, f.socket); const second = await attachClient(t, f.socket);
   const pendingFirst = first.client.callTool({ name: 'computer_use', arguments: { action: 'file-write', path: 'first.txt', content: 'first harmless' } });
-  // The second review arrives while the first is still on screen; it must wait for its turn, not fail as busy.
+  // The operator holds the first review on screen until the second has arrived; it must wait its turn, not fail as busy.
   await until(() => f.display().includes('Decision [allow/deny/cancel]'), 'first review display');
-  const b = await second.client.callTool({ name: 'computer_use', arguments: { action: 'file-write', path: 'second.txt', content: 'second harmless' } });
-  const a = await pendingFirst;
+  const pendingSecond = second.client.callTool({ name: 'computer_use', arguments: { action: 'file-write', path: 'second.txt', content: 'second harmless' } });
+  await until(() => /Review waiting: 1 earlier review\(s\) first\./.test(f.display()), 'second review queued behind the first');
+  f.child.kill('SIGUSR1');
+  const [a, b] = await Promise.all([pendingFirst, pendingSecond]);
   assert.equal((a.structuredContent as any).success, true); assert.equal((b.structuredContent as any).success, true);
   assert.equal(await readFile(join(f.workspace, 'first.txt'), 'utf8'), 'first harmless');
   assert.equal(await readFile(join(f.workspace, 'second.txt'), 'utf8'), 'second harmless');
   assert.equal(f.display().match(/Decision \[allow\/deny\/cancel\]/g)?.length, 2);
   const reviewed = new Set([...f.display().matchAll(new RegExp(`"sessionId": "harness:(${SESSION})"`, 'g'))].map(match => match[1]));
   assert.equal(reviewed.size, 2, 'each review names its own harness session');
-  assert.match(f.display(), /Review waiting: 1 earlier review\(s\) first\./, 'the second review arrived while the first was on screen');
 });
 
 test('Stop from one attached session cannot reach another session\'s pending review (separate connectors), while same-session Stop still can', { timeout: 20_000 }, async t => {
