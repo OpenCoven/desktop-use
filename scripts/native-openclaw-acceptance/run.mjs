@@ -17,6 +17,7 @@ import { removeOwnedPrivateFiles } from './private-files.mjs';
 import { safeFailure } from './failure.mjs';
 import { assertClickResult } from './click-result.mjs';
 import { captureX11ScopeSnapshot } from './linux-scope-proof.mjs';
+import { nativeHelperHomeEnvironment } from './helper-home.mjs';
 
 const [descriptorPath, mode = '--preflight', outputPath] = process.argv.slice(2);
 assert.ok(descriptorPath && ['--preflight', '--run-owned-fixture'].includes(mode), 'Usage: run.mjs descriptor.json [--preflight | --run-owned-fixture fresh-private-output]');
@@ -148,6 +149,7 @@ try {
   const stage = await control.setup(() => verifyHostRuntimeStage(descriptor.hostRuntimeStage, { host: identity.selected.host, hostVersion: descriptor.hostVersion, officialHostVerified: Boolean(identity.hostInventory) }));
   assert.deepEqual(stage, identity.hostRuntimeStage, 'Selected stage must remain unchanged before gateway spawn');
   Object.assign(env, runtimeStageEnvironment(stage));
+  Object.assign(env,nativeHelperHomeEnvironment(join(root,'home'),descriptor.platform));
   if (descriptor.captureEngine) env.PEEKABOO_CAPTURE_ENGINE = descriptor.captureEngine;
   if (descriptor.helperExecutable) env.PATH = `${dirname(descriptor.helperExecutable)}:${env.PATH}`;
   control.check();
