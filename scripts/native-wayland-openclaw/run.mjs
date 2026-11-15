@@ -7,7 +7,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { preflight, readJson } from '../native-openclaw-acceptance/preflight.mjs';
-import { proveProviderImage } from './provider-image.mjs';
+import { proveProviderImage, providerImageFailureStage } from './provider-image.mjs';
 import { readOwnedFixture } from './fixture-observation.mjs';
 import { proveTextEffect } from './effect-proof.mjs';
 import {runProviderCase} from './provider-case.mjs';
@@ -107,7 +107,7 @@ const model = createServer(async (req, res) => {
     chunk(complete ? { content: 'Native fixture case complete.' } : { tool_calls: [{ index: 0, id, type: 'function', function: { name: 'computer_use', arguments: JSON.stringify(args) } }] });
     chunk({}, complete ? 'stop' : 'tool_calls'); res.end('data: [DONE]\n\n');
   } catch (error) {
-    providerFailure ??= safeFailure(error, providerPhase);
+    providerFailure ??= { ...safeFailure(error, providerPhase), ...(providerPhase==='wire-image-proof'?{imageProofStage:providerImageFailureStage(error)}:{}) };
     modelFailure = true;
     if (res.destroyed || res.writableEnded) return;
     if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'application/json' });

@@ -117,3 +117,15 @@ test('opaque inset pixels cannot hide a transparent declared target perimeter',a
   s.receipt.primaryImage.sha256=hash(bytes);s.receipt.primaryImage.byteLength=bytes.length;s.body.messages[2].content[0].image_url.url=`data:image/png;base64,${bytes.toString('base64')}`;s.update();
   await assert.rejects(proveProviderImage(s.body,'allowed',s.options));
 });
+
+// Fixed diagnostics distinguish an image proof rejection without retaining raw requests.
+test('provider image failure stage survives the runner boundary without private error text',async()=>{
+  const api=await import('./provider-image.mjs');
+  const s=await sample();s.receipt.primaryImage.sha256='0'.repeat(64);s.update();
+  let failed;try{await proveProviderImage(s.body,'allowed',s.options);}catch(error){failed=error;}
+  assert.equal(api.providerImageFailureStage?.(failed),'encoding');
+});
+test('provider image failure stage rejects arbitrary fields and throwing getters',async()=>{
+  const api=await import('./provider-image.mjs');
+  for(const value of [{code:'WAYLAND_PROVIDER_IMAGE_REJECTED',stage:'private-stage'},{code:'private-error',stage:'pixels'},null,new Proxy({},{get(){throw Error('private getter');}})])assert.equal(api.providerImageFailureStage?.(value),'unknown');
+});

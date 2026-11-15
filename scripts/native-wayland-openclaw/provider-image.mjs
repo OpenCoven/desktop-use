@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { proveWaylandCapture } from './wayland-scope-proof.mjs';
+const failureStages=new Set(['turn','capture-binding','encoding','scope','pixels','landmarks']);
+export function providerImageFailureStage(error) {
+  try { return error?.code==='WAYLAND_PROVIDER_IMAGE_REJECTED' && typeof error.stage==='string' && failureStages.has(error.stage) ? error.stage : 'unknown'; }
+  catch { return 'unknown'; }
+}
 const hash=b=>createHash('sha256').update(b).digest('hex');
 const text=value=>typeof value==='string'?value:(value??[]).filter(b=>b.type==='text').map(b=>b.text).join('\n');
 const rectangle=([x,y,width,height])=>({x,y,width,height});
