@@ -893,6 +893,30 @@ fn x11_coordinates_cannot_wrap_or_silently_clip_to_a_root_edge() {
 }
 
 #[test]
+fn same_point_x11_click_does_not_wait_for_impossible_motion() {
+    let f = Fixture::new();
+    f.tool(
+        "xdotool",
+        r#"
+if [ "$1" = getdisplaygeometry ]; then printf '1280 960'; exit 0; fi
+# Qualified libxdo waits for departure from the origin even if the destination
+# already equals that origin. A same-client ordered move/click needs no wait.
+if [ "$1" = mousemove ] && [ "$2" = --sync ]; then
+  while :; do /bin/sleep 1; done
+fi
+if [ "$*" = 'mousemove -- 180 180 click --repeat 2 1' ]; then
+  printf 'clicks=2' > "$FIXTURE_LOG"
+  exit 0
+fi
+exit 1
+"#,
+    );
+    let result = f.run(json!({"platform":"x11","args":["click","--coords","180,180","--double","--confirm","--timeout-ms","1000"]}));
+    assert_eq!(result["ok"], true, "same-point click failed: {result}");
+    assert_eq!(f.log(), "clicks=2");
+}
+
+#[test]
 fn wayland_pointer_without_versioned_geometry_never_sends_input() {
     let f = Fixture::new();
     f.tool("ydotool", "printf input > \"$FIXTURE_LOG\"");

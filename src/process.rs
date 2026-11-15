@@ -10,6 +10,7 @@ pub enum Failure {
     Timeout,
     Cancelled,
     OutputLimit,
+    Backend,
 }
 impl Failure {
     pub fn code(&self) -> &'static str {
@@ -20,6 +21,7 @@ impl Failure {
             Self::Timeout => "ETIMEDOUT",
             Self::Cancelled => "CANCELLED",
             Self::OutputLimit => "OUTPUT_LIMIT",
+            Self::Backend => "BACKEND_ERROR",
         }
     }
 }
@@ -50,6 +52,15 @@ pub fn install_cancellation() {
 
 #[cfg(unix)]
 pub fn run(command: &mut Command, deadline: Instant) -> Result<Output, Failure> {
+    run_observed(command, deadline, || {})
+}
+
+#[cfg(unix)]
+pub fn run_observed(
+    command: &mut Command,
+    deadline: Instant,
+    mut on_started: impl FnMut(),
+) -> Result<Output, Failure> {
     use std::io::Read;
     use std::os::fd::AsRawFd;
     use std::os::unix::process::CommandExt;
@@ -69,6 +80,7 @@ pub fn run(command: &mut Command, deadline: Instant) -> Result<Output, Failure> 
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| Failure::Io(e.kind()))?;
+    on_started();
     // Only this child's newly allocated process group is owned by the adapter.
     let group = child.id() as i32;
     let mut stdout = child.stdout.take().unwrap();
@@ -137,6 +149,11 @@ pub fn run(command: &mut Command, deadline: Instant) -> Result<Output, Failure> 
 
 #[cfg(not(unix))]
 pub fn run(_: &mut Command, _: Instant) -> Result<Output, Failure> {
+    Err(Failure::Io(std::io::ErrorKind::Unsupported))
+}
+
+#[cfg(not(unix))]
+pub fn run_observed(_: &mut Command, _: Instant, _: impl FnMut()) -> Result<Output, Failure> {
     Err(Failure::Io(std::io::ErrorKind::Unsupported))
 }
 
