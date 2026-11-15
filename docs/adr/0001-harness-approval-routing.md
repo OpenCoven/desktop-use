@@ -1,6 +1,6 @@
 # ADR 0001: Route MCP approvals to an operator-launched approver while a harness owns the terminal
 
-- Status: Proposed. Awaiting owner sign-off on #33; nothing below is implemented.
+- Status: Accepted. Owner signed off on option A on 2026-11-15 (recorded on #33).
 - Date: 2026-11-14
 - Issue: #33 (part of #32)
 - Baseline: main `155c30a1a0d0ee25ffaf94b45728eb1deebe59bc`
