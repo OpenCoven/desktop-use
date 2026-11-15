@@ -131,6 +131,32 @@ node --test scripts/native-client-acceptance/gtk-openclaw-state.test.mjs
 python3 scripts/native-client-acceptance/test_owned_process_guard.py
 ```
 
+## Owned software Wayland
+
+`wayland-operator.py` ports the supported image/type/key matrix into a reusable installed-consumer probe. It performs only metadata preflight by default. Execution requires a separate disposable Linux namespace running as a non-root user, no `/dev/input` or `/dev/uinput`, explicit display opt-in, a fresh output directory and a coordinated timezone-qualified lease of 60–1,200 seconds. Use a prepared Sway 1.7 software compositor with headless/pixman rendering, one `HEADLESS-1` output at origin zero, GTK 3/GdkPixbuf, Node 22.14 or newer, Python 3, `swaymsg`, `wayland-info`, `wtype`, and a separately verified JPEG-enabled `grim` build. The operator installs nothing, passes no devices through and changes no desktop or privacy settings. A build with JPEG disabled must fail the JPEG case; installing a helper does not prove capture support.
+
+Prepare an installed consumer outside the repository using one exact paired package/native candidate and the actual MCP client dependency. The private `--prepared` JSON must contain `schemaVersion:1`, product `sourceCommit`/`sourceTree`, harness `harnessCommit`/`harnessTree`, absolute `consumerRoot` and `packageRoot`, `adapterPath`/`nativeSha256`, `packageArchivePath`/`packageArchiveSha256`, and `installedFiles` mapping every package-relative regular filename to its SHA-256. `harnessSources` maps every repository-relative entry in `PUBLIC_SOURCE_FILES` from `wayland-operator.py` to its reviewed source hash. Supply these revision identities and expected artifact hashes from the owner handoff. Generate the complete inventories from those exact bytes, then retain the descriptor privately; the operator rejects changed files, symlinks, missing compiled public exports and any difference between the installed file set and the bound tarball.
+
+The descriptor's `tools` object has exactly seven entries: `sway`, `swaymsg`, `grim`, `wtype`, `wayland-info`, `node` and `python3`. Each contains an absolute canonical executable `path` and its `sha256`. The constructed PATH must select those exact files; an ambient helper or a changed JPEG build fails preflight. The source-bound interpreter must be named `python3` or `python3.<minor>`. No source checkout, credentials, private host environment or unrelated desktop state belongs in the disposable namespace.
+
+```sh
+python3 -B scripts/native-client-acceptance/wayland-operator.py --prepared /owned/prepared.json
+NATIVE_OWNED_DISPOSABLE_DISPLAY=yes python3 -B scripts/native-client-acceptance/wayland-operator.py --prepared /owned/prepared.json --output-root /owned/fresh-scale1 --scale 1 --lease-expires-at "$WAYLAND_FIXTURE_LEASE_EXPIRES" --owned-disposable-display --execute
+```
+
+Run scale 2 separately with a fresh namespace, output directory and lease. Both cases use a 1280×960 physical output; scale 2 has a 640×480 logical desktop. The client brackets actual SDK and both stdio MCP PNG/JPEG images with independently PID/UID/birth-bound Sway output and window metadata. The complete physical image, logical desktop rectangle, scope, decoded format and timestamps must agree before all four landmarks and a consumer resize can pass. The four named landmarks are fixture content markers; their names do not imply they span the entire full-screen raster. Approved text and key actions must change the actual Entry, while unsupported frontmost capture and unavailable pointer input must return no image or control effect. Overall health remains false when the platform is only partially available.
+
+All metadata filesystem/proc/hash/IPC work in each snapshot runs synchronously inside one isolated Python child with bounded input/output and reads. The Node parent requests SIGKILL on its four-second timeout and waits for actual worker termination before returning an outcome. This is containment, not a hard return deadline when an OS syscall cannot promptly terminate. The operator retains a monotonic budget alongside the wall-clock lease, reserves cleanup time, tracks its process groups and adopts detached descendants as a subreaper. Signal handling defers repeated interruption during cleanup. Retain exclusive namespace ownership if reaping or cleanup fails; elapsed lease time alone does not establish recovery.
+
+Returned images, raw fixture input/state, terminal prompts, configurations and unrestricted logs remain private. `receipt.json` contains scalar/hash proofs, relative source inventories and explicit limits; `operator-status.json` separately records actual child cleanup and the independently captured final fixture image hash. Inspect that actual image independently before accepting UI effects. These files do not establish active cancellation, delayed-input completion, the official provider path, physical display behavior or a published release. Earlier native receipts retain their original source bindings and cannot qualify a changed public harness or a new scale.
+
+```sh
+node --test scripts/native-client-acceptance/wayland-scope-proof.test.mjs scripts/native-client-acceptance/wayland-owned-snapshot.test.mjs scripts/native-client-acceptance/wayland-run-contract.test.mjs
+python3 -B -m unittest discover -s scripts/native-client-acceptance -p 'test_wayland_*.py'
+```
+
+These pure/injected tests use synthetic compositor/metadata replies and small mock worker processes. They launch no graphical session and provide no native acceptance.
+
 ## Evidence and cleanup
 
 Only copy allowlisted metadata, hashes, observations and pass/fail projections into durable evidence. Raw image blocks, helper responses, terminal reviews and full audit records stay in the private disposable run. Record failed and superseded attempts separately, including source, package/native/helper identities, backend selection and actual runtime. Do not overwrite earlier failures or treat unavailable geometry as identity.
