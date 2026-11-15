@@ -39,6 +39,42 @@ test('prepared Python keeps a real virtual environment active', async () => {
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('a changed prepared image proof is rejected before any desktop helper execution', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'native-proof-binding-'));
+  try {
+    await mkdir(join(root, 'bin')); await mkdir(join(root, 'consumer'));
+    const adapter = join(root, 'bin/coven-desktop-use');
+    await writeFile(adapter, 'adapter'); await writeFile(join(root, 'bin/peekaboo'), 'helper'); await chmod(join(root, 'bin/peekaboo'), 0o700);
+    await writeFile(join(root, 'consumer/image-proof.py'), 'original-proof');
+    const hash = text => createHash('sha256').update(text).digest('hex');
+    await writeFile(join(root, 'baseline.json'), JSON.stringify({ nativeSha256: hash('adapter'), helperSha256: hash('helper'), consumerScriptsSha256: { 'image-proof.py': hash('original-proof') } }));
+    await verifyMacIdentity(root, adapter, join(root, 'bin'));
+    await writeFile(join(root, 'consumer/image-proof.py'), 'changed-proof');
+    await assert.rejects(verifyMacIdentity(root, adapter, join(root, 'bin')), /consumer script/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('environment-selected verifier and terminal broker must be the prepared files', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'native-selected-proof-'));
+  try {
+    await mkdir(join(root, 'bin')); await mkdir(join(root, 'consumer')); await mkdir(join(root, 'older'));
+    const adapter = join(root, 'bin/coven-desktop-use');
+    await writeFile(adapter, 'adapter'); await writeFile(join(root, 'bin/peekaboo'), 'helper'); await chmod(join(root, 'bin/peekaboo'), 0o700);
+    const hash = text => createHash('sha256').update(text).digest('hex');
+    const scripts = { 'image-proof.py': hash('proof'), 'pty-host.py': hash('broker') };
+    for (const [name, bytes] of [['image-proof.py', 'proof'], ['pty-host.py', 'broker']]) {
+      await writeFile(join(root, 'consumer', name), bytes);
+      await writeFile(join(root, 'older', name), bytes);
+    }
+    await writeFile(join(root, 'baseline.json'), JSON.stringify({ nativeSha256: hash('adapter'), helperSha256: hash('helper'), consumerScriptsSha256: scripts }));
+    const env = { NATIVE_ACCEPTANCE_IMAGE_PROOF: join(root, 'consumer/image-proof.py'), NATIVE_ACCEPTANCE_PTY: join(root, 'consumer/pty-host.py') };
+    await verifyMacIdentity(root, adapter, join(root, 'bin'), env);
+    for (const [key, name] of [['NATIVE_ACCEPTANCE_IMAGE_PROOF', 'image-proof.py'], ['NATIVE_ACCEPTANCE_PTY', 'pty-host.py']]) {
+      await assert.rejects(verifyMacIdentity(root, adapter, join(root, 'bin'), { ...env, [key]: join(root, 'older', name) }), /selected consumer script/);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test('real stdio child receives the owned display without unrelated environment data', async () => {
   const env = { PATH: process.env.PATH, DISPLAY: ':91', XDG_SESSION_TYPE: 'x11', NATIVE_OWNED_DISPOSABLE_DISPLAY: 'yes', NATIVE_TEST_SECRET: 'fixture-only-marker' };
   const transport = new StdioClientTransport({ command: process.execPath, args: ['-e', 'console.log(JSON.stringify({jsonrpc:"2.0",method:"fixture/env",params:{display:process.env.DISPLAY??null,session:process.env.XDG_SESSION_TYPE??null,secretPresent:process.env.NATIVE_TEST_SECRET!==undefined}}));setInterval(()=>{},1000)'], env: nativeHarnessEnvironment(tmpdir(), env, 'linux'), stderr: 'pipe' });

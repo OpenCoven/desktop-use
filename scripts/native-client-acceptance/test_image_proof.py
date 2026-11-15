@@ -3,9 +3,13 @@ import copy
 import hashlib
 import importlib.util
 import io
+import json
 from pathlib import Path
 import unittest
-from PIL import Image, ImageDraw
+import subprocess
+import sys
+import tempfile
+from PIL import Image, ImageDraw, ImageCms
 
 spec = importlib.util.spec_from_file_location('image_proof', Path(__file__).with_name('image-proof.py'))
 proof = importlib.util.module_from_spec(spec)
@@ -13,6 +17,13 @@ spec.loader.exec_module(proof)
 
 
 class NativeImageProofTests(unittest.TestCase):
+    def replace_image(self, result, image, **save_options):
+        stream = io.BytesIO()
+        image.save(stream, format='PNG', **save_options)
+        raw = stream.getvalue()
+        result['content'][0]['data'] = base64.b64encode(raw).decode()
+        result['details']['observationV1']['primaryImage'].update(byteLength=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+
     def vector(self):
         image = Image.new('RGB', (640, 512), (20, 40, 80))
         ImageDraw.Draw(image).rectangle((40, 72, 159, 151), fill=(224, 48, 64))
@@ -95,6 +106,85 @@ class NativeImageProofTests(unittest.TestCase):
         result['content'][0].update(data=base64.b64encode(raw).decode(),mimeType='image/jpeg')
         result['details']['observationV1']['primaryImage'].update(byteLength=len(raw),sha256=hashlib.sha256(raw).hexdigest(),mimeType='image/jpeg')
         value=proof.inspect_image(result,fixture);self.assertEqual(len(value['landmarks']),4);self.assertEqual(value['colorTolerance'],16)
+
+    def test_hidden_or_partial_target_cannot_supply_an_input_coordinate(self):
+        for alpha, profiled in [(0, False), (127, False), (0, True)]:
+            with self.subTest(alpha=alpha, profiled=profiled):
+                result, fixture = self.vector()
+                image = Image.open(io.BytesIO(base64.b64decode(result['content'][0]['data']))).convert('RGBA')
+                ImageDraw.Draw(image).rectangle((40, 72, 159, 151), fill=(224, 48, 64, alpha))
+                options = {'icc_profile': ImageCms.ImageCmsProfile(ImageCms.createProfile('sRGB')).tobytes()} if profiled else {}
+                self.replace_image(result, image, **options)
+                with self.assertRaisesRegex(AssertionError, 'opaque'):
+                    proof.inspect_image(result, fixture)
+
+    def test_any_target_perimeter_or_interior_transparency_is_rejected(self):
+        for point in [(40, 72), (159, 151), (100, 112)]:
+            with self.subTest(point=point):
+                result, fixture = self.vector()
+                image = Image.open(io.BytesIO(base64.b64decode(result['content'][0]['data']))).convert('RGBA')
+                image.putpixel(point, (224, 48, 64, 254))
+                self.replace_image(result, image)
+                with self.assertRaisesRegex(AssertionError, 'opaque'):
+                    proof.inspect_image(result, fixture)
+
+    def test_declared_target_is_checked_beyond_a_small_detected_color_patch(self):
+        result, fixture = self.vector()
+        image = Image.open(io.BytesIO(base64.b64decode(result['content'][0]['data']))).convert('RGBA')
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((40, 72, 159, 151), fill=(20, 40, 80, 0))
+        draw.rectangle((90, 102, 109, 121), fill=(224, 48, 64, 255))
+        self.replace_image(result, image)
+        with self.assertRaisesRegex(AssertionError, 'opaque'):
+            proof.inspect_image(result, fixture)
+
+    def test_landmark_center_and_perimeter_must_be_opaque(self):
+        for point in [(12, 44), (4, 36), (635, 495)]:
+            with self.subTest(point=point):
+                result, fixture = self.vector()
+                image = Image.open(io.BytesIO(base64.b64decode(result['content'][0]['data']))).convert('RGBA')
+                red, green, blue, _ = image.getpixel(point)
+                image.putpixel(point, (red, green, blue, 0))
+                self.replace_image(result, image)
+                with self.assertRaisesRegex(AssertionError, 'opaque'):
+                    proof.inspect_image(result, fixture)
+
+    def test_palette_transparency_cannot_hide_the_correct_target_rgb(self):
+        result, fixture = self.vector()
+        image = Image.open(io.BytesIO(base64.b64decode(result['content'][0]['data']))).convert('P', palette=Image.Palette.ADAPTIVE, colors=16)
+        self.replace_image(result, image, transparency=image.getpixel((100, 112)))
+        with self.assertRaisesRegex(AssertionError, 'opaque'):
+            proof.inspect_image(result, fixture)
+
+    def test_transparent_decoration_outside_proof_regions_is_allowed(self):
+        result, fixture = self.vector()
+        image = Image.open(io.BytesIO(base64.b64decode(result['content'][0]['data']))).convert('RGBA')
+        image.putpixel((0, 0), (20, 40, 80, 0))
+        self.replace_image(result, image)
+        value = proof.inspect_image(result, fixture)
+        self.assertEqual(value['desktopPoint'], [220, 500])
+
+    def test_color_patch_must_match_the_complete_independent_target_extent(self):
+        for rect in [(90, 102, 109, 121), (30, 62, 169, 161)]:
+            with self.subTest(rect=rect):
+                result, fixture = self.vector()
+                image = Image.open(io.BytesIO(base64.b64decode(result['content'][0]['data']))).convert('RGB')
+                draw = ImageDraw.Draw(image)
+                draw.rectangle((40, 72, 159, 151), fill=(20, 40, 80))
+                draw.rectangle(rect, fill=(224, 48, 64))
+                self.replace_image(result, image)
+                with self.assertRaisesRegex(AssertionError, 'target extent'):
+                    proof.inspect_image(result, fixture)
+
+    def test_optimized_python_cannot_disable_the_pre_input_proof(self):
+        result, fixture = self.vector()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root/'result.json').write_text(json.dumps(result)); (root/'fixture.json').write_text(json.dumps(fixture))
+            child = subprocess.run([sys.executable, '-I', '-O', str(Path(__file__).with_name('image-proof.py')), '--result', str(root/'result.json'), '--fixture-state', str(root/'fixture.json'), '--output', str(root/'proof.json')], capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(child.returncode, 0)
+            self.assertIn('non-optimized', child.stderr)
+            self.assertFalse((root/'proof.json').exists())
 
 
 if __name__ == '__main__': unittest.main()

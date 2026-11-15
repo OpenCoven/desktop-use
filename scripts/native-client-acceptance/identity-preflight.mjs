@@ -35,6 +35,11 @@ export async function preparedPython(executable) {
   return resolve(executable);
 }
 
+export async function preparedMacFixtureTarget(...args) {
+  const target = await import('./mac-fixture-target.mjs');
+  return target.preparedMacFixtureTarget(...args);
+}
+
 export function nativeHarnessEnvironment(root, env = process.env, platform = process.platform) {
   const selected = { PATH: env.PATH, TMPDIR: root };
   if (platform === 'linux') {
@@ -48,7 +53,7 @@ export function nativeHarnessEnvironment(root, env = process.env, platform = pro
 }
 
 // Reject a changed/misconfigured consumer before any native action is invoked.
-export async function verifyMacIdentity(root, adapter, searchPath = process.env.PATH) {
+export async function verifyMacIdentity(root, adapter, searchPath = process.env.PATH, selectedEnvironment = process.env) {
   const baseline = JSON.parse(await readFile(join(root, 'baseline.json')));
   const hash = async path => createHash('sha256').update(await readFile(path)).digest('hex');
   assert.equal(await realpath(adapter), await realpath(join(root, 'bin/coven-desktop-use')));
@@ -61,5 +66,15 @@ export async function verifyMacIdentity(root, adapter, searchPath = process.env.
   const expected = await realpath(join(root, 'bin/peekaboo'));
   assert.equal(selected, expected, 'PATH must select the prepared Peekaboo helper');
   assert.equal(await hash(selected), baseline.helperSha256, 'Peekaboo helper differs from prepared bytes');
+  for (const [name, expectedHash] of Object.entries(baseline.consumerScriptsSha256 ?? {})) {
+    assert.match(name, /^[a-zA-Z0-9_.-]+$/, 'consumer script must be a prepared basename');
+    assert.equal(await hash(join(root, 'consumer', name)), expectedHash, `prepared consumer script changed: ${name}`);
+  }
+  for (const [key, name] of [['NATIVE_ACCEPTANCE_IMAGE_PROOF', 'image-proof.py'], ['NATIVE_ACCEPTANCE_PTY', 'pty-host.py']]) {
+    if (selectedEnvironment[key] === undefined) continue;
+    const selectedScript = await realpath(selectedEnvironment[key]);
+    assert.equal(selectedScript, await realpath(join(root, 'consumer', name)), `selected consumer script must be the prepared copy: ${key}`);
+    assert.equal(await hash(selectedScript), baseline.consumerScriptsSha256?.[name], `selected consumer script hash changed: ${key}`);
+  }
   return baseline;
 }

@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url';
 import { createDesktopClient, resolveActionPermissions } from '@opencoven/openclaw-desktop-use/sdk';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
-import { verifyMacIdentity, preparedPython } from './identity-preflight.mjs';
+import { verifyMacIdentity, preparedPython, focusedFixture, preparedMacFixtureTarget } from './identity-preflight.mjs';
 
 const surface = process.argv[2];
 assert.ok(['sdk', 'mcp-modern', 'mcp-legacy'].includes(surface));
@@ -20,10 +20,14 @@ const python = await preparedPython(process.env.NATIVE_ACCEPTANCE_PYTHON);
 const fixturePath = await realpath(process.env.NATIVE_ACCEPTANCE_FIXTURE_STATE);
 const proofScript = await realpath(process.env.NATIVE_ACCEPTANCE_IMAGE_PROOF);
 const ptyScript = await realpath(process.env.NATIVE_ACCEPTANCE_PTY);
-const state = async () => JSON.parse(await readFile(fixturePath));
+const state = async () => {
+  const fixture = await focusedFixture(fixturePath);
+  await preparedMacFixtureTarget(root, fixture, python);
+  return fixture;
+};
 const initial = await state();
 assert.ok(initial.ready && initial.pid > 0 && initial.windowNumber > 0);
-const target = { app: 'org.opencoven.desktopuse.acceptance', windowId: initial.windowNumber };
+const target = await preparedMacFixtureTarget(root, initial, python);
 const workspace = join(root, `${surface}-workspace`);
 const privateState = join(root, `${surface}-state`);
 await mkdir(workspace, { recursive: true, mode: 0o700 });
@@ -74,7 +78,7 @@ async function image(request, label) {
   const resultPath = join(root, `${surface}-${label}-private.json`);
   const output = join(root, `${surface}-${label}-proof.json`);
   await writeFile(resultPath, JSON.stringify(result), { mode: 0o600 });
-  const verifier = spawnSync(python, [proofScript, '--result', resultPath, '--fixture-state', fixturePath, '--expected', before.clicks ? 'clicked' : 'initial', '--output', output], { encoding: 'utf8', timeout: 20_000 });
+  const verifier = spawnSync(python, ['-I', '-B', proofScript, '--result', resultPath, '--fixture-state', fixturePath, '--expected', before.clicks ? 'clicked' : 'initial', '--output', output], { encoding: 'utf8', timeout: 20_000 });
   assert.equal(verifier.status, 0, verifier.stderr);
   const proof = JSON.parse(await readFile(output));
   cases.push({ action: label, verified: true, proof });

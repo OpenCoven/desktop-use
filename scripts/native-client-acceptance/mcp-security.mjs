@@ -7,16 +7,17 @@ import {dirname,join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {Client} from '@modelcontextprotocol/client';
 import {StdioClientTransport} from '@modelcontextprotocol/client/stdio';
-import {verifyMacIdentity,preparedPython,nativeHarnessEnvironment,focusedFixture} from './identity-preflight.mjs';
+import {verifyMacIdentity,preparedPython,nativeHarnessEnvironment,focusedFixture,preparedMacFixtureTarget} from './identity-preflight.mjs';
 const root=await realpath(process.env.NATIVE_ACCEPTANCE_ROOT),adapter=await realpath(process.env.NATIVE_ACCEPTANCE_ADAPTER);
 if(process.platform==='darwin')await verifyMacIdentity(root,adapter);
 if(process.platform==='linux')nativeHarnessEnvironment(root);
 const python=process.platform==='darwin'?await preparedPython(process.env.NATIVE_ACCEPTANCE_PYTHON):'python3';
 const fixturePath=await realpath(process.env.NATIVE_ACCEPTANCE_FIXTURE_STATE),pty=await realpath(process.env.NATIVE_ACCEPTANCE_PTY);
 let fixturePid;
-const state=async()=>{const s=await focusedFixture(fixturePath,fixturePid);fixturePid??=s.pid;return {clicks:s.clicks,keys:s.keys,text:s.text,scrollOffset:s.scrollOffset};};
+const state=async()=>{const s=await focusedFixture(fixturePath,fixturePid);if(process.platform==='darwin')await preparedMacFixtureTarget(root,s,python);fixturePid??=s.pid;return {clicks:s.clicks,keys:s.keys,text:s.text,scrollOffset:s.scrollOffset};};
 const initial=await state(),fixture=JSON.parse(await readFile(fixturePath));
-const request={action:'keypress',keys:['a'],...(process.platform==='darwin'?{app:'org.opencoven.desktopuse.acceptance',windowId:fixture.windowNumber}:{})};
+const target=process.platform==='darwin'?await preparedMacFixtureTarget(root,fixture,python):{};
+const request={action:'keypress',keys:['a'],...target};
 const packageRoot=dirname(createRequire(import.meta.url).resolve('@opencoven/openclaw-desktop-use/package.json'));
 const {createJsonSchemaValidator}=await import(pathToFileURL(join(packageRoot,'dist/src/mcp/schema.js')));
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));const results=[],backendReadiness=[];const attempt=Date.now();
@@ -35,7 +36,7 @@ for(const era of ['modern','legacy']){
   const f=await connect(era,mode);
   try{
    if(mode==='missing'){
-    const observed=await f.client.callTool({name:'computer_use',arguments:{action:'screenshot',mode:process.platform==='darwin'?'window':'screen',...(process.platform==='darwin'?{app:'org.opencoven.desktopuse.acceptance',windowId:fixture.windowNumber}:{})}});
+    const observed=await f.client.callTool({name:'computer_use',arguments:{action:'screenshot',mode:process.platform==='darwin'?'window':'screen',...target}});
     assert.equal(observed.structuredContent.success,true,'negative probe requires an available actual native backend');
     const images=observed.content.filter(c=>c.type==='image');assert.equal(images.length,1);
     const bytes=Buffer.from(images[0].data,'base64'),primary=observed.structuredContent.observationV1.primaryImage;

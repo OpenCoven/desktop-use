@@ -4,7 +4,7 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { createDesktopClient, resolveActionPermissions } from '@opencoven/openclaw-desktop-use/sdk';
-import { verifyMacIdentity, nativeHarnessEnvironment, focusedFixture } from './identity-preflight.mjs';
+import { verifyMacIdentity, nativeHarnessEnvironment, focusedFixture, preparedMacFixtureTarget } from './identity-preflight.mjs';
 
 const root = resolve(process.env.NATIVE_ACCEPTANCE_ROOT);
 const adapterPath = resolve(process.env.NATIVE_ACCEPTANCE_ADAPTER);
@@ -19,15 +19,17 @@ const options = { workspaceDir: workspace, adapterPath, scope, actionPermissions
 let fixturePid;
 const state = async () => {
   const s = await focusedFixture(fixturePath, fixturePid);
+  if (process.platform === 'darwin') await preparedMacFixtureTarget(root, s);
   fixturePid ??= s.pid;
   return { clicks: s.clicks, keys: s.keys, text: s.text, scrollOffset: s.scrollOffset };
 };
 const initial = await state();
 const fixture = JSON.parse(await readFile(fixturePath));
-const request = { action: 'keypress', keys: ['a'], ...(process.platform === 'darwin' ? { app: 'org.opencoven.desktopuse.acceptance', windowId: fixture.windowNumber } : {}) };
+const target = process.platform === 'darwin' ? await preparedMacFixtureTarget(root, fixture) : {};
+const request = { action: 'keypress', keys: ['a'], ...target };
 const results = [];
 const readyClient = createDesktopClient(options);
-const backendObservation = await readyClient.execute({ action: 'screenshot', mode: process.platform === 'darwin' ? 'window' : 'screen', ...(process.platform === 'darwin' ? { app: 'org.opencoven.desktopuse.acceptance', windowId: fixture.windowNumber } : {}) }, { callId: 'backend-readiness' });
+const backendObservation = await readyClient.execute({ action: 'screenshot', mode: process.platform === 'darwin' ? 'window' : 'screen', ...target }, { callId: 'backend-readiness' });
 assert.equal(backendObservation.details.success, true, 'negative probe requires an available actual native backend');
 const images = backendObservation.content.filter(c => c.type === 'image'); assert.equal(images.length, 1);
 const bytes = Buffer.from(images[0].data, 'base64'), primary = backendObservation.details.observationV1.primaryImage;

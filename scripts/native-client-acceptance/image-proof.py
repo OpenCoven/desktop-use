@@ -5,29 +5,51 @@ import base64
 import hashlib
 import io
 import json
+import math
 from pathlib import Path
 from PIL import Image, ImageCms
 
 
-def verify_landmarks(picture, fixture, extent, tolerance):
+def require_opaque_box(alpha, box):
+    assert len(box) == 4 and all(math.isfinite(value) for value in box), 'finite proof bounds required'
+    left, top, right, bottom = box
+    assert 0 <= left < right <= alpha.width and 0 <= top < bottom <= alpha.height, 'proof region must be contained in the received image'
+    bounds = (math.floor(left), math.floor(top), math.ceil(right), math.ceil(bottom))
+    assert alpha.crop(bounds).getextrema() == (255, 255), 'every proof-region pixel must be opaque before color conversion'
+    return bounds
+
+
+def declared_region_box(rect, fixture, extent):
+    assert len(rect) == 4 and all(math.isfinite(value) for value in rect), 'finite fixture region required'
+    x, y, width, height = rect
+    assert width > 0 and height > 0 and x >= 0 and y >= 0 and x+width <= fixture['fixtureSize'][0] and y+height <= fixture['fixtureSize'][1]
+    content, desktop, image = fixture['desktopRect'], extent['desktopRect'], extent['imageRect']
+    left = image['x']+(content['x']+x-desktop['x'])*image['width']/desktop['width']
+    top = image['y']+(content['y']+y-desktop['y'])*image['height']/desktop['height']
+    return (left, top, left+width*image['width']/desktop['width'], top+height*image['height']/desktop['height'])
+
+
+def verify_landmarks(picture, alpha, fixture, extent, tolerance):
     landmarks = fixture.get('landmarks', [])
     assert len(landmarks) == 4 and {marker['name'] for marker in landmarks} == {'NW', 'NE', 'SW', 'SE'}, 'four labelled fixture landmarks required'
     content, desktop, image = fixture['desktopRect'], extent['desktopRect'], extent['imageRect']
     proofs = []
     for marker in landmarks:
         x,y,width,height = marker['rect']
-        assert width > 0 and height > 0 and x >= 0 and y >= 0 and x+width <= fixture['fixtureSize'][0] and y+height <= fixture['fixtureSize'][1]
+        opaque_bounds = require_opaque_box(alpha, declared_region_box(marker['rect'], fixture, extent))
         expected = [content['x']+x+width/2, content['y']+y+height/2]
         point = [image[axis]+(expected[k]-desktop[axis])*image[size]/desktop[size] for k,(axis,size) in enumerate([('x','width'),('y','height')])]
         px,py = map(round,point)
         assert 0 <= px < picture.width and 0 <= py < picture.height
         sample = picture.getpixel((px,py))
         assert max(abs(a-b) for a,b in zip(sample,marker['rgb'])) <= tolerance, 'landmark pixels contradict the independent fixture coordinates'
-        proofs.append({'name':marker['name'],'imagePoint':point,'desktopPoint':expected,'sampleSRGB':sample})
+        proofs.append({'name':marker['name'],'imagePoint':point,'desktopPoint':expected,'sampleSRGB':sample,'opaquePixelBounds':opaque_bounds})
     return proofs
 
 
 def inspect_image(result, fixture, expected='initial'):
+    if not __debug__:
+        raise RuntimeError('pre-input image verification requires non-optimized Python')
     details = result.get('details', result.get('structuredContent', result))
     receipt = details['observationV1']
     images = [c for c in result.get('content', []) if c.get('type') == 'image']
@@ -41,6 +63,10 @@ def inspect_image(result, fixture, expected='initial'):
     picture = Image.open(io.BytesIO(raw))
     picture.load()
     assert picture.size == (primary['sourceDimensions']['width'], primary['sourceDimensions']['height'])
+    # Keep the decoded alpha, including palette/tRNS transparency, before ICC
+    # conversion or RGB normalization can discard it. Only proof regions need
+    # to be opaque; unrelated decorated-window corners may be transparent.
+    alpha = picture.convert('RGBA').getchannel('A')
     icc = picture.info.get('icc_profile')
     if icc:
         picture = ImageCms.profileToProfile(picture, ImageCms.ImageCmsProfile(io.BytesIO(icc)), ImageCms.createProfile('sRGB'), outputMode='RGB')
@@ -55,6 +81,7 @@ def inspect_image(result, fixture, expected='initial'):
               if all(abs(a-b) <= tolerance for a, b in zip(picture.getpixel((x, y)), color))]
     assert points, 'known fixture target pixels are absent'
     box = (min(x for x, y in points), min(y for x, y in points), max(x for x, y in points)+1, max(y for x, y in points)+1)
+    require_opaque_box(alpha, box)
     assert len(points) / ((box[2]-box[0])*(box[3]-box[1])) > .90, 'target color does not form the expected filled rectangle'
     point = ((box[0]+box[2])/2, (box[1]+box[3])/2)
     geometry = receipt['geometry']
@@ -73,9 +100,11 @@ def inspect_image(result, fixture, expected='initial'):
     source, desktop = region['imageRect'], region['desktopRect']
     mapped = [desktop[axis] + (point[k]-source[axis])*desktop[size]/source[size] for k, (axis, size) in enumerate([('x', 'width'), ('y', 'height')])]
     target = fixture['targetRect']
+    declared_target_bounds = require_opaque_box(alpha, declared_region_box(target, fixture, extent))
+    assert max(abs(a-b) for a,b in zip(box, declared_target_bounds)) <= 2*scale, 'detected target extent contradicts the independent fixture rectangle'
     expected_point = [fixture['desktopRect']['x']+target[0]+target[2]/2, fixture['desktopRect']['y']+target[1]+target[3]/2]
     assert max(abs(a-b) for a,b in zip(mapped, expected_point)) <= 2, (mapped, expected_point)
-    landmarks = verify_landmarks(picture, fixture, extent, tolerance)
+    landmarks = verify_landmarks(picture, alpha, fixture, extent, tolerance)
     # A real consumer resize of these received pixels retains the normalized
     # position. This is client-resize evidence, not a gateway-history claim.
     resized = picture.resize((320, 256), Image.Resampling.LANCZOS)
@@ -85,7 +114,7 @@ def inspect_image(result, fixture, expected='initial'):
     recovered = [resized_point[0]/resized.width*picture.width, resized_point[1]/resized.height*picture.height]
     assert max(abs(a-b) for a,b in zip(point, recovered)) < 1e-8
     return {'sha256': primary['sha256'], 'mimeType': image['mimeType'], 'byteLength': len(raw), 'dimensions': picture.size,
-            'colorManaged': bool(icc), 'landmarks': landmarks, 'colorTolerance': tolerance, 'targetPixelBounds': box, 'imagePoint': point, 'desktopPoint': mapped,
+            'colorManaged': bool(icc), 'landmarks': landmarks, 'colorTolerance': tolerance, 'targetPixelBounds': box, 'declaredTargetOpaquePixelBounds': declared_target_bounds, 'proofRegionsOpaque': True, 'imagePoint': point, 'desktopPoint': mapped,
             'independentExpectedDesktopPoint': expected_point, 'geometryState': geometry['state'], 'actualScope': receipt['actualScope'],
             'independentWindowExtentVerified': True, 'windowFrameRect': frame, 'deliveredPixelsPerPoint': scale,
             'clientResize': {'dimensions': resized.size, 'targetPoint': resized_point, 'sampleSRGB': sample, 'normalizedMappingPreserved': True},

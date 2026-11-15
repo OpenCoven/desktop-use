@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import uuid
 import PIL
 from PIL import Image, ImageCms  # Verify both decoder and ICC support before preparing a run.
 
@@ -25,6 +26,7 @@ def main():
     p.add_argument('--adapter', type=Path, required=True)
     p.add_argument('--peekaboo-directory', type=Path, required=True)
     p.add_argument('--observe-controls', action='store_true')
+    p.add_argument('--isolated-fixture', action='store_true', help='Use a fresh bundle identity for the positive/security collectors; preserve existing fixtures.')
     args = p.parse_args()
     assert os.uname().sysname == 'Darwin'
     source = Path(__file__).resolve().parents[2]
@@ -57,14 +59,15 @@ def main():
         (root/'install-private.log').write_text(install.stdout+install.stderr)
         raise RuntimeError('Consumer installation failed; inspect the task-private log.')
     consumer_scripts = ['native-client.mjs','sdk-security.mjs','mcp-security.mjs','image-proof.py','identity-preflight.mjs','mac-control-proof.mjs',
-                        'mac-active-client.mjs','mac-active-cleanup.mjs','mac-active-coordinator.py','mac_owned_processes.py']
+                        'mac-active-client.mjs','mac-active-cleanup.mjs','mac-active-coordinator.py','mac_owned_processes.py','mac-fixture-target.mjs','bind-mac-fixture.py']
     for name in consumer_scripts:
         shutil.copy2(Path(__file__).with_name(name), consumer/name)
     shutil.copy2(source/'src/mcp/fixtures/pty-host.py', consumer/'pty-host.py')
     bundle = root/'DesktopUseAcceptance.app'/'Contents'
     (bundle/'MacOS').mkdir(parents=True)
     (bundle/'Resources').mkdir()
-    (bundle/'Info.plist').write_bytes(plistlib.dumps({'CFBundleExecutable':'DesktopUseAcceptance','CFBundleIdentifier':'org.opencoven.desktopuse.acceptance','CFBundleName':'Desktop Use Acceptance','CFBundleVersion':'1','CFBundlePackageType':'APPL','NSHighResolutionCapable':True}))
+    bundle_id='org.opencoven.desktopuse.acceptance'+('.run-'+uuid.uuid4().hex if args.isolated_fixture else '')
+    (bundle/'Info.plist').write_bytes(plistlib.dumps({'CFBundleExecutable':'DesktopUseAcceptance','CFBundleIdentifier':bundle_id,'CFBundleName':'Desktop Use Acceptance','CFBundleVersion':'1','CFBundlePackageType':'APPL','NSHighResolutionCapable':True}))
     (bundle/'Resources/runtime.json').write_text(json.dumps({'statePath':str(root/'fixture-state.json'),'observeControls':'true' if args.observe_controls else 'false'}))
     observation_source = Path(__file__).with_name('ControlObservation.swift')
     if args.observe_controls:
@@ -84,6 +87,8 @@ def main():
                'helperSha256':sha(helper/'peekaboo'),'helperVersion':identity.get('current'),'helperSourceCommit':identity.get('sourceCommit'),
                'consumerScriptsSha256':{name:sha(consumer/name) for name in consumer_scripts+['pty-host.py']},'processAbiChecked':args.observe_controls,
                'fixtureSourceSha256':sha(Path(__file__).with_name('Fixture.swift')),'controlObserverSourceSha256':sha(observation_source),'fixtureBinarySha256':sha(bundle/'MacOS/DesktopUseAcceptance'),'clockProbeSha256':sha(root/'bin/control-clock-probe'),'controlObservationEnabled':args.observe_controls,'pythonExecutable':sys.executable,'pythonVersion':sys.version.split()[0],'pillowVersion':PIL.__version__,'publication':False,'fixtureLaunched':False,'privacyChanges':False}
+    if args.isolated_fixture:
+        receipt.update(fixtureBundleIdentifier=bundle_id,fixtureInfoPlistSha256=sha(bundle/'Info.plist'))
     (root/'baseline.json').write_text(json.dumps(receipt,indent=2)+'\n')
     (root/'run-env.json').write_text(json.dumps({'PATH':str(root/'bin')+os.pathsep+os.environ.get('PATH',''),'NATIVE_ACCEPTANCE_PYTHON':sys.executable,'NATIVE_ACCEPTANCE_ROOT':str(root),'NATIVE_ACCEPTANCE_ADAPTER':str(root/'bin/coven-desktop-use'),'NATIVE_ACCEPTANCE_FIXTURE_STATE':str(root/'fixture-state.json'),'NATIVE_ACCEPTANCE_IMAGE_PROOF':str(consumer/'image-proof.py'),'NATIVE_ACCEPTANCE_PTY':str(consumer/'pty-host.py')},indent=2)+'\n')
     print(json.dumps({'root':str(root),'fixtureApp':str(bundle.parent),'baseline':receipt}))
