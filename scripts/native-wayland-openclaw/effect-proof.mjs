@@ -39,3 +39,12 @@ export function proveTextEffect({ before, after, text, decision }) {
   }
   return { schemaVersion: 1, decision, charactersAdded: end.textLength - start.textLength, keyEventsAdded: end.keyCount - start.keyCount, finalTextLength: end.textLength, textSha256: end.textSha256, unrelatedControlsUnchanged: true };
 }
+
+// A denial after an earlier allowed action compares that existing control state.
+// It supplies no approval authority and cannot stand in for an allowed operation.
+export function proveNoEffect({ before, after, decision }) {
+  assert.ok(['deny', 'capture-only'].includes(decision), 'A no-effect decision is required');
+  const start = summary(before), end = summary(after);
+  assert.deepEqual(end, start, 'Every reported control and fixture identity must remain unchanged');
+  return { schemaVersion: 1, decision, charactersAdded: 0, keyEventsAdded: 0, finalTextLength: end.textLength, textSha256: end.textSha256, unrelatedControlsUnchanged: true };
+}

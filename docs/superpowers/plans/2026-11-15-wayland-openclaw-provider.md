@@ -4,7 +4,7 @@
 
 **Goal:** Prove actual controlled Wayland pixels reach an unchanged official OpenClaw provider, followed by actual trusted approval, directly observed focused-entry input, and denial without an effect.
 
-**Architecture:** Keep the existing PR44 native driver and receipts frozen. Add a separately owned Wayland consumer using the reviewed PR40 compositor/fixture collector only after an explicit source-bound read/copy handoff. Reuse the frozen matching production pair. Until that handoff, implement only the pure fixture-effect checks; these do not establish native or provider acceptance.
+**Architecture:** Reuse the reviewed PR44 helper dependency while preserving all historical driver candidates and receipts. Add a separately owned Wayland consumer using the six exact PR40 foundation files authorized by the d6ef3e6 source-bound read/copy handoff. Reuse the frozen matching production pair. Pure fixture-effect and provider-image checks remain preparation and do not establish live native/provider acceptance.
 
 **Tech stack:** Node built-ins, packed OpenClaw plugin and official host, actual Sway/GTK/grim/wtype inside one exclusively leased software Wayland namespace.
 
@@ -30,14 +30,17 @@ An allowed action must produce exactly the planned fixture text/hash/key transit
 
 ### Task 2: Actual provider capture and trusted effect
 
-**Dependency:** Wait for the PR40 owner's reviewed source-bound Wayland collector handoff before defining its integration interface or executing it. No timer or owner silence supplies that handoff.
+**Dependency:** The PR40 owner explicitly handed six committed foundation files at d6ef3e664d96db4138f93d785fcb2f756723d4b5 for exact read/copy integration. foundation-binding.json pins each source/file hash. The corrected 26-file PR44 helper dependency matches 235bb0696ad4cd32a95fff5c820ff06380ce8f3d exactly. These dependencies are source preparation; their native receipts do not transfer to this new provider runner.
 
 - [ ] Bind native/package/helper/compositor/fixture identities, outputs and scale; use actual received image bytes and independent compositor mapping to prove the controlled screen and text-entry target. A keyboard effect does not qualify unavailable pointer input.
-- [ ] Use a separately staged official OpenClaw host and actual approval RPC for one planned text effect, then a distinct fresh empty fixture for forged confirmation plus denial, with no repeat of the failed Stop/UI experiment.
+- [ ] Use a separately staged official OpenClaw host and actual approval RPC for one planned text effect, then a separately bound forged-confirmation case with actual denial; proveNoEffect must preserve the complete known nonempty post-allow summary, with no repeat of the failed Stop/UI experiment.
 - [ ] Inspect before/after fixture summaries and controlled images, enforce helper/process cleanup and audit payload absence, and retain a sanitized source-bound receipt. Run required repository/packed checks and exact-head hosted checks before any source delivery. Keep all omissions and wider acceptance gates explicit.
 
 ## Execution choice
 
-Continue inline under the already active original goal and existing runtime coordination protocol. Native execution is not authorized by a passing pure test; it still needs the source handoff and actual exclusive runtime lease. The current pending PR44 ready transition and its frozen candidate are separate.
+Continue inline under the already active original goal and existing runtime coordination protocol. Native execution is not authorized by a passing pure test; it still needs the source handoff and actual exclusive runtime lease. PR44 readiness and its separately executed frozen candidate remain separate.
 
 Task 1 preparation: existing raw-callback baseline passed 3 tests; the no-op proof scaffold produced 50 expected failures, followed by 50 passing behavior tests. A further regression demonstrated that equality assertions could echo an unvalidated focus value; a boolean guard fixed that leak and all 51 tests pass. Fresh FILEONLY review found no Critical, Important or Minor findings, and did not independently execute tests. Required full repository check (364 TypeScript tests, 26 gateway fixtures, seven import graphs, 112 macOS Rust unit tests and one CLI cancellation integration; one preexisting ignored Rust fixture) and packed consumers passed with terminal exit 0; no native/provider result follows from this pure preparation.
+
+
+Current preparation checkpoint: proveNoEffect validates both summaries and rejects every changed supported control, including after an already approved text operation. Its ten added regressions pass; total effect tests are61. The provider-image helper passes37 tests for PNG/JPEG at scales1/2, current typed user image blocks, hashes/MIME/freshness, independent full output/window scope, mapping, opaque detected and declared target rectangles and landmarks, fixture containment and sanitized metadata/errors. First failures for untyped image strings, transparent RGB, outside-fixture targets, tiny edge-target tolerance and transparent target perimeter are retained. Fresh scoped FILEONLY reviews find no remaining findings. These98 pure tests have no live HTTP, host approval, fixture/helper execution or native acceptance authority. Actual provider runner construction and exclusive native execution remain outstanding.

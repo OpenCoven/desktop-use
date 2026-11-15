@@ -91,3 +91,32 @@ test('unvalidated focus fields cannot echo private values through assertion diag
     return true;
   });
 });
+
+// The real provider sequence denies a second request after the approved text.
+// Keep the first fresh-fixture helper's stricter prerequisite unchanged.
+import { proveNoEffect } from './effect-proof.mjs';
+for (const decision of ['deny', 'capture-only']) test(`post-effect ${decision} preserves the complete typed control state`, () => {
+  const typed = sample().after;
+  const proof = proveNoEffect({ before: typed, after: { ...typed, rawPrivateText: marker }, decision });
+  assert.equal(proof.decision, decision);
+  assert.equal(proof.charactersAdded, 0);
+  assert.equal(proof.keyEventsAdded, 0);
+  assert.equal(proof.finalTextLength, marker.length);
+  assert.equal(proof.textSha256, hash(marker));
+  assert.ok(!JSON.stringify(proof).includes(marker));
+});
+for (const variant of ['text-length','text-hash','keys','clicks','scroll','identity','focus']) test(`post-effect denial rejects changed ${variant}`, () => {
+  const before = sample().after, after = { ...before };
+  if (variant === 'text-length') after.textLength++;
+  if (variant === 'text-hash') after.textSha256 = hash('changed');
+  if (variant === 'keys') after.keyCount++;
+  if (variant === 'clicks') after.clickCount++;
+  if (variant === 'scroll') after.scrollOffset++;
+  if (variant === 'identity') after.fixtureIdentity = 'b'.repeat(64);
+  if (variant === 'focus') after.entryFocused = false;
+  assert.throws(() => proveNoEffect({ before, after, decision: 'deny' }));
+});
+test('no-effect proof cannot stand in for an allowed operation', () => {
+  const before = fresh();
+  assert.throws(() => proveNoEffect({ before, after: before, decision: 'allow' }));
+});
