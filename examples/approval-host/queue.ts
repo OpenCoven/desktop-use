@@ -7,11 +7,13 @@ type Prompt = (review: Review, signal: AbortSignal) => Promise<ApprovalResolutio
  * Serializes reviews from several attached harness sessions onto one operator UI. At most `limit`
  * reviews may be active or waiting; more fail closed as `unavailable`. A waiter whose challenge is
  * cancelled or expires leaves at once, but the review behind it still waits for the active one.
+ * `events` lets the host tell the operator when a review waits or is refused.
  */
-export function queuedPrompt(prompt: Prompt, limit = 8): Prompt {
+export function queuedPrompt(prompt: Prompt, limit = 8, events: { queued?(waiting: number): void; refused?(): void } = {}): Prompt {
   let tail: Promise<void> = Promise.resolve(); let pending = 0;
   return async (review, signal) => {
-    if (pending >= limit) return 'unavailable';
+    if (pending >= limit) { events.refused?.(); return 'unavailable'; }
+    if (pending > 0) events.queued?.(pending);
     pending++;
     const previous = tail; let release!: () => void;
     tail = new Promise<void>(resolve => { release = resolve; });

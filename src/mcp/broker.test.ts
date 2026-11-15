@@ -130,3 +130,15 @@ for (const direction of ['request', 'response'] as const) test(`shared parser re
   const bom = new PassThrough(); const rejected = reader(bom as any); bom.end(Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(frame(signed))]));
   await assert.rejects(rejected, /APPROVAL_UNAVAILABLE/);
 });
+test('a full replay register refuses the next review without prompting and tells the host', { timeout: 120_000 }, async t => {
+  const f = await fixture(t); let prompts = 0; const notices: string[] = [];
+  const { startApprovalHost } = await import('../../examples/approval-host/broker.js');
+  const h = await startApprovalHost({ directory: f.root, secret: f.secret, prompt: async () => { prompts++; return 'denied'; }, notice: event => { notices.push(event); } });
+  t.after(() => h.close());
+  const c = f.client(await f.provider());
+  for (let i = 0; i < 1024; i++) await c.execute({ action: 'file-write', path: `r${i}`, content: 'none' }, { callId: `r${i}` });
+  assert.equal(prompts, 1024); assert.deepEqual(notices, []);
+  const refused = await c.execute({ action: 'file-write', path: 'over', content: 'none' }, { callId: 'over' });
+  assert.equal(refused.details.success, false); assert.equal(prompts, 1024, 'the refused review is never displayed');
+  assert.deepEqual(notices, ['review-limit']); await assert.rejects(readFile(join(f.root, 'over')));
+});

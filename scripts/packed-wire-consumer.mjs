@@ -126,7 +126,7 @@ for (const era of ['modern', 'legacy']) {
       assert.deepEqual((await client.listTools()).tools.map(tool => tool.name), ['computer_use']);
       const result = await client.callTool({ name: 'computer_use', arguments: { action: 'file-write', path: 'attached', content: 'private-content' } });
       assert.equal(result.structuredContent.success, true); assert.equal(await readFile(join(base.workspace, 'attached'), 'utf8'), 'private-content');
-      assert.match(display, /Decision \[allow\/deny\/cancel\]/); assert.match(display, /"sessionId": "attach-\d+"/);
+      assert.match(display, /Decision \[allow\/deny\/cancel\]/); assert.match(display, /"sessionId": "attach-[a-f0-9]{6}-\d+"/);
       assert.doesNotMatch(await readFile(join(base.state, 'audit.jsonl'), 'utf8'), /private-content|"mac"|"nonce"/);
     } finally { await client.close(); }
   } finally { if (operator.exitCode === null) operator.kill('SIGTERM'); }

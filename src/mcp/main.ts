@@ -5,7 +5,7 @@ import { createBrokerProvider } from './broker.js';
 import { serveDesktopStdio } from './server.js';
 
 let cleanup: (() => Promise<void>) | undefined;
-const ATTACH_UNAVAILABLE = 'Desktop approver unavailable; start the approver and check the attach socket path.\n';
+const ATTACH_UNAVAILABLE = 'Desktop approver unavailable or session refused; check the approver terminal and the attach socket path.\n';
 let attaching = false;
 try {
   if (process.argv.length === 3 && process.argv[2] === '--help') {
