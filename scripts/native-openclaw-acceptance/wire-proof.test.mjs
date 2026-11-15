@@ -179,3 +179,52 @@ for (const variant of ['missing-bracket','changed-window','changed-process-birth
   if (variant === 'capture-outside-bracket') s.options.linuxScope.before.finishedAtMs = s.receipt.capturedAtMs+1;
   await assert.rejects(proveWireObservation(s.body,'allowed',s.options));
 });
+
+for (const variant of ['plain-text', 'text-block', 'metadata', 'missing-block-type', 'assistant-role', 'tool-role']) test(`rejects provider bytes outside a supported image block: ${variant}`, async () => {
+  const sample = await example(), image = sample.body.messages[2], url = image.content[0].image_url.url;
+  if (variant === 'plain-text') image.content = url;
+  if (variant === 'text-block') image.content = [{ type: 'text', text: url }];
+  if (variant === 'metadata') image.content = [{ type: 'text', text: 'No image block', metadata: { url } }];
+  if (variant === 'missing-block-type') delete image.content[0].type;
+  if (variant === 'assistant-role') image.role = 'assistant';
+  if (variant === 'tool-role') image.role = 'tool';
+  await assert.rejects(proveWireObservation(sample.body, 'allowed', sample.options), /current-turn image/);
+});
+
+async function changeAlpha(sample, variant) {
+  const original = Buffer.from(sample.body.messages[2].content[0].image_url.url.split(',')[1], 'base64');
+  const { data, info } = await sharp(original).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  if (variant === 'transparent' || variant === 'translucent') {
+    for (let offset = 3; offset < data.length; offset += 4) data[offset] = variant === 'transparent' ? 0 : 128;
+  } else if (variant === 'target-border') {
+    for (let y = 40; y < 80; y++) for (let x = 20; x < 80; x++) {
+      if (x === 20 || x === 79 || y === 40 || y === 79) data[(y * info.width + x) * 4 + 3] = 0;
+    }
+  } else {
+    const [x, y] = variant === 'target-hole' ? [30, 50] : [0, 0];
+    data[(y * info.width + x) * 4 + 3] = 0;
+  }
+  const bytes = await sharp(data, { raw: { width: info.width, height: info.height, channels: 4 } }).png().toBuffer();
+  sample.receipt.primaryImage.byteLength = bytes.length;
+  sample.receipt.primaryImage.sha256 = createHash('sha256').update(bytes).digest('hex');
+  sample.body.messages[2].content[0].image_url.url = `data:image/png;base64,${bytes.toString('base64')}`;
+  sample.update();
+}
+
+for (const variant of ['transparent', 'translucent', 'target-hole', 'target-border']) test(`rejects hidden target RGB: ${variant}`, async () => {
+  const sample = await example(); await changeAlpha(sample, variant);
+  await assert.rejects(proveWireObservation(sample.body, 'allowed', sample.options));
+});
+
+test('unrelated transparent background does not invalidate an opaque target', async () => {
+  const sample = await example(); await changeAlpha(sample, 'background-hole');
+  assert.deepEqual((await proveWireObservation(sample.body, 'allowed', sample.options)).desktopPoint, [-75, 50]);
+});
+
+for (const variant of ['negative-local-origin', 'beyond-fixture-edge']) test(`rejects target outside the fixture despite edge tolerance: ${variant}`, async () => {
+  const sample = await example();
+  sample.fixture.targetRect = variant === 'negative-local-origin' ? [-1, 20, 31, 20] : [70, 20, 31, 20];
+  const target = variant === 'negative-local-origin' ? [0, 40, 60, 80] : [140, 40, 200, 80];
+  await replaceRaster(sample, 200, 160, target, { x: -100, y: 20, width: 100, height: 80 });
+  await assert.rejects(proveWireObservation(sample.body, 'allowed', sample.options), /inside the fixture/);
+});

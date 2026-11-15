@@ -24,14 +24,10 @@ export async function proveWireObservation(body, marker, { sharp, fixture, platf
   assert.equal(marked.at(-1)?.name, marker, 'Current turn must be the requested marker');
   assert.equal(marked.filter(turn => turn.name === marker).length, 1, 'Turn marker must be unique');
   const current = body.messages.slice(marked.at(-1).index + 1);
-  const images = [];
-  function walk(value) {
-    if (typeof value === 'string' && /^data:image\/(?:png|jpeg);base64,/.test(value)) images.push(value);
-    else if (Array.isArray(value)) value.forEach(walk);
-    else if (value && typeof value === 'object') Object.values(value).forEach(walk);
-  }
-  walk(current);
+  const images = current.filter(message => message.role === 'user' && Array.isArray(message.content))
+    .flatMap(message => message.content.filter(block => block?.type === 'image_url').map(block => block.image_url?.url));
   assert.equal(images.length, 1, 'Exactly one current-turn image required');
+  assert.equal(typeof images[0], 'string', 'Current-turn image URL must be a string');
   const observations = current.filter(message => message.role === 'tool').flatMap(message => {
     try { const details = JSON.parse(text(message.content)); return details?.observationV1 ? [{ message, details }] : []; } catch { return []; }
   });
@@ -102,18 +98,22 @@ export async function proveWireObservation(body, marker, { sharp, fixture, platf
   }
   assert.ok(Number.isSafeInteger(fixture.clicks) && fixture.clicks >= 0, 'Known fixture counter required');
   const color = fixture.clicks === 0 ? [224, 48, 64] : [32, 192, 96];
-  const { data, info } = await sharp(bytes, { limitInputPixels: 16 * 1024 * 1024, failOn: 'warning' }).toColourspace('srgb').removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  const { data, info } = await sharp(bytes, { limitInputPixels: 16 * 1024 * 1024, failOn: 'warning' }).toColourspace('srgb').ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  assert.equal(info.channels, 4, 'RGBA proof pixels required');
   const tolerance = 16;
   let minX = info.width, minY = info.height, maxX = -1, maxY = -1, count = 0;
   for (let y = 0; y < info.height; y++) for (let x = 0; x < info.width; x++) {
     const offset = (y * info.width + x) * info.channels;
-    if (color.every((value, channel) => Math.abs(data[offset + channel] - value) <= tolerance)) {
+    if (data[offset + 3] === 255 && color.every((value, channel) => Math.abs(data[offset + channel] - value) <= tolerance)) {
       minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); count++;
     }
   }
   assert.ok(count > 0, 'Known fixture target pixels required');
   const targetPixelBounds = [minX, minY, maxX + 1, maxY + 1];
   assert.ok(count / ((maxX + 1 - minX) * (maxY + 1 - minY)) > .9, 'Target pixels must form a filled rectangle');
+  for (let y = minY; y <= maxY; y++) for (let x = minX; x <= maxX; x++) {
+    assert.equal(data[(y * info.width + x) * 4 + 3], 255, 'Complete proof target must be opaque');
+  }
   const imagePoint = [(minX + maxX + 1) / 2, (minY + maxY + 1) / 2];
   const matches = regions.filter(region => contains(region.imageRect, imagePoint));
   assert.equal(matches.length, 1, 'Target must have one unambiguous mapping');
@@ -121,12 +121,20 @@ export async function proveWireObservation(body, marker, { sharp, fixture, platf
   const desktopPoint = [desktop.x + (imagePoint[0] - source.x) * desktop.width / source.width, desktop.y + (imagePoint[1] - source.y) * desktop.height / source.height];
   const expected = rectangle(fixture.desktopRect), target = fixture.targetRect;
   assert.ok(Array.isArray(target) && target.length === 4 && target.every(Number.isFinite) && target[2] > 0 && target[3] > 0, 'Independent fixture target required');
+  assert.ok(target[0] >= 0 && target[1] >= 0 && target[0] + target[2] <= expected.width && target[1] + target[3] <= expected.height, 'Independent target must remain inside the fixture');
   const expectedDesktopPoint = [expected.x + target[0] + target[2] / 2, expected.y + target[1] + target[3] / 2];
   assert.ok(desktopPoint.every((value, axis) => Math.abs(value - expectedDesktopPoint[axis]) <= 2), 'Mapped pixels must match independent fixture target');
   const mappedBounds = [desktop.x + (minX - source.x) * desktop.width / source.width, desktop.y + (minY - source.y) * desktop.height / source.height, desktop.x + (maxX + 1 - source.x) * desktop.width / source.width, desktop.y + (maxY + 1 - source.y) * desktop.height / source.height];
   assert.ok(minX >= source.x && minY >= source.y && maxX + 1 <= source.x + source.width && maxY + 1 <= source.y + source.height, 'One mapping must cover the complete target');
   const expectedBounds = [expected.x + target[0], expected.y + target[1], expected.x + target[0] + target[2], expected.y + target[1] + target[3]];
   assert.ok(mappedBounds.every((value, edge) => Math.abs(value - expectedBounds[edge]) <= 2), 'Mapped target extent must match all independent fixture edges');
+  const expectedImageBounds = expectedBounds.map((value, edge) => edge % 2 === 0
+    ? source.x + (value - desktop.x) * source.width / desktop.width
+    : source.y + (value - desktop.y) * source.height / desktop.height);
+  assert.ok(expectedImageBounds[0] >= 0 && expectedImageBounds[1] >= 0 && expectedImageBounds[2] <= info.width && expectedImageBounds[3] <= info.height, 'Declared target must fit the proof raster');
+  for (let y = Math.floor(expectedImageBounds[1]); y < Math.ceil(expectedImageBounds[3]); y++) for (let x = Math.floor(expectedImageBounds[0]); x < Math.ceil(expectedImageBounds[2]); x++) {
+    assert.equal(data[(y * info.width + x) * 4 + 3], 255, 'Declared proof target must be opaque, including its perimeter');
+  }
   assert.ok(contains(expected, desktopPoint), 'Mapped target must remain inside the fixture');
   seenObservationIds.add(observation.observationId);
   return { actualProviderRequest: true, effectVerified: false, observationId: observation.observationId, capturedAtMs: observation.capturedAtMs, toolCallId: expectedCallId, sha256: primary.sha256, byteLength: bytes.length, mimeType, dimensions, imagePoint, desktopPoint, expectedDesktopPoint, targetPixelBounds, mappedBounds, colorTolerance: tolerance, colorManaged: Boolean(metadata.icc), geometryState: 'available', actualScope: observation.actualScope, independentWindowExtentVerified: Boolean(independentWindow), ...independentWindow };
