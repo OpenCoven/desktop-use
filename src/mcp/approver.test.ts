@@ -73,6 +73,12 @@ async function attachProcess(t: any, socket: string) {
   t.after(() => client.close().catch(() => {})); await client.connect(new StdioServerTransport(child.stdout, child.stdin));
   return { child, client, exited, stderr: () => stderr };
 }
+/** The one connector this approver spawned, found by its trusted configuration path. */
+function connectorPid(config: string) {
+  const pids = spawnSync('pgrep', ['-f', config], { encoding: 'utf8' }).stdout.trim().split('\n').filter(Boolean);
+  const found = pids.filter(pid => / --session-suffix /.test(spawnSync('ps', ['-ww', '-o', 'command=', '-p', pid], { encoding: 'utf8' }).stdout));
+  assert.equal(found.length, 1, found.join(',')); return Number(found[0]);
+}
 function runRelay(socket: string) {
   return spawnSync(process.execPath, [connectorEntry, 'attach', '--socket', socket], { input: '', encoding: 'utf8', env, timeout: 10_000 });
 }
@@ -164,8 +170,16 @@ test('stopping the approver cancels pending reviews, ends every relay visibly an
   const relay = await attachProcess(t, f.socket);
   const pending = relay.client.callTool({ name: 'computer_use', arguments: { action: 'file-write', path: 'stopped.txt', content: 'none' } }).catch(error => error);
   await until(() => f.display().includes('Decision [allow/deny/cancel]'), 'review display');
-  // A repeated stop signal during cleanup must not kill the approver before sessions finish cancelling.
-  f.child.kill('SIGTERM'); setTimeout(() => { if (f.child.exitCode === null) f.child.kill('SIGTERM'); }, 20);
+  // A repeated stop signal during cleanup must not kill the approver before sessions finish cancelling. Hold cleanup
+  // open deterministically: a stopped connector cannot act on the approver's SIGTERM until it is continued.
+  const connector = connectorPid(f.config);
+  process.kill(connector, 'SIGSTOP'); t.after(() => { try { process.kill(connector, 'SIGCONT'); } catch {} });
+  f.child.kill('SIGTERM');
+  // Cleanup has begun once the attach socket is gone (server.close() unlinks it), so the repeat cannot coalesce with it.
+  await until(() => lstat(f.socket).then(() => false, () => true), 'cleanup started');
+  f.child.kill('SIGTERM');
+  await until(() => /Still stopping: attached sessions are cancelling \(forced after 5 s\)\./.test(f.display()), 'repeat notice');
+  process.kill(connector, 'SIGCONT');
   assert.equal(await f.exited, 0);
   assert.deepEqual(await relay.exited, { code: 1, signal: null });
   assert.equal(relay.stderr(), ATTACH_MESSAGE);
