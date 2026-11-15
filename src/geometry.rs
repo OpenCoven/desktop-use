@@ -438,7 +438,57 @@ pub fn probe(mode: &str) -> Option<Snapshot> {
         _ => None,
     }
 }
-pub fn attach(receipt: &mut Value, before: Option<Snapshot>, mode: &str, backend: &Value) {
+// Pixel-only v4 output is not independently versioned. Interpret only the
+// release/source actually qualified natively, and bind its sole observation to
+// the sole owned capture and exact window receipt. Unknown shapes stay unknown.
+fn peekaboo_pixel_geometry(
+    backend: &Value,
+    path: &str,
+    mime: &Value,
+    width: u32,
+    height: u32,
+) -> Option<Value> {
+    if backend["helperIdentity"]["version"] != "4.9.8"
+        || backend["helperIdentity"]["sourceCommit"] != "70dbc4183f390a5a72d5dc01d8a77eb672217070"
+    {
+        return None;
+    }
+    let data = &backend["result"]["data"];
+    let files = data["files"].as_array()?;
+    let observations = data["observations"].as_array()?;
+    if files.len() != 1
+        || observations.len() != 1
+        || files[0]["path"] != path
+        || &files[0]["mime_type"] != mime
+    {
+        return None;
+    }
+    let id = files[0]["window_id"].as_u64().filter(|id| *id > 0)?;
+    let observation = &observations[0];
+    let coordinates = &observation["coordinates"];
+    if observation["target"]["resolved_kind"] != "window-id"
+        || observation["target"]["window_id"].as_u64()? != id
+        || backend["result"]["target_receipt"]["window_id"].as_u64()? != id
+        || observation["target"]["bounds"] != coordinates["logical_bounds"]
+        || coordinates["coordinate_space"] != "global_display_points"
+        || coordinates["image_size_pixels"]["width"].as_u64()? != width as u64
+        || coordinates["image_size_pixels"]["height"].as_u64()? != height as u64
+    {
+        return None;
+    }
+    let context = json!({"version":1,"logical_space":"global_display_points","origin":"top_left",
+        "delivered_image_size":[width,height],"logical_bounds":coordinates["logical_bounds"],
+        "output_scale":coordinates["scale_factor"],"window":{"window_id":id}});
+    normalize("peekaboo-coordinate-context", "1", &context, width, height)
+}
+
+pub fn attach(
+    receipt: &mut Value,
+    before: Option<Snapshot>,
+    mode: &str,
+    backend: &Value,
+    capture_path: &str,
+) {
     let width = receipt["primaryImage"]["sourceDimensions"]["width"]
         .as_u64()
         .unwrap() as u32;
@@ -458,6 +508,19 @@ pub fn attach(receipt: &mut Value, before: Option<Snapshot>, mode: &str, backend
             height,
         )
         .map(|g| (g, "provider-receipt", "peekaboo-coordinate-context", "1"))
+        .or_else(|| {
+            peekaboo_pixel_geometry(
+                backend,
+                capture_path,
+                &receipt["primaryImage"]["mimeType"],
+                width,
+                height,
+            )
+            .map(|g| {
+                receipt["provider"]["version"] = json!("4.9.8");
+                (g, "provider-receipt", "peekaboo-pixel-observation", "4.9.8")
+            })
+        })
     } else if let Some(ref b) = before {
         if b.provider != provider
             || b.width != width

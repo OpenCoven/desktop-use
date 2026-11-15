@@ -326,6 +326,35 @@ for (const variant of ["overlap", "unknown-evidence-version", "stale-evidence", 
   assert.equal((result.details.observationUnavailable as any).code, "OBSERVATION_VALIDATION_FAILED");
 });
 
+for (const version of ["4.9.8", "4.9.9"]) test(`pixel-only Peekaboo geometry accepts only the qualified evidence version: ${version}`, async () => {
+  const c = await capture("png", async (_path, receipt) => {
+    receipt.provider = { name: "peekaboo", version };
+    receipt.requestedScope.mode = "window";
+    receipt.geometry = { state: "available", coordinateUnits: "macos-points",
+      regions: [{ imageRect: { x: 0, y: 0, width: 32, height: 24 }, desktopRect: { x: 120, y: 388, width: 32, height: 24 } }],
+      evidence: { kind: "provider-receipt", provider: { name: "peekaboo-pixel-observation", version }, capturedAtMs: receipt.capturedAtMs } };
+  });
+  const result = await c.tool.execute("pixel-only", { action: "screenshot", mode: "window" });
+  assert.equal(result.details.success, true);
+  assert.equal(result.content.some(block => block.type === "image"), version === "4.9.8");
+  if (version === "4.9.8") assert.equal((result.details.observationV1 as any).geometry.regions[0].desktopRect.x, 120);
+  else assert.equal((result.details.observationUnavailable as any).code, "OBSERVATION_VALIDATION_FAILED");
+});
+
+for (const provider of [{ name: "peekaboo", version: "4.9.9" }, { name: "scrot", version: "1.8.1" }]) test(`pixel-only evidence rejects a contradictory capture provider: ${provider.name}@${provider.version}`, async () => {
+  const c = await capture("png", async (_path, receipt) => {
+    receipt.provider = provider;
+    receipt.requestedScope.mode = "window";
+    receipt.geometry = { state: "available", coordinateUnits: "macos-points",
+      regions: [{ imageRect: { x: 0, y: 0, width: 32, height: 24 }, desktopRect: { x: 120, y: 388, width: 32, height: 24 } }],
+      evidence: { kind: "provider-receipt", provider: { name: "peekaboo-pixel-observation", version: "4.9.8" }, capturedAtMs: receipt.capturedAtMs } };
+  });
+  const result = await c.tool.execute("mismatched-provider", { action: "screenshot", mode: "window" });
+  assert.equal(result.details.success, true);
+  assert.equal(result.content.some(block => block.type === "image"), false);
+  assert.equal((result.details.observationUnavailable as any).code, "OBSERVATION_VALIDATION_FAILED");
+});
+
 test("shared producer contracts retain large original extents and negative piecewise geometry", async () => {
   const cases = JSON.parse(await readFile(new URL("../contracts/v1/fixtures/geometry/producers.json", import.meta.url), "utf8"));
   for (const f of cases) {

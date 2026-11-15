@@ -154,9 +154,10 @@ export async function withOwnedObservation(request: ComputerUseParams, _ctx: Com
       // Geometry is preserved only with the producer's evidence; never inferred from pixels.
       if (receipt.geometry.state === "available") {
         const { regions, evidence, coordinateUnits } = receipt.geometry;
-        const known = { "sway": ["1.7", "desktop-logical-pixels", "platform-probe"], "xwininfo-root": ["1.1.5", "desktop-physical-pixels", "platform-probe"], "xwininfo-window": ["1.1.5", "desktop-physical-pixels", "platform-probe"], "peekaboo-coordinate-context": ["1", "macos-points", "provider-receipt"] } as const;
+        const known = { "sway": ["1.7", "desktop-logical-pixels", "platform-probe"], "xwininfo-root": ["1.1.5", "desktop-physical-pixels", "platform-probe"], "xwininfo-window": ["1.1.5", "desktop-physical-pixels", "platform-probe"], "peekaboo-coordinate-context": ["1", "macos-points", "provider-receipt"], "peekaboo-pixel-observation": ["4.9.8", "macos-points", "provider-receipt"] } as const;
         const contract = known[evidence.provider.name as keyof typeof known];
         if (!contract || evidence.provider.version !== contract[0] || coordinateUnits !== contract[1] || evidence.kind !== contract[2] || evidence.capturedAtMs !== receipt.capturedAtMs) invalid();
+        if (evidence.provider.name === "peekaboo-pixel-observation" && (receipt.provider.name !== "peekaboo" || receipt.provider.version !== "4.9.8")) invalid();
         for (const [index, r] of regions.entries()) {
           if (r.imageRect.x < 0 || r.imageRect.y < 0 || r.imageRect.x + r.imageRect.width > source.width || r.imageRect.y + r.imageRect.height > source.height) invalid();
           const d = r.desktopRect;
