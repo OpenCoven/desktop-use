@@ -11,7 +11,7 @@ import { proveProviderImage, providerImageFailureStage, providerImageFailureEvid
 import { readOwnedFixture } from './fixture-observation.mjs';
 import { proveTextEffect } from './effect-proof.mjs';
 import {runProviderCases} from './provider-case.mjs';
-import { providerToolCallId, assertProviderLease, acceptProviderStep, providerGatewayHelperEnvironment } from './run-contract.mjs';
+import { providerToolCallId, assertProviderLease, acceptProviderStep, providerGatewayHelperEnvironment, checkDiagnosticPrivacy } from './run-contract.mjs';
 import { cancellationScope, observeOwnedGateway, stopOwnedGateway } from '../native-openclaw-acceptance/lifecycle.mjs';
 import { verifyHostRuntimeStage, runtimeStageEnvironment } from '../native-openclaw-acceptance/runtime-stage.mjs';
 import { removeOwnedPrivateFiles } from '../native-openclaw-acceptance/private-files.mjs';
@@ -208,13 +208,9 @@ try {
   if (!receipt.gatewayReaped) { receipt.success = false; process.exitCode = 1; }
   if (reservation) await new Promise(resolve => reservation.close(resolve));
   model.closeAllConnections(); await new Promise(resolve => model.close(resolve)); await log?.close();
-  for (const name of ['console.log','gateway.jsonl']) {
-    try {
-      const text = await readFile(join(root, name), 'utf8');
-      assert.doesNotMatch(text, /data:image\/(png|jpeg);base64,|"screenshot_raw"/);
-      assert.ok(!text.includes(plannedText),'Private fixture text must not enter diagnostics');
-    } catch (error) { if (error.code !== 'ENOENT') { receipt.success = false; receipt.diagnosticPrivacyFailure = true; process.exitCode = 1; } }
-  }
+  const privacy=await checkDiagnosticPrivacy(kind=>readFile(join(root,kind==='console'?'console.log':'gateway.jsonl'),'utf8'),plannedText);
+  receipt.diagnosticPrivacyChecks=privacy.checks;
+  if(!privacy.safe) {receipt.success=false;receipt.diagnosticPrivacyFailure=true;process.exitCode=1;}
   // Only the fresh root's known private files are removed; retain metadata receipts.
   if (!await removeOwnedPrivateFiles(root)) { receipt.success = false; receipt.privateCleanupFailed = true; process.exitCode = 1; }
   await save('receipt.json', receipt);

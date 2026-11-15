@@ -51,3 +51,19 @@ export function providerGatewayHelperEnvironment(search) {
   if(typeof search!=='string' || search.length>4096 || /[\x00-\x20\x7f]/.test(search) || !search.split(':').every(part=>part.startsWith('/')&&!part.split('/').includes('..')))throw new Error('WAYLAND_PROVIDER_HELPER_PATH_REJECTED');
   return {PATH:search,OPENCLAW_PATH_BOOTSTRAPPED:'1'};
 }
+
+export function classifyDiagnosticPrivacy(text,privateText) {
+  if(typeof text!=='string'||typeof privateText!=='string'||privateText.length<1||privateText.length>128)return 'invalid-diagnostic-input';
+  if(/data:image\/(png|jpeg);base64,/.test(text))return 'image-data';
+  if(/"screenshot_raw"/.test(text))return 'raw-screenshot-field';
+  if(text.includes(privateText))return 'private-text';
+  return 'safe';
+}
+export async function checkDiagnosticPrivacy(read,privateText) {
+  const checks=[];
+  for(const kind of ['console','gateway']) {
+    try {checks.push({kind,reason:classifyDiagnosticPrivacy(await read(kind),privateText)});}
+    catch(error) {checks.push(error?.code==='ENOENT'?{kind,reason:'absent'}:{kind,reason:'read-failure',readCode:['EACCES','EPERM','EIO','EISDIR','EMFILE'].includes(error?.code)?error.code:'WITHHELD'});}
+  }
+  return {safe:checks.every(row=>row.reason==='safe'||row.reason==='absent'),checks};
+}

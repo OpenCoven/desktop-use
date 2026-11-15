@@ -70,3 +70,26 @@ test('gateway helper environment rejects malformed selections with fixed diagnos
   const api=await import('./run-contract.mjs');assert.equal(typeof api.providerGatewayHelperEnvironment,'function');
   for(const value of ['',':/usr/bin','relative:/usr/bin','/usr/bin:','/usr/bin\nsecret','/usr/../bin'])assert.throws(()=>api.providerGatewayHelperEnvironment(value),/WAYLAND_PROVIDER_HELPER_PATH_REJECTED/);
 });
+
+test('diagnostic privacy classification distinguishes fixed failures without retaining payloads',async()=>{
+  const api=await import('./run-contract.mjs'),privateText='owned-private-fixture';
+  assert.equal(api.classifyDiagnosticPrivacy?.('ordinary bounded status',privateText),'safe');
+  assert.equal(api.classifyDiagnosticPrivacy?.('prefix '+privateText+' suffix',privateText),'private-text');
+  assert.equal(api.classifyDiagnosticPrivacy?.('data:image/jpeg;base64,AAAA',privateText),'image-data');
+  assert.equal(api.classifyDiagnosticPrivacy?.('{"screenshot_raw":"AAAA"}',privateText),'raw-screenshot-field');
+});
+test('diagnostic privacy classification fails visibly on invalid inputs without echoing them',async()=>{
+  const api=await import('./run-contract.mjs');assert.equal(typeof api.classifyDiagnosticPrivacy,'function');
+  for(const values of [[null,'owned-private-fixture'],['ordinary',''],['ordinary',{}]])assert.equal(api.classifyDiagnosticPrivacy(...values),'invalid-diagnostic-input');
+});
+
+test('privacy file checks retain fixed read failures and treat absent files separately',async()=>{
+  const api=await import('./run-contract.mjs');assert.equal(typeof api.checkDiagnosticPrivacy,'function');
+  const result=await api.checkDiagnosticPrivacy(async kind=>{throw Object.assign(Error('private read detail'),{code:kind==='console'?'EACCES':'ENOENT'});},'owned-private-fixture');
+  assert.deepEqual(result,{safe:false,checks:[{kind:'console',reason:'read-failure',readCode:'EACCES'},{kind:'gateway',reason:'absent'}]});assert.ok(!JSON.stringify(result).includes('private read detail'));
+});
+test('privacy file checks preserve the rejection of actual private text and images',async()=>{
+  const api=await import('./run-contract.mjs');assert.equal(typeof api.checkDiagnosticPrivacy,'function');
+  const result=await api.checkDiagnosticPrivacy(async kind=>kind==='console'?'owned-private-fixture':'data:image/png;base64,AAAA','owned-private-fixture');
+  assert.deepEqual(result,{safe:false,checks:[{kind:'console',reason:'private-text'},{kind:'gateway',reason:'image-data'}]});
+});
