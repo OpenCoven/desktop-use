@@ -32,6 +32,8 @@ An allowed action must produce exactly the planned fixture text/hash/key transit
 
 **Dependency:** The PR40 owner explicitly handed six committed foundation files at d6ef3e664d96db4138f93d785fcb2f756723d4b5 for exact read/copy integration. foundation-binding.json pins each source/file hash. The corrected 26-file PR44 helper dependency matches 235bb0696ad4cd32a95fff5c820ff06380ce8f3d exactly. These dependencies are source preparation; their native receipts do not transfer to this new provider runner.
 
+- [x] Implement identity-bracketed fixture control projection, strict provider call/lease/consume-once sequencing, actual HTTP/approval/effect runner and derived operator with source-bound staging and expanded cleanup reserve. Unit/metadata-only preflight results remain distinct from actual native/provider execution.
+
 - [ ] Bind native/package/helper/compositor/fixture identities, outputs and scale; use actual received image bytes and independent compositor mapping to prove the controlled screen and text-entry target. A keyboard effect does not qualify unavailable pointer input.
 - [ ] Use a separately staged official OpenClaw host and actual approval RPC for one planned text effect, then a separately bound forged-confirmation case with actual denial; proveNoEffect must preserve the complete known nonempty post-allow summary, with no repeat of the failed Stop/UI experiment.
 - [ ] Inspect before/after fixture summaries and controlled images, enforce helper/process cleanup and audit payload absence, and retain a sanitized source-bound receipt. Run required repository/packed checks and exact-head hosted checks before any source delivery. Keep all omissions and wider acceptance gates explicit.
