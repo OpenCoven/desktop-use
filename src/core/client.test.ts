@@ -24,6 +24,15 @@ test('SDK rejects authority fields and aliases before approval or audit', async 
   assert.equal(audits.length, 0);
 });
 
+test('SDK rejects legacy clipboard text with the canonical-parameters error before approval or audit', async t => {
+  let approvals = 0;
+  const { client, audits } = await fixture(t, { approvalProvider: () => { approvals++; return 'allowed'; } });
+  for (const request of [{ action: 'clipboard-write', text: 'legacy' }, { action: 'clipboard-write', text: 'legacy', clipboardText: 'canonical' }]) {
+    await assert.rejects(() => client.execute(request as any, { callId: 'legacy-clipboard' }), /^Error: Canonical request parameters are required\.$/);
+  }
+  assert.equal(approvals, 0); assert.equal(audits.length, 0);
+});
+
 test('SDK requires trusted workspace, scope and audit construction; defaults to observation eligibility', async t => {
   const { create, options } = await fixture(t);
   for (const changed of [{ auditSink: undefined }, { workspaceDir: 'relative' }, { scope: {} }]) assert.throws(() => create({ ...options, ...changed }));

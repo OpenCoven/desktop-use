@@ -40,9 +40,15 @@ test('supported public execution v1 schemas describe canonical requests and full
   assert.equal(result({ content: [{ type: 'text', text: '{}' }], details: { status: 'success', capabilitiesV1: { schemaVersion: 999 } } }), false);
 });
 
-test('MCP uses the same public v1 request and structured-result schemas', () => {
+test('MCP advertises the public v1 request schema without top-level combinators and the same structured-result schema', () => {
   const api = contracts as unknown as Record<string, any>;
-  assert.equal(inputSchema, api.desktopRequestSchemaV1);
+  // Claude Code drops a tool whose input schema has a top-level allOf, anyOf or oneOf (#41).
+  for (const keyword of ['allOf', 'anyOf', 'oneOf']) assert.equal(Object.hasOwn(inputSchema, keyword), false, `advertised MCP input schema has a top-level ${keyword}`);
+  // Everything else is the published contract unchanged: action enum, property types, descriptions, required and additionalProperties.
+  const { allOf: clipboardGuard, ...advertised } = api.desktopRequestSchemaV1;
+  assert.deepEqual(inputSchema, advertised);
+  // The published v1 request schema keeps its meaning; MCP enforces the dropped guard at its boundary instead.
+  assert.ok(Array.isArray(clipboardGuard) && clipboardGuard.length === 1);
   assert.equal(outputSchema, api.desktopResultDetailsSchemaV1);
 });
 
