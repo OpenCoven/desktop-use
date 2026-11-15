@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""Prepare an isolated installed consumer and fixture; never launch or grant permissions."""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path, PurePosixPath
+import plistlib
+import shutil
+import subprocess
+import sys
+import tarfile
+import uuid
+import PIL
+from PIL import Image, ImageCms  # Verify both decoder and ICC support before preparing a run.
+
+
+def sha(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--root', type=Path, required=True)
+    p.add_argument('--package', type=Path, required=True)
+    p.add_argument('--adapter', type=Path, required=True)
+    p.add_argument('--peekaboo-directory', type=Path, required=True)
+    p.add_argument('--observe-controls', action='store_true')
+    p.add_argument('--isolated-fixture', action='store_true', help='Use a fresh bundle identity for the positive/security collectors; preserve existing fixtures.')
+    args = p.parse_args()
+    assert os.uname().sysname == 'Darwin'
+    source = Path(__file__).resolve().parents[2]
+    git = lambda *parts: subprocess.check_output(['git','-c','core.fsmonitor=false','-C',str(source),*parts],text=True).strip()
+    if git('status','--porcelain=v1','--','scripts/native-client-acceptance','src/mcp/fixtures/pty-host.py'):
+        raise RuntimeError('Commit and verify the acceptance harness before preparing a runtime.')
+    package, adapter, helper = args.package.resolve(), args.adapter.resolve(), args.peekaboo_directory.resolve()
+    with tarfile.open(package) as archive:
+        members = archive.getmembers()
+        assert all(not PurePosixPath(m.name).is_absolute() and '..' not in PurePosixPath(m.name).parts and (m.isfile() or m.isdir()) for m in members)
+        assert sum(m.size for m in members) < 64*1024*1024
+        names = {m.name for m in members if m.isfile()}
+        manifest = json.load(archive.extractfile('package/package.json'))
+        assert manifest['name'] == '@opencoven/openclaw-desktop-use'
+        required = [manifest['main'], manifest['types'], manifest['exports']['./sdk']['import'], manifest['exports']['./sdk']['types'], manifest['exports']['./contracts']['import'], manifest['bin']['coven-desktop-use-mcp']]
+        for name in required:
+            assert 'package/'+name.removeprefix('./') in names, f'missing compiled public entry: {name}'
+        assert 'package/dist/examples/approval-host/main.js' in names
+    root = args.root.resolve()
+    root.mkdir(mode=0o700)  # Refuse to reuse another run's files.
+    helper_home = root/'home'; helper_home.mkdir(mode=0o700)
+    (root/'bin').mkdir(mode=0o700)
+    shutil.copy2(adapter, root/'bin/coven-desktop-use')
+    shutil.copytree(helper, root/'peekaboo')
+    (root/'bin/peekaboo').symlink_to('../peekaboo/peekaboo')
+    shutil.copy2(package, root/'candidate.tgz')
+    consumer = root/'consumer'; consumer.mkdir(mode=0o700)
+    (consumer/'package.json').write_text(json.dumps({'private': True, 'type': 'module'}))
+    install = subprocess.run(['npm','install','--ignore-scripts','--no-audit','--no-fund',str(root/'candidate.tgz'),'@modelcontextprotocol/client@2.4.0'], cwd=consumer, capture_output=True, text=True, timeout=180)
+    if install.returncode:
+        (root/'install-private.log').write_text(install.stdout+install.stderr)
+        raise RuntimeError('Consumer installation failed; inspect the task-private log.')
+    consumer_scripts = ['native-client.mjs','sdk-security.mjs','mcp-security.mjs','image-proof.py','identity-preflight.mjs','mac-control-proof.mjs',
+                        'mac-active-client.mjs','mac-active-cleanup.mjs','mac-active-coordinator.py','mac_owned_processes.py','mac-fixture-target.mjs','bind-mac-fixture.py']
+    for name in consumer_scripts:
+        shutil.copy2(Path(__file__).with_name(name), consumer/name)
+    shutil.copy2(source/'src/mcp/fixtures/pty-host.py', consumer/'pty-host.py')
+    bundle = root/'DesktopUseAcceptance.app'/'Contents'
+    (bundle/'MacOS').mkdir(parents=True)
+    (bundle/'Resources').mkdir()
+    bundle_id='org.opencoven.desktopuse.acceptance'+('.run-'+uuid.uuid4().hex if args.isolated_fixture else '')
+    (bundle/'Info.plist').write_bytes(plistlib.dumps({'CFBundleExecutable':'DesktopUseAcceptance','CFBundleIdentifier':bundle_id,'CFBundleName':'Desktop Use Acceptance','CFBundleVersion':'1','CFBundlePackageType':'APPL','NSHighResolutionCapable':True}))
+    (bundle/'Resources/runtime.json').write_text(json.dumps({'statePath':str(root/'fixture-state.json'),'observeControls':'true' if args.observe_controls else 'false'}))
+    observation_source = Path(__file__).with_name('ControlObservation.swift')
+    if args.observe_controls:
+        subprocess.run(['clang','-fsyntax-only',str(Path(__file__).with_name('mac-process-abi-check.c'))],check=True,timeout=30,capture_output=True)
+    subprocess.run(['swiftc','-parse-as-library',str(observation_source),str(Path(__file__).with_name('Fixture.swift')),'-o',str(bundle/'MacOS/DesktopUseAcceptance')], check=True, timeout=120, capture_output=True)
+    subprocess.run(['swiftc','-parse-as-library',str(observation_source),str(Path(__file__).with_name('control-clock-probe.swift')),'-o',str(root/'bin/control-clock-probe')], check=True, timeout=120, capture_output=True)
+    installed = consumer/'node_modules/@opencoven/openclaw-desktop-use'
+    with tarfile.open(package) as archive:
+        for member in archive.getmembers():
+            if member.isfile():
+                assert (installed/member.name.removeprefix('package/')).read_bytes() == archive.extractfile(member).read()
+    version = subprocess.run([str(root/'bin/peekaboo'),'--version','--json','--no-remote'],check=True,capture_output=True,text=True,timeout=10,env={**os.environ,'HOME':str(helper_home),'CFFIXED_USER_HOME':str(helper_home)})
+    identity = json.loads(version.stdout)['data']
+    receipt = {'sourceCommit':git('rev-parse','HEAD'),'sourceTree':git('rev-parse','HEAD^{tree}'),'sourceDiffSha256':hashlib.sha256(git('diff','HEAD','--','src').encode()).hexdigest(),
+               'sourceCommitKind':'acceptance-harness','harnessSourceCommit':git('rev-parse','HEAD'),'harnessSourceTree':git('rev-parse','HEAD^{tree}'),
+               'packageSha256':sha(package),'packageVersion':manifest['version'],'packageFiles':len(names),'allInstalledPackageFilesExact':True,'nativeSha256':sha(adapter),
+               'helperSha256':sha(helper/'peekaboo'),'helperVersion':identity.get('current'),'helperSourceCommit':identity.get('sourceCommit'),
+               'consumerScriptsSha256':{name:sha(consumer/name) for name in consumer_scripts+['pty-host.py']},'processAbiChecked':args.observe_controls,
+               'fixtureSourceSha256':sha(Path(__file__).with_name('Fixture.swift')),'controlObserverSourceSha256':sha(observation_source),'fixtureBinarySha256':sha(bundle/'MacOS/DesktopUseAcceptance'),'clockProbeSha256':sha(root/'bin/control-clock-probe'),'controlObservationEnabled':args.observe_controls,'pythonExecutable':sys.executable,'pythonVersion':sys.version.split()[0],'pillowVersion':PIL.__version__,'publication':False,'fixtureLaunched':False,'privacyChanges':False}
+    receipt['helperHome']=str(helper_home)
+    if args.isolated_fixture:
+        receipt.update(fixtureBundleIdentifier=bundle_id,fixtureInfoPlistSha256=sha(bundle/'Info.plist'))
+    (root/'baseline.json').write_text(json.dumps(receipt,indent=2)+'\n')
+    (root/'run-env.json').write_text(json.dumps({'PATH':str(root/'bin')+os.pathsep+os.environ.get('PATH',''),'HOME':str(helper_home),'CFFIXED_USER_HOME':str(helper_home),'NATIVE_ACCEPTANCE_PYTHON':sys.executable,'NATIVE_ACCEPTANCE_ROOT':str(root),'NATIVE_ACCEPTANCE_ADAPTER':str(root/'bin/coven-desktop-use'),'NATIVE_ACCEPTANCE_FIXTURE_STATE':str(root/'fixture-state.json'),'NATIVE_ACCEPTANCE_IMAGE_PROOF':str(consumer/'image-proof.py'),'NATIVE_ACCEPTANCE_PTY':str(consumer/'pty-host.py')},indent=2)+'\n')
+    print(json.dumps({'root':str(root),'fixtureApp':str(bundle.parent),'baseline':receipt}))
+
+
+if __name__ == '__main__': main()
