@@ -7,11 +7,11 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { preflight, readJson } from '../native-openclaw-acceptance/preflight.mjs';
-import { proveProviderImage, providerImageFailureStage } from './provider-image.mjs';
+import { proveProviderImage, providerImageFailureStage, providerImageFailureEvidence } from './provider-image.mjs';
 import { readOwnedFixture } from './fixture-observation.mjs';
 import { proveTextEffect } from './effect-proof.mjs';
-import {runProviderCase} from './provider-case.mjs';
-import { providerToolCallId, assertProviderLease, acceptProviderStep } from './run-contract.mjs';
+import {runProviderCases} from './provider-case.mjs';
+import { providerToolCallId, assertProviderLease, acceptProviderStep, providerGatewayHelperEnvironment } from './run-contract.mjs';
 import { cancellationScope, observeOwnedGateway, stopOwnedGateway } from '../native-openclaw-acceptance/lifecycle.mjs';
 import { verifyHostRuntimeStage, runtimeStageEnvironment } from '../native-openclaw-acceptance/runtime-stage.mjs';
 import { removeOwnedPrivateFiles } from '../native-openclaw-acceptance/private-files.mjs';
@@ -107,7 +107,7 @@ const model = createServer(async (req, res) => {
     chunk(complete ? { content: 'Native fixture case complete.' } : { tool_calls: [{ index: 0, id, type: 'function', function: { name: 'computer_use', arguments: JSON.stringify(args) } }] });
     chunk({}, complete ? 'stop' : 'tool_calls'); res.end('data: [DONE]\n\n');
   } catch (error) {
-    providerFailure ??= { ...safeFailure(error, providerPhase), ...(providerPhase==='wire-image-proof'?{imageProofStage:providerImageFailureStage(error)}:{}) };
+    providerFailure ??= { ...safeFailure(error, providerPhase), ...(providerPhase==='wire-image-proof'?{imageProofStage:providerImageFailureStage(error),imageProofEvidence:providerImageFailureEvidence(error)}:{}) };
     modelFailure = true;
     if (res.destroyed || res.writableEnded) return;
     if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -142,7 +142,7 @@ try {
   const stage = await control.setup(() => verifyHostRuntimeStage(descriptor.hostRuntimeStage, { host: identity.selected.host, hostVersion: descriptor.hostVersion, officialHostVerified: Boolean(identity.hostInventory) }));
   assert.deepEqual(stage, identity.hostRuntimeStage, 'Selected stage must remain unchanged before gateway spawn');
   Object.assign(env, runtimeStageEnvironment(stage));
-  env.PATH = descriptor.wayland.helperSearchPath;
+  Object.assign(env,providerGatewayHelperEnvironment(descriptor.wayland.helperSearchPath));
   control.check();
   phase = 'gateway-spawn';
   gateway = spawn(process.execPath, [join(identity.selected.host, 'openclaw.mjs'), 'gateway', 'run'], { cwd: workspace, env, detached: true, stdio: ['ignore', log.fd, log.fd] });
@@ -177,9 +177,7 @@ try {
   const inventory = await rpc('tools.effective', { sessionKey: session });
   assert.deepEqual(inventory.groups.flatMap(group => group.tools.map(tool => tool.id)), ['computer_use']);
   const caseContext={control,fixture,plans,events,rpc,activeRuns,descriptor,plannedText,until,delay,session,approvals,expectedObservation,setPhase(value){phase=value;},assertHealthy(){assert.equal(modelFailure,false,'Provider proof failed before input');}};
-  const runCase=async(marker,options)=>receipt.cases.push(await runProviderCase(marker,options,caseContext));
-  await runCase('allowed'); await runCase('allowed-after',{captureOnly:true});
-  await runCase('forged-confirm-denied',{denied:true,format:'jpg'}); await runCase('denied-after',{captureOnly:true,format:'jpg'});
+  await runProviderCases(caseContext,row=>receipt.cases.push(row));
   phase = 'audit-proof';
   const audits = await readFile(join(root, 'state/agents/computer-use/audit/computer-use.jsonl'), 'utf8');
   assert.doesNotMatch(audits, /data:image|base64|"(?:nonce|mac|approvalId|screenshot_raw)"/);

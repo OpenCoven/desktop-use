@@ -44,3 +44,10 @@ export function acceptProviderStep(plan, resultCount) {
     const error = new Error('WAYLAND_PROVIDER_SEQUENCE_REJECTED'); error.code = 'WAYLAND_PROVIDER_SEQUENCE_REJECTED'; throw error;
   }
 }
+
+// The exact helper search path was already selected and hash-bound by the operator.
+// Tell the unchanged official host not to prepend system tools over that selection.
+export function providerGatewayHelperEnvironment(search) {
+  if(typeof search!=='string' || search.length>4096 || /[\x00-\x20\x7f]/.test(search) || !search.split(':').every(part=>part.startsWith('/')&&!part.split('/').includes('..')))throw new Error('WAYLAND_PROVIDER_HELPER_PATH_REJECTED');
+  return {PATH:search,OPENCLAW_PATH_BOOTSTRAPPED:'1'};
+}

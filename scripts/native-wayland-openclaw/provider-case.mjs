@@ -47,3 +47,8 @@ export async function runProviderCase(marker, { denied = false, captureOnly = fa
     context.expectedObservation=after;
     return ({marker,denied,captureOnly,format,effect,actualProviderResponses:plans.get(marker).responses,noEffectObservationMs:captureOnly||denied?250:undefined});
   }
+
+// Exercise JPEG before any input while preserving all four original qualification cases.
+export async function runProviderCases(context,record) {
+  for(const [marker,options] of [['jpeg-before-input',{captureOnly:true,format:'jpg'}],['allowed',{}],['allowed-after',{captureOnly:true}],['forged-confirm-denied',{denied:true,format:'jpg'}],['denied-after',{captureOnly:true,format:'jpg'}]])record(await runProviderCase(marker,options,context));
+}

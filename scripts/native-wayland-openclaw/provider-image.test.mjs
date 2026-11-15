@@ -129,3 +129,14 @@ test('provider image failure stage rejects arbitrary fields and throwing getters
   const api=await import('./provider-image.mjs');
   for(const value of [{code:'WAYLAND_PROVIDER_IMAGE_REJECTED',stage:'private-stage'},{code:'private-error',stage:'pixels'},null,new Proxy({},{get(){throw Error('private getter');}})])assert.equal(api.providerImageFailureStage?.(value),'unknown');
 });
+
+test('failure evidence reports only bounded current-turn counts and fixed tool outcomes',async()=>{
+  const api=await import('./provider-image.mjs'),s=await sample();s.body.messages.pop();s.body.messages[1].content=JSON.stringify({status:'error',success:false,privateValue:'secret-fixture',observationUnavailable:{code:'OBSERVATION_VALIDATION_FAILED'}});
+  let failure;try{await proveProviderImage(s.body,'allowed',s.options);}catch(error){failure=error;}
+  assert.deepEqual(api.providerImageFailureEvidence?.(failure),{currentImages:0,currentToolResults:1,currentObservations:0,captureOutcome:'error',observationUnavailable:true});
+  assert.ok(!JSON.stringify(failure).includes('secret-fixture'));
+});
+test('failure evidence cannot echo arbitrary objects or out-of-range values',async()=>{
+  const api=await import('./provider-image.mjs');
+  for(const value of [null,{evidence:{currentImages:Infinity,privateValue:'secret-fixture'}},new Proxy({},{get(){throw Error('secret-fixture');}})])assert.deepEqual(api.providerImageFailureEvidence?.(value),{});
+});

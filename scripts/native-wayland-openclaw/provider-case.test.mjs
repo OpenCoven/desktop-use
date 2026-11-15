@@ -42,3 +42,18 @@ for(const variant of ['text','key','scroll','identity'])test(`rejects ${variant}
   await assert.rejects(runProviderCase('allowed-after',{captureOnly:true},c),/WAYLAND_PROVIDER_LEASE_REJECTED/);
   assert.equal(c.expectedObservation.control.textSha256,sha('owned-test'));assert.equal(c.expectedObservation.control.keyCount,10);assert.equal(c.expectedObservation.control.scrollOffset,0);
 });
+
+test('JPEG capture is proved before any input and all existing qualification cases remain',async()=>{
+  const api=await import('./provider-case.mjs'),h=harness(),rows=[];
+  assert.equal(typeof api.runProviderCases,'function');
+  await api.runProviderCases(h.context,row=>rows.push(row));
+  assert.deepEqual(rows.map(row=>row.marker),['jpeg-before-input','allowed','allowed-after','forged-confirm-denied','denied-after']);
+  assert.equal(rows[0].captureOnly,true);assert.equal(rows[0].format,'jpg');assert.equal(rows[0].effect.charactersAdded,0);
+  assert.equal(h.context.approvals.filter(row=>row.decision==='allow-once').length,1);assert.equal(h.context.approvals.filter(row=>row.decision==='deny').length,1);
+});
+test('a failed initial JPEG proof cannot reach input or approval',async()=>{
+  const api=await import('./provider-case.mjs'),h=harness(),rows=[];
+  assert.equal(typeof api.runProviderCases,'function');h.context.assertHealthy=()=>{throw Error('CONTROLLED_IMAGE_PROOF_FAILED');};
+  await assert.rejects(api.runProviderCases(h.context,row=>rows.push(row)),/CONTROLLED_IMAGE_PROOF_FAILED/);
+  assert.deepEqual([...h.context.plans.keys()],['jpeg-before-input']);assert.equal(h.context.approvals.length,0);assert.equal(rows.length,0);assert.equal(h.context.expectedObservation.control.textLength,0);
+});

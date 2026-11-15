@@ -327,7 +327,7 @@ def execute(prepared, bindings, search, output, scale, expires):
         code = client.wait(timeout=min(360, lease.remaining()))
         require(code == 0, 'OWNED_PROVIDER_WORKFLOW_FAILED')
         receipt = json.loads((output / 'provider/receipt.json').read_text())
-        require(receipt['success'] and receipt['actualProviderRequest'] and receipt['effectVerified'] and receipt['auditPayloadsAbsent'] and receipt['gatewayReaped'] and len(receipt['cases']) == 4 and len(receipt['images']) == 4, 'COMPLETE_PROVIDER_RECEIPT_REQUIRED')
+        require(receipt['success'] and receipt['actualProviderRequest'] and receipt['effectVerified'] and receipt['auditPayloadsAbsent'] and receipt['gatewayReaped'] and len(receipt['cases']) == 5 and len(receipt['images']) == 5, 'COMPLETE_PROVIDER_RECEIPT_REQUIRED')
         independent = subprocess.run([prepared['tools']['grim']['path'], '-t', 'png', '-s', str(scale), '--', str(output / 'independent-after.png')], env=env, capture_output=True, timeout=min(5, lease.remaining()))
         require(independent.returncode == 0, 'INDEPENDENT_FIXTURE_CAPTURE_FAILED')
         status.update(success=True, sourceCommit=prepared['sourceCommit'], sourceTree=prepared['sourceTree'], harnessCommit=prepared['harnessCommit'], harnessTree=prepared['harnessTree'], harnessSources=prepared['harnessSources'], keyboardSetupNoInputRequested=True, softwareRendering=True, noInputDevicesPresent=True, independentAfterSha256=digest(output / 'independent-after.png'))

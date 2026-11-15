@@ -56,3 +56,17 @@ test('provider sequence rejects repeated, skipped or reversed steps before anoth
     assert.throws(()=>{for(const count of counts)acceptProviderStep(plan,count);},/WAYLAND_PROVIDER_SEQUENCE_REJECTED/);
   }
 });
+
+test('pinned helper PATH survives the actual official gateway bootstrap',async()=>{
+  const api=await import('./run-contract.mjs'),{spawnSync}=await import('node:child_process');
+  const selected='/opt/desktopuse-helpers/grim-1.4.0-jpeg/bin',search=selected+':/usr/bin:/usr/local/bin';
+  const environment=api.providerGatewayHelperEnvironment?.(search)??{PATH:search};
+  const module=pathToFileURL(join(host,'dist/path-env-BMBxRDDc.js')).href;
+  const code=`import {t as ensure} from ${JSON.stringify(module)};ensure();console.log(JSON.stringify({selectedFirst:process.env.PATH.split(':')[0]===${JSON.stringify(selected)},bootstrapped:process.env.OPENCLAW_PATH_BOOTSTRAPPED==='1'}));`;
+  const result=spawnSync(process.execPath,['--input-type=module','-e',code],{env:{...environment,HOME:'/nonexistent-owned-qualification-home',LANG:'C.UTF-8'},encoding:'utf8'});
+  assert.equal(result.status,0,'Official bootstrap must complete');assert.deepEqual(JSON.parse(result.stdout),{selectedFirst:true,bootstrapped:true});
+});
+test('gateway helper environment rejects malformed selections with fixed diagnostics',async()=>{
+  const api=await import('./run-contract.mjs');assert.equal(typeof api.providerGatewayHelperEnvironment,'function');
+  for(const value of ['',':/usr/bin','relative:/usr/bin','/usr/bin:','/usr/bin\nsecret','/usr/../bin'])assert.throws(()=>api.providerGatewayHelperEnvironment(value),/WAYLAND_PROVIDER_HELPER_PATH_REJECTED/);
+});

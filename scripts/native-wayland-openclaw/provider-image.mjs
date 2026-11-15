@@ -6,6 +6,15 @@ export function providerImageFailureStage(error) {
   try { return error?.code==='WAYLAND_PROVIDER_IMAGE_REJECTED' && typeof error.stage==='string' && failureStages.has(error.stage) ? error.stage : 'unknown'; }
   catch { return 'unknown'; }
 }
+const outcomes=new Set(['success','error','unsupported','blocked','needsApproval','cancelled','timeout','unknown']);
+export function providerImageFailureEvidence(error) {
+  try {
+    if(error?.code!=='WAYLAND_PROVIDER_IMAGE_REJECTED')return {};
+    const e=error.evidence;
+    if(!e || !['currentImages','currentToolResults','currentObservations'].every(k=>Number.isSafeInteger(e[k])&&e[k]>=0&&e[k]<=300) || !outcomes.has(e.captureOutcome) || typeof e.observationUnavailable!=='boolean')return {};
+    return {currentImages:e.currentImages,currentToolResults:e.currentToolResults,currentObservations:e.currentObservations,captureOutcome:e.captureOutcome,observationUnavailable:e.observationUnavailable};
+  }catch{return {};}
+}
 const hash=b=>createHash('sha256').update(b).digest('hex');
 const text=value=>typeof value==='string'?value:(value??[]).filter(b=>b.type==='text').map(b=>b.text).join('\n');
 const rectangle=([x,y,width,height])=>({x,y,width,height});
@@ -15,7 +24,7 @@ const colors=new Map([['NW',[40,210,220]],['NE',[200,60,210]],['SW',[250,145,30]
 // Verifies the supplied provider-image content and independent snapshot relation.
 // Live HTTP, fixture provenance and actual approval are separate runner evidence.
 export async function proveProviderImage(body,marker,options={}) {
-  let stage='turn';
+  let stage='turn',evidence={};
   try {
     const {sharp,fixture,before,after,format,expectedCallId,captureStartedAtMs,seenObservationIds}=options;
     assert.ok(Array.isArray(body.messages)&&body.messages.length<=300);
@@ -28,8 +37,12 @@ export async function proveProviderImage(body,marker,options={}) {
     for(const message of current) if(message.role==='user'&&Array.isArray(message.content)) for(const block of message.content) if(block?.type==='image_url') {
       assert.ok(typeof block.image_url?.url==='string');images.push(block.image_url.url);
     }
+    const toolResults=current.filter(m=>m.role==='tool');
+    const parsed=toolResults.flatMap(message=>{try{return [{message,details:JSON.parse(text(message.content))}];}catch{return [];}});
+    const observations=parsed.filter(value=>value.details?.observationV1);
+    const captures=parsed.filter(value=>value.message.tool_call_id===expectedCallId),capture=captures.length===1?captures[0].details:undefined;
+    evidence={currentImages:images.length,currentToolResults:toolResults.length,currentObservations:observations.length,captureOutcome:outcomes.has(capture?.status)?capture.status:'unknown',observationUnavailable:Boolean(capture?.observationUnavailable)};
     assert.equal(images.length,1);assert.ok(images[0].length<=24*1024*1024);
-    const observations=current.filter(m=>m.role==='tool').flatMap(message=>{try{const details=JSON.parse(text(message.content));return details?.observationV1?[{message,details}]:[];}catch{return[];}});
     assert.equal(observations.length,1);const {message,details}=observations[0];
     stage='capture-binding';
     assert.equal(message.tool_call_id,expectedCallId);assert.equal(details.status,'success');assert.equal(details.success,true);
@@ -85,6 +98,6 @@ export async function proveProviderImage(body,marker,options={}) {
     seenObservationIds.add(receipt.observationId);
     return {providerImageVerified:true,observationIdSha256:hash(receipt.observationId),capturedAtMs:receipt.capturedAtMs,toolCallId:expectedCallId,sha256:hash(bytes),byteLength:bytes.length,mimeType,dimensions,scale:scope.scale,imagePoint:observedImagePoint,desktopPoint:observedDesktopPoint,targetPixelBounds:[minX,minY,maxX+1,maxY+1],landmarks,colorTolerance:tolerance,independentExtent:{desktopRect:cleanRect(scope.desktopRect),physicalDimensions:{...dimensions},windowRect:cleanRect(scope.windowRect),bracketDurationMs:scope.bracketDurationMs}};
   } catch {
-    const error=new Error('WAYLAND_PROVIDER_IMAGE_REJECTED');error.code='WAYLAND_PROVIDER_IMAGE_REJECTED';error.stage=stage;throw error;
+    const error=new Error('WAYLAND_PROVIDER_IMAGE_REJECTED');error.code='WAYLAND_PROVIDER_IMAGE_REJECTED';error.stage=stage;error.evidence=evidence;throw error;
   }
 }
