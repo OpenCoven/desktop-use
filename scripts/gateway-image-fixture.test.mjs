@@ -90,6 +90,42 @@ async function largeSource() {
   ] };
 }
 
+// Each variant retains valid bytes and observation metadata; only the provider
+// block shape changes. A recursive search for data URIs falsely accepts them.
+async function typedImageSource(stage) {
+  const source = await largeSource();
+  if (stage === "initial-delivery") return { ...source, options: { currentCase: "large" } };
+  const { default: jpeg } = await import("jpeg-js");
+  const raw = Buffer.alloc(1200 * 675 * 4);
+  for (let y = 0; y < 675; y++) for (let x = 0; x < 1200; x++) {
+    raw.set([Math.round(16 + 224 * (x + .5) / 1200), Math.round(16 + 224 * (y + .5) / 675), 32 + 64 * (x >= 600) + 128 * (y >= 337.5), 255], (y * 1200 + x) * 4);
+  }
+  source.messages[2].content[0].image_url.url = `data:image/jpeg;base64,${jpeg.encode({ width: 1200, height: 675, data: raw }, 85).data.toString("base64")}`;
+  source.messages.push({ role: "user", content: "QUALIFICATION_CASE:replay" });
+  return { ...source, options: { stage, sourceCase: "large", currentCase: "replay" } };
+}
+
+for (const stage of ["initial-delivery", "history-replay"]) {
+  const source = typedImageSource(stage);
+  test(`${stage} proves a supported user image_url block`, async () => {
+    const { messages, expected, options } = await source;
+    assert.equal((await inspectProviderImage({ messages }, expected, options)).stage, stage);
+  });
+  for (const variant of ["plain-text", "text-block", "metadata", "missing-block-type", "assistant-role", "tool-role"]) {
+    test(`${stage} rejects image bytes carried only as ${variant}`, async () => {
+      const { messages, expected, options } = structuredClone(await source);
+      const image = messages[2], url = image.content[0].image_url.url;
+      if (variant === "plain-text") image.content = url;
+      if (variant === "text-block") image.content = [{ type: "text", text: url }];
+      if (variant === "metadata") image.content = [{ type: "text", text: "No image block", metadata: { url } }];
+      if (variant === "missing-block-type") delete image.content[0].type;
+      if (variant === "assistant-role") image.role = "assistant";
+      if (variant === "tool-role") image.role = "tool";
+      await assert.rejects(inspectProviderImage({ messages }, expected, options), /one image/);
+    });
+  }
+}
+
 test("fresh large provider image requires exact original PNG and reports no decoded samples", async () => {
   const { expected, messages } = await largeSource();
   const proof = await inspectProviderImage({ messages }, expected, { currentCase: "large" });
