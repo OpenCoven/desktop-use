@@ -4,6 +4,57 @@ import { mkdtemp, writeFile, mkdir, symlink, readFile, rm } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createComputerUseTool } from "./plugin-tool.js";
+import { ProcessFailure } from "./process-runner.js";
+
+for (const [backend, tool, hint] of [
+  ["x11-click", "xdotool", "Install with: sudo apt install xdotool"],
+  ["wayland-click", "ydotool", "Install with: sudo apt install ydotool, then enable ydotoold (see setup guide)."],
+] as const) test(`click retains safe recovery guidance for missing ${tool}`, async () => {
+  const runAdapter = async () => ({ ok: false, supported: true, platform: "linux", backend,
+    error: `Missing required tool: ${tool}.`, hint: "private-helper-diagnostic", verificationCommand: "private-helper-diagnostic" });
+  const action = createComputerUseTool({ approvalProvider: async () => "allowed" as const, runAdapter, appendAuditEvent: async () => {} });
+  const result = await action.execute("missing-click-helper", { action: "click", coords: "20,30", confirm: true });
+  assert.equal(result.details.success, false);
+  assert.deepEqual(result.details.result, { ok: false, supported: true, platform: "linux", backend, code: "ENOENT",
+    missingTool: tool, error: `Missing required tool: ${tool}.`, hint, verificationCommand: "coven-desktop-use doctor" });
+  assert.ok(!JSON.stringify(result).includes("private-helper-diagnostic"));
+});
+
+for (const payload of [
+  { backend: "x11-click", error: "Missing required tool: private-helper-diagnostic." },
+  { backend: "private-helper-diagnostic", error: "Missing required tool: xdotool." },
+  { backend: "x11-click", error: "Missing required tool: xdotool. private-helper-diagnostic" },
+]) test(`click withholds unrecognized dependency diagnostics: ${payload.backend}`, async () => {
+  const action = createComputerUseTool({ approvalProvider: async () => "allowed" as const,
+    runAdapter: async () => ({ ok: false, supported: true, platform: "linux", ...payload, hint: "private-helper-diagnostic", verificationCommand: "private-helper-diagnostic" }), appendAuditEvent: async () => {} });
+  const result = await action.execute("unknown-click-helper", { action: "click", coords: "20,30", confirm: true });
+  assert.ok(!JSON.stringify(result).includes("private-helper-diagnostic"));
+  assert.equal((result.details.result as any).missingTool, undefined);
+  assert.equal((result.details.result as any).hint, undefined);
+});
+
+for (const code of ["CANCELLED", "ETIMEDOUT"]) for (const double of [false, true]) test(`interrupted ${double ? "double" : "single"} click reports missing cleanup proof for ${code}`, async () => {
+  const tool = createComputerUseTool({ approvalProvider: async () => "allowed" as const, runAdapter: async () => { throw new ProcessFailure(code, null, undefined, "started"); }, appendAuditEvent: async () => {} });
+  const result = await tool.execute("pointer-interruption", { action: "click", coords: "20,30", double, confirm: true });
+  assert.equal(result.details.status, code === "CANCELLED" ? "cancelled" : "timeout");
+  assert.deepEqual((result.details.result as any)?.inputCleanup, { schemaVersion: 1, state: "unverified", reasonCode: "ADAPTER_RESULT_UNAVAILABLE" });
+});
+
+test("cancelled click projects pointer cleanup and rejects malformed nested counts", async () => {
+  const tool = createComputerUseTool({ approvalProvider: async () => "allowed" as const, runAdapter: async () => ({ ok: false, code: "CANCELLED", inputCleanup: { schemaVersion: 1, state: "verified", releasedButtons: 1, privateState: "private-pointer-state" }, steps: [{ ok: false, code: "CANCELLED", inputCleanup: { schemaVersion: 1, state: "verified", releasedButtons: 6, privateState: "private-pointer-state" } }] }), appendAuditEvent: async () => {} });
+  const result = await tool.execute("pointer-projection", { action: "click", coords: "20,30", confirm: true });
+  assert.equal(result.details.status, "cancelled");
+  assert.deepEqual((result.details.result as any).inputCleanup, { schemaVersion: 1, state: "verified", releasedButtons: 1 });
+  assert.deepEqual((result.details.result as any).steps[0].inputCleanup, { schemaVersion: 1, state: "unverified", reasonCode: "ADAPTER_RESULT_UNAVAILABLE" });
+  assert.ok(!JSON.stringify(result).includes("private-pointer-state"));
+});
+
+for (const code of ["COORDINATES_OUT_OF_RANGE", "POINTER_MAPPING_UNVERIFIED", "X11_CLEANUP_FAILED"]) test(`click preserves fixed ${code} outcome while withholding diagnostics`, async () => {
+  const tool = createComputerUseTool({ approvalProvider: async () => "allowed" as const, runAdapter: async () => ({ ok: false, supported: false, code, error: "private-pointer-state" }), appendAuditEvent: async () => {} });
+  const result = await tool.execute("pointer-code", { action: "click", coords: "20,30", confirm: true });
+  assert.equal((result.details.result as any).code, code);
+  assert.ok(!JSON.stringify(result).includes("private-pointer-state"));
+});
 
 async function workspace(t: any) {
   const root = await mkdtemp(join(tmpdir(), "desktopuse-safety-"));
@@ -145,20 +196,59 @@ test("explicit capture destinations require write approval before adapter execut
   assert.equal(calls,0); assert.equal(await readFile(outside,"utf8"),"original");
 });
 
-for (const cancellation of [false,true]) {
- test(`adapter ${cancellation ? "cancellation" : "timeout"} retains safe completed-step progress`,async t=>{
+for (const cancellation of [false,true]) for (const action of ["type-text", "click"] as const) {
+ test(`${action} adapter ${cancellation ? "cancellation" : "timeout"} retains safe completed-step progress`,async t=>{
   const {root,inside}=await workspace(t), fixture=join(root,"progress-adapter"),ready=join(root,"ready-progress");
   const payload={ok:false,code:"CANCELLED",completedSteps:1,totalSteps:3,failedStep:1,partial:true,error:"private-progress-diagnostic",stdout:"private-progress-diagnostic"};
   await writeFile(fixture,`#!${process.execPath}\nprocess.on('SIGTERM',()=>{console.log(${JSON.stringify(JSON.stringify(payload))});console.error('private-progress-diagnostic');process.exit(0)});require('fs').writeFileSync(${JSON.stringify(ready)},'ready');setInterval(()=>{},1000);`,{mode:0o700});
   const previous=process.env.COVEN_DESKTOP_USE_BIN;process.env.COVEN_DESKTOP_USE_BIN=fixture;
   t.after(()=>{if(previous===undefined)delete process.env.COVEN_DESKTOP_USE_BIN;else process.env.COVEN_DESKTOP_USE_BIN=previous;});
   const controller=new AbortController();
-  const active=createComputerUseTool({ approvalProvider: async () => "allowed" as const,ctx:{workspaceDir:inside},appendAuditEvent:async()=>{}}).execute("progress",{action:"type-text",text:"fixture",confirm:true,timeoutMs:1000},controller.signal);
+  const active=createComputerUseTool({ approvalProvider: async () => "allowed" as const,ctx:{workspaceDir:inside},appendAuditEvent:async()=>{}}).execute("progress",{action,...(action === "type-text" ? { text:"fixture" } : { coords:"20,30" }),confirm:true,timeoutMs:1000},controller.signal);
   if(cancellation){for(let i=0;i<100;i++){try{await readFile(ready);break;}catch{await new Promise(r=>setTimeout(r,10));}}controller.abort();}
   const result=await active;
   assert.equal(result.details.status,cancellation?"cancelled":"timeout");
   const envelope=result.details.result as any;
   assert.equal(envelope.completedSteps,1);assert.equal(envelope.failedStep,1);assert.equal(envelope.totalSteps,3);assert.equal(envelope.partial,true);
+  if (action === "click") assert.deepEqual(envelope.inputCleanup, { schemaVersion: 1, state: "unverified", reasonCode: "ADAPTER_RESULT_UNAVAILABLE" });
   assert.ok(!JSON.stringify(result).includes("private-progress-diagnostic"));
  });
 }
+
+for (const action of ["type-text", "keypress"] as const) test(`${action} cleanup confidence retains only versioned enums and bounded counts`, async () => {
+  const tool = createComputerUseTool({ approvalProvider: async () => "allowed" as const,
+    runAdapter: async () => ({ ok: false, code: "CANCELLED", backend: "xdotool", inputCleanup: { schemaVersion: 1, state: "verified", releasedKeys: 1, restoredKeys: 0, rawState: "private-cleanup-diagnostic" } }), appendAuditEvent: async () => {},
+  });
+  const result = await tool.execute("cleanup-confidence", { action, ...(action === "type-text" ? { text: "private-cleanup-diagnostic" } : { keys: ["a"] }), confirm: true });
+  assert.equal(result.details.status, "cancelled");
+  assert.deepEqual((result.details.result as any).inputCleanup, { schemaVersion: 1, state: "verified", releasedKeys: 1, restoredKeys: 0 });
+  assert.ok(!JSON.stringify(result).includes("private-cleanup-diagnostic"));
+});
+
+for (const action of ["type-text", "keypress"] as const) for (const variant of ["missing", "unknown-state", "private-reason", "negative-count", "oversize-count", "unknown-version", "array-state", "array-reason"]) test(`${action} cleanup cannot certify ${variant} evidence`, async () => {
+  const cleanup: any = { schemaVersion: 1, state: "verified", releasedKeys: 1 };
+  if (variant === "unknown-state") cleanup.state = "private-cleanup-diagnostic";
+  if (variant === "private-reason") { cleanup.state = "unverified"; cleanup.reasonCode = "private-cleanup-diagnostic"; }
+  if (variant === "negative-count") cleanup.releasedKeys = -1;
+  if (variant === "oversize-count") cleanup.releasedKeys = 257;
+  if (variant === "unknown-version") cleanup.schemaVersion = 2;
+  if (variant === "array-state") cleanup.state = ["verified"];
+  if (variant === "array-reason") { cleanup.state = "unverified"; cleanup.reasonCode = ["X11_STATE_CHANGED"]; }
+  const tool = createComputerUseTool({ approvalProvider: async () => "allowed" as const,
+    runAdapter: async () => ({ ok: false, code: "CANCELLED", ...(variant === "missing" ? {} : { inputCleanup: cleanup }) }), appendAuditEvent: async () => {},
+  });
+  const result = await tool.execute("invalid-cleanup", { action, ...(action === "type-text" ? { text: "private-cleanup-diagnostic" } : { keys: ["a"] }), confirm: true });
+  assert.equal(result.details.status, "cancelled");
+  assert.deepEqual((result.details.result as any).inputCleanup, { schemaVersion: 1, state: "unverified", reasonCode: "ADAPTER_RESULT_UNAVAILABLE" });
+  assert.ok(!JSON.stringify(result).includes("private-cleanup-diagnostic"));
+});
+
+for (const action of ["type-text", "keypress"] as const) test(`${action} sanitizes nested normal-exit cleanup evidence`, async () => {
+  const tool = createComputerUseTool({ approvalProvider: async () => "allowed" as const,
+    runAdapter: async () => ({ ok: false, code: "CANCELLED", inputCleanup: { schemaVersion: 1, state: "verified", releasedKeys: 1, rawState: "private-cleanup-diagnostic" }, steps: [{ ok: false, code: "CANCELLED", inputCleanup: { schemaVersion: 1, state: "verified", releasedKeys: 257, rawState: "private-cleanup-diagnostic" } }] }), appendAuditEvent: async () => {},
+  });
+  const result = await tool.execute("nested-cleanup", { action, ...(action === "type-text" ? { text: "private-cleanup-diagnostic" } : { keys: ["a"] }), confirm: true });
+  assert.deepEqual((result.details.result as any).inputCleanup, { schemaVersion: 1, state: "verified", releasedKeys: 1 });
+  assert.deepEqual((result.details.result as any).steps[0].inputCleanup, { schemaVersion: 1, state: "unverified", reasonCode: "ADAPTER_RESULT_UNAVAILABLE" });
+  assert.ok(!JSON.stringify(result).includes("private-cleanup-diagnostic"));
+});
