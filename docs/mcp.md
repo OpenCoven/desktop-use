@@ -24,11 +24,40 @@ Install the exact local candidate tarball as described in [the client guide](des
 
 ## Separate reference host
 
-Run `node node_modules/@opencoven/openclaw-desktop-use/dist/examples/approval-host/main.js --config /absolute/config.json` as the stdio server command in a local MCP client. This separately launched application creates a short private `/tmp/cdu-*` directory (avoiding Unix socket pathname limits), starts its Unix socket broker, generates an ephemeral secret, and launches the MCP child with that secret through inherited descriptor 3. The secret is never placed in arguments, environment variables, model-visible messages or logs. The host removes its owned socket/directory when the child exits. It does not open a TCP listener.
+Run `node node_modules/@opencoven/openclaw-desktop-use/dist/examples/approval-host/main.js --config /absolute/config.json` as the stdio server command in a local MCP client. This separately launched application creates a short private `/tmp/cdu-*` directory (avoiding Unix socket pathname limits), starts its Unix socket broker, generates an ephemeral secret, and launches the MCP child with that secret through inherited descriptor 3. The secret is never placed in arguments, environment variables, model-visible messages or logs. The host removes its owned socket/directory when the child exits. It does not open a TCP listener. Do not use it as a coding harness's MCP command: a harness owns that terminal. Use the [harness approver](#harness-approver) instead.
 
 The reference host opens its controlling terminal independently of MCP stdin/stdout. Each prompt displays the entire canonical target, every effect parameter, policy, scope, workspace and expiry. Text is JSON-escaped, including non-ASCII characters, so terminal controls and directional formatting cannot obscure the reviewed operation. Enter `allow REVIEWCODE`, `deny REVIEWCODE` or `cancel REVIEWCODE`, using the fresh visible code in that prompt. A delayed decision from a previous review cannot approve another operation. The code is an operator correlation aid, not an approval credential. Private broker challenge identifiers are never displayed.
 
 A missing terminal, busy prompt, invalid decision, disconnected UI or complete display larger than 16 KiB fails closed. The host does not truncate actionable information or automatically approve. Reviews may contain sensitive input and appear only in the operator terminal; do not record terminal sessions containing private work. Durable action audit continues to use the shared redaction contract.
+
+## Harness approver
+
+Coding harnesses such as Claude Code, Codex and GitHub Copilot CLI own the terminal they run in. A review that a harness-launched process prints on `/dev/tty` competes with the harness UI, or stops the process group when the harness runs it in the background ([ADR 0001](adr/0001-harness-approval-routing.md)). For harnesses, the operator starts the approver in a terminal window of its own, and the harness launches only a relay that holds no secret or authority.
+
+Start the approver first, in a terminal that no harness uses: `node node_modules/@opencoven/openclaw-desktop-use/dist/examples/approval-host/approver.js --config /absolute/config.json --attach-socket /absolute/private-dir/attach.sock`. The attach socket's directory must be owned by you with mode `0700`; the approver creates that one directory with mode `0700` if it is missing. Keep the path short, because Unix sockets allow about 104 bytes on macOS. At startup the approver validates the trusted configuration and audit state, then refuses to start in any of these cases: it has no terminal of its own, another approver is live on the socket, or the path holds anything other than its own stale socket. It never removes a file that is not a socket. When it is ready, it prints the command for the harness.
+
+Configure the harness's stdio MCP server as `/absolute/node_modules/.bin/coven-desktop-use-mcp attach --socket /absolute/private-dir/attach.sock`. A generic stdio entry looks like this; per-harness recipes and qualification are tracked separately:
+
+```json
+{
+  "mcpServers": {
+    "coven-desktop-use": {
+      "command": "/absolute/node_modules/.bin/coven-desktop-use-mcp",
+      "args": ["attach", "--socket", "/absolute/private-dir/attach.sock"]
+    }
+  }
+}
+```
+
+The relay only moves MCP bytes between the harness and the approver. It accepts only a same-user `0600` socket in a `0700` directory. It never carries a secret, configuration or approval decision, and it does not choose the session's identity. A model that reaches the attach socket gains only the MCP access it already has. If no live approver is listening, or the approver refuses, drops or stops the session, the relay exits with status 1 and writes one fixed line on stderr.
+
+Each attached harness session gets a fresh connector, launched with the descriptor-3 secret exactly as the reference host does. Its scope's `sessionId` gets the suffix `:attach-N`, or is `attach-N` when the configuration has none, and every review shows it. Stop and audit therefore stay per harness session: one session's Stop cannot reach another session's operations. Reviews from all sessions queue on the one terminal, with at most 8 active or waiting; more fail closed as `unavailable`. At most 8 sessions may be attached at once, and the approver refuses further attaches with a line in its terminal. When a harness exits or its relay is lost, that connector's stdin ends, which cancels its pending and active work and writes audit. Stopping the approver with Ctrl+C, SIGTERM or SIGHUP cancels every session, ends every relay with the fixed message and removes its sockets.
+
+Harness tool-permission prompts and auto-approve or bypass modes only let the harness call `computer_use`; the desktop review still happens in the approver terminal.
+
+A same-user process with unrestricted command execution is outside this boundary. An unsandboxed harness shell tool in a bypass mode runs as the operator. Examples of such modes are `--dangerously-skip-permissions`, `--dangerously-bypass-approvals-and-sandbox` and `--allow-all`. If the launching terminal holds Screen Recording and Accessibility, that shell can read and answer an on-screen review in another window. Desktop approval is still requested in these modes, but its integrity cannot be guaranteed. Rely on it only when the harness's own command execution is approval-gated or sandboxed away from the approver, and grant macOS privacy permissions to the narrowest launcher possible.
+
+Conformance tests drive the compiled approver and relay over a real PTY with a fixture adapter. They cover allow, deny, cancel, expiry, queued reviews, the session bound, per-session Stop, harness EOF and kill, approver shutdown and refused startup. They do not qualify any particular harness; real-harness receipts are separate evidence.
 
 ## Broker boundary and lifecycle
 

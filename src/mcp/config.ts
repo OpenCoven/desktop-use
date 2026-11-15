@@ -27,9 +27,17 @@ export async function readStartupConfig(path: string): Promise<DesktopClientOpti
 export function startupArguments(args: string[]) {
   const values = new Map<string, string>();
   for (let i = 0; i < args.length; i += 2) {
-    if (!['--config', '--approval-socket', '--approval-secret-fd'].includes(args[i]) || !args[i + 1] || values.has(args[i])) throw new Error('STARTUP_INVALID');
+    if (!['--config', '--approval-socket', '--approval-secret-fd', '--session-suffix'].includes(args[i]) || !args[i + 1] || values.has(args[i])) throw new Error('STARTUP_INVALID');
     values.set(args[i], args[i + 1]);
   }
   if (!values.has('--config') || values.has('--approval-socket') !== values.has('--approval-secret-fd')) throw new Error('STARTUP_INVALID');
+  if (values.has('--session-suffix') && !SESSION_SUFFIX.test(values.get('--session-suffix')!)) throw new Error('STARTUP_INVALID');
   return values;
+}
+/** A trusted launcher (the approver) may give each attached harness session its own Stop and audit scope. */
+const SESSION_SUFFIX = /^[a-z0-9][a-z0-9-]{0,31}$/;
+export function scopeWithSuffix<T extends { principalId: string; sessionId?: string }>(scope: T, suffix: string | undefined): T {
+  if (suffix === undefined) return scope;
+  if (!SESSION_SUFFIX.test(suffix)) throw new Error('STARTUP_INVALID');
+  return { ...scope, sessionId: scope.sessionId === undefined ? suffix : `${scope.sessionId}:${suffix}` };
 }

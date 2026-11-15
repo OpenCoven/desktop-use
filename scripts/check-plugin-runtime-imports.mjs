@@ -13,7 +13,7 @@ const graphs = {
   plugin: { entries: [`index.${extension}`], allowed: name => ['openclaw/plugin-sdk/plugin-entry', 'openclaw/plugin-sdk/state-paths'].includes(name) },
   core: { entries: [`src/sdk.${extension}`], allowed: () => false },
   contracts: { entries: [`src/contracts.${extension}`], allowed: () => false },
-  connector: { entries: [`src/mcp/main.${extension}`, `examples/approval-host/main.${extension}`, `examples/embedded-client.${extension}`], allowed: name => ['@modelcontextprotocol/server', '@modelcontextprotocol/server/stdio', 'ajv/dist/2020.js'].includes(name) },
+  connector: { entries: [`src/mcp/main.${extension}`, `examples/approval-host/main.${extension}`, `examples/approval-host/approver.${extension}`, `examples/embedded-client.${extension}`], allowed: name => ['@modelcontextprotocol/server', '@modelcontextprotocol/server/stdio', 'ajv/dist/2020.js'].includes(name) },
 };
 const failures = [];
 let total = 0;

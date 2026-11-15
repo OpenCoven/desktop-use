@@ -289,7 +289,7 @@ Screenshot encoding follows --format independently of the destination suffix. A 
 
 ## Local MCP and embedding
 
-The host-neutral desktop client also has a local stdio MCP connector and a separately launched terminal approval reference host. See [trusted configuration, protocol compatibility and approval examples](docs/mcp.md). Standalone startup defaults to observation-only eligibility; model requests never carry approval authority.
+The host-neutral desktop client also has a local stdio MCP connector and a separately launched terminal approval reference host. See [trusted configuration, protocol compatibility and approval examples](docs/mcp.md). Coding harnesses that own their terminal attach through the secret-free `coven-desktop-use-mcp attach` relay to an operator-launched approver; see [the harness approver](docs/mcp.md#harness-approver). Standalone startup defaults to observation-only eligibility; model requests never carry approval authority.
 
 ## Standalone SDK and local MCP candidate
 

@@ -14,6 +14,8 @@ export function terminalPrompt() {
     input.on('error', () => {}); output.on('error', () => {}); input.pause();
   } catch { input?.destroy(); output?.destroy(); input = undefined; output = undefined; process.stderr.write('Approval UI unavailable; gated operations will not execute.\n'); }
   return {
+    /** False when no controlling terminal could be opened; every prompt then fails closed. */
+    available: input !== undefined,
     async prompt(review: Review, signal: AbortSignal): Promise<ApprovalResolution> {
       if (!input || !output || input.destroyed || output.destroyed || busy || signal.aborted) return 'unavailable';
       const display = JSON.stringify({ target: review.target, effect: review.params, policy: review.policy, scope: review.scope, workspaceDir: review.workspaceDir, expiresAt: new Date(review.expiresAt).toISOString() }, null, 2).replace(/[\u007f-\uffff]/g, character => '\\u' + character.charCodeAt(0).toString(16).padStart(4, '0'));

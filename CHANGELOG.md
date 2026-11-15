@@ -6,6 +6,8 @@
 - Add trusted action eligibility profiles and canonical action allowlists, with permission-aware schemas, health probes, alias parity, and an always-available scoped Stop.
 - Advertise only implemented Stop and health controls, document every panel field's producer, and qualify the packaged plugin's policy, approvals, cancellation, and redacted audits through the minimum supported OpenClaw gateway on macOS and Linux.
 
+- Add an operator-launched MCP approver and a secret-free `coven-desktop-use-mcp attach` relay for coding harnesses that own their terminal (ADR 0001). Each attached session gets its own connector and session-scoped Stop and audit. Reviews queue with a bound, and a missing or stopped approver fails visibly.
+
 - Name `computer_use` in the Linux setup guide, tag the deprecated `desktop_use` alias as approval-gated, and keep the packaged agent template and docs in step with the plugin.
 - Deprecate the plugin tool `desktop_use` in favor of `computer_use`, the action inputs `permissions -> doctor`, `see -> inspect`, `capture -> screenshot`, `type -> type-text`, and `press -> keypress`, and the `clipboard-write` field `text` in favor of `clipboardText`. Removal is targeted at **0.2.0**. Legacy inputs remain accepted for this compatibility release and add a `deprecation` string naming replacements to results without changing status, approval, or audit behavior. Prefer the 18 canonical actions while retaining the five deprecated aliases in the bounded 23-value enum for host validation; retain `desktop_use` registration and `openclaw.plugin.json` contracts until the later release.
 
