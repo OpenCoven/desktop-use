@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "sourceRepository": "OpenCoven/desktop-use",
+  "sourceCommit": "d6ef3e664d96db4138f93d785fcb2f756723d4b5",
+  "sourceTree": "d1f2e0c1e393b3ffda6436f1c0f6c37694bf9760",
+  "authorization": "PR40 owner exact source-bound read/copy into root provider lane; original ownership retained",
+  "files": [
+    {
+      "sourcePath": "scripts/native-client-acceptance/wayland-owned-snapshot.mjs",
+      "target": "wayland-owned-snapshot.mjs",
+      "sha256": "9207546b95cc609b515a79ba989538cfe6b13faf573d6c8b8db031932afd0a4a",
+      "bytes": 4019
+    },
+    {
+      "sourcePath": "scripts/native-client-acceptance/wayland-peer-observer.py",
+      "target": "wayland-peer-observer.py",
+      "sha256": "f7fc8cf20b8067d5d0f1c25cbc0e33cc7c46f5ca54afd4e15d88f6d6df0c3424",
+      "bytes": 12933
+    },
+    {
+      "sourcePath": "scripts/native-client-acceptance/wayland-scope-proof.mjs",
+      "target": "wayland-scope-proof.mjs",
+      "sha256": "8d2b248927b289b19b311aa76e5a5abac766fe80b8b01d4203fe3a933447d5ff",
+      "bytes": 5251
+    },
+    {
+      "sourcePath": "scripts/native-client-acceptance/linux-scope-proof.mjs",
+      "target": "linux-scope-proof.mjs",
+      "sha256": "2a9ac7f06a16e313877ecbd1af0094d1c7cda9610c4929031885cb65d1a805a2",
+      "bytes": 7551
+    },
+    {
+      "sourcePath": "scripts/native-image-fixture/fixture.py",
+      "target": "fixture.py",
+      "sha256": "a1325e42991551ba7a5ed8581d2ec5fe324e548b4f687bb3f605cca3a1a74952",
+      "bytes": 8802
+    },
+    {
+      "sourcePath": "scripts/native-client-acceptance/identity-preflight.mjs",
+      "target": "identity-preflight.mjs",
+      "sha256": "46f9caafe3dbbc7f2df21a53cf9f813bcf0c154b9a0aa9b432b89c3875211fba",
+      "bytes": 3982
+    }
+  ],
+  "nativeCollectorExecuted": false,
+  "nativeScale1Qualified": false,
+  "nativeScale2Qualified": false,
+  "physicalDisplayQualified": false
+}
