@@ -42,7 +42,8 @@ for (const harness of ['claude', 'codex', 'copilot', 'opencode', 'hermes', 'cove
     assert.equal(client.getServerVersion()?.version, version);
     const { tools } = await client.listTools(); assert.deepEqual(tools.map(tool => tool.name), ['computer_use']);
     const health = await client.callTool({ name: 'computer_use', arguments: { action: 'health' } });
-    assert.equal(health.structuredContent.capabilitiesV1.producer.surface, 'mcp');
+    assert.equal(health.structuredContent.capabilitiesV1, undefined);
+    assert.equal(health.structuredContent.capabilitySummaryV1.producer.surface, 'mcp');
     assert.equal((await client.callTool({ name: 'computer_use', arguments: { action: 'stop' } })).structuredContent.status, 'success');
     const denied = await client.callTool({ name: 'computer_use', arguments: { action: 'file-write', path: 'must-not-exist', content: 'recipe-private-content-34' } });
     assert.equal(denied.structuredContent.code, 'ACTION_PROFILE_DENIED');
