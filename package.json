@@ -24,7 +24,7 @@
     "generate:contracts": "tsx scripts/generate-capabilities-contract.ts",
     "check:contracts": "tsx scripts/generate-capabilities-contract.ts --check",
     "check:plugin-runtime-imports": "node scripts/check-plugin-runtime-imports.mjs",
-    "test:gateway-fixture": "node --test scripts/gateway-image-fixture.test.mjs scripts/packed-metadata.test.mjs",
+    "test:gateway-fixture": "node --test scripts/gateway-image-fixture.test.mjs scripts/packed-metadata.test.mjs scripts/qualify-harness.test.mjs",
     "build": "node scripts/build.mjs",
     "prepack": "pnpm run build",
     "test:packed": "node scripts/test-packed-consumers.mjs",

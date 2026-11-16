@@ -1,0 +1,74 @@
+name: Harness qualification
+
+# Real-harness L1/L2 evidence (#35): pinned harness CLIs against the packed connector, the fixture adapter and a
+# deterministic local model endpoint. No provider, credential or secret is used. Verdicts are recorded as evidence;
+# the job fails only when the runner errors or a receipt is inconsistent.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'scripts/qualify-harness.mjs'
+      - 'scripts/harness-qualification/**'
+      - 'src/mcp/**'
+      - '.github/workflows/harness-qualification.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: harness-qualification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qualify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    env:
+      CLAUDE_CODE_VERSION: 2.1.325
+      CODEX_VERSION: 0.169.0
+      COPILOT_VERSION: 1.0.107
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Install pinned harness CLIs outside the checkout
+        run: npm install --prefix "$RUNNER_TEMP/harnesses" --no-audit --no-fund "@anthropic-ai/claude-code@$CLAUDE_CODE_VERSION" "@openai/codex@$CODEX_VERSION" "@github/copilot@$COPILOT_VERSION"
+      - name: Pack the connector once
+        run: |
+          pnpm run build
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP" --json > "$RUNNER_TEMP/pack.json"
+          echo "CONNECTOR_TARBALL=$RUNNER_TEMP/$(node -p 'require(process.argv[1])[0].filename' "$RUNNER_TEMP/pack.json")" >> "$GITHUB_ENV"
+      - name: Qualify each harness
+        shell: bash
+        run: |
+          bin="$RUNNER_TEMP/harnesses/node_modules/.bin"
+          mkdir -p receipts
+          for spec in claude-code:default:claude codex:default:codex codex:tool-search:codex copilot:default:copilot copilot:vision:copilot; do
+            IFS=: read -r id variant command <<< "$spec"
+            set +e
+            node scripts/qualify-harness.mjs --harness "$id" --variant "$variant" --bin "$bin/$command" --connector "$CONNECTOR_TARBALL" --out "receipts/$id-$variant.json"
+            code=$?
+            set -e
+            case "$code" in 0|1|2) ;; *) echo "::error::qualify-harness exited $code for $id ($variant)"; exit 1 ;; esac
+          done
+          for id in opencode hermes coven-code; do
+            set +e; node scripts/qualify-harness.mjs --harness "$id" --out "receipts/$id-default.json"; code=$?; set -e
+            [ "$code" -eq 2 ] || { echo "::error::$id should be unqualified, got $code"; exit 1; }
+          done
+      - name: Summarize receipts
+        run: node scripts/harness-qualification/summarize.mjs receipts | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: harness-receipts-${{ matrix.os }}
+          path: receipts/
+          if-no-files-found: error
