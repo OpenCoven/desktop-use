@@ -5,12 +5,13 @@ import { normalizeParams } from '../core/execution.js';
 import type { DesktopRequest } from '../core/client.js';
 
 const ajv = new Ajv2020({ strict: false, allErrors: false });
-export const inputSchema = desktopRequestSchemaV1;
+const { allOf: _clipboardTextGuard, ...advertisedRequestSchema } = desktopRequestSchemaV1;
+export const inputSchema: Readonly<Record<string, unknown>> = advertisedRequestSchema;
 export const outputSchema = desktopResultDetailsSchemaV1;
 // Standard Schema lets the official SDK use the exact shared JSON contracts, with fixed diagnostics.
-function compiled<T>(schema: Record<string, unknown>, extra?: (value: unknown) => void): StandardSchemaWithJSON<T> {
-  const validate = ajv.compile(schema);
-  return { '~standard': { version: 1, vendor: 'opencoven', jsonSchema: { input: () => schema, output: () => schema }, validate(value) {
+function compiled<T>(validation: Record<string, unknown>, advertised: Record<string, unknown>, extra?: (value: unknown) => void): StandardSchemaWithJSON<T> {
+  const validate = ajv.compile(validation);
+  return { '~standard': { version: 1, vendor: 'opencoven', jsonSchema: { input: () => advertised, output: () => advertised }, validate(value) {
     try {
       if (!validate(value)) throw new Error();
       extra?.(value);
@@ -18,12 +19,12 @@ function compiled<T>(schema: Record<string, unknown>, extra?: (value: unknown) =
     } catch { return { issues: [{ message: 'Desktop contract validation failed.' }] }; }
   } } };
 }
-export const requestContract = compiled<DesktopRequest>(inputSchema, value => {
+export const requestContract = compiled<DesktopRequest>(desktopRequestSchemaV1, inputSchema, value => {
   const params = normalizeParams(value);
   if (params.action === 'clipboard-write' && params.text !== undefined) throw new Error();
 });
 // Inline shared schemas for clients which do not have our schema registry.
-export const resultContract = compiled<Record<string, unknown>>(outputSchema);
+export const resultContract = compiled<Record<string, unknown>>(outputSchema, outputSchema);
 
 /** Public SDK injection seam: never instantiate its older bundled default AJV provider. */
 export function createJsonSchemaValidator(): jsonSchemaValidator {
