@@ -125,7 +125,7 @@ function responsesResults(input) {
 
 export function createModelEndpoint({ protocol, fixtureSha256, reason }) {
   if (!['anthropic-messages', 'openai-responses'].includes(protocol)) throw new TypeError(`Unknown endpoint protocol ${protocol}`);
-  const state = { requests: 0, toolRequests: 0, discovery: null, laterListings: new Set(), observation: { health: { called: false, resultSeen: false }, screenshot: { called: false, resultSeen: false } }, finished: false, unexpectedPaths: new Set() };
+  const state = { requests: 0, toolRequests: 0, discovery: null, laterListings: new Set(), observation: { health: { called: false, resultSeen: false }, screenshot: { called: false, resultSeen: false } }, finished: false, unexpectedPaths: new Set(), models: new Set() };
   const callId = action => protocol === 'anthropic-messages' ? `toolu_${CALL_IDS[action]}` : `call_${CALL_IDS[action]}`;
   const inputs = { health: { action: 'health', reason }, screenshot: { action: 'screenshot', mode: 'screen', format: 'png', reason } };
 
@@ -213,6 +213,8 @@ export function createModelEndpoint({ protocol, fixtureSha256, reason }) {
       const ours = req.method === 'POST' && (protocol === 'anthropic-messages' ? path.endsWith('/v1/messages') : path.endsWith('/responses'));
       if (!ours) { state.unexpectedPaths.add(`${req.method} ${path.replace(/[^a-zA-Z0-9/_.-]/g, '')}`.slice(0, 80)); res.writeHead(404, { 'content-type': 'application/json' }); return res.end('{}'); }
       state.requests++;
+      // The model slug the harness requests: harness budgets can depend on its model metadata (#52).
+      if (typeof body.model === 'string') state.models.add(body.model.replace(/[^a-zA-Z0-9._:/-]/g, '').slice(0, 80));
       try { return protocol === 'anthropic-messages' ? anthropic(req, res, body) : responses(req, res, body); }
       catch { res.writeHead(500, { 'content-type': 'application/json' }); return res.end('{}'); }
     });
@@ -228,6 +230,7 @@ export function createModelEndpoint({ protocol, fixtureSha256, reason }) {
         discovery: state.discovery ?? { endpointReached: state.requests > 0, desktopTools: [], otherToolCount: 0, otherTools: [] },
         laterListings: [...state.laterListings], observation: state.observation, finished: state.finished,
         unexpectedPaths: [...state.unexpectedPaths].slice(0, 20),
+        requestedModels: [...state.models].slice(0, 5),
       };
     },
   };

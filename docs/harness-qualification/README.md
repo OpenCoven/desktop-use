@@ -19,6 +19,8 @@ node scripts/harness-qualification/summarize.mjs codex.json
 | `--bin <path>` | Harness executable. The default is the harness's command on `PATH`. |
 | `--connector <source>` | `built` (default: this checkout's `dist`), `packed` (pack this checkout and install it outside the repository), a `.tgz` tarball, or an explicit `main.js` |
 | `--level L1\|L2` | Highest level to qualify (default `L2`) |
+| `--probe-bytes <n>` | Budget probe (#52): replace the connector with a size probe whose `computer_use` result has exactly `n` compact bytes of `structuredContent` |
+| `--probe-text compact\|pretty` | With `--probe-bytes`: whether `content[0].text` is compact or pretty-printed JSON (default `compact`) |
 | `--timeout <s>` | Harness run limit (default 150) |
 | `--out <file>` | Receipt path (default: stdout) |
 | `--keep` | Keep the disposable run directory for debugging |
@@ -134,6 +136,32 @@ The hosted runs packed `main`'s connector (tarball `d4141f9e1ea9…`), byte-iden
 | OpenCode, Hermes | unqualified (`no-runner-recipe`) | |
 
 Claude Code with the #41 fix (#50) has not been run on Linux yet. Its Linux receipt follows once #50 merges and this workflow packs the fixed connector.
+
+## Tool-output budgets (#52)
+
+`scripts/harness-qualification/measure-budget.mjs` bisects the largest `computer_use` result a harness delivers to the model intact:
+
+```sh
+node scripts/harness-qualification/measure-budget.mjs --harness codex --text pretty --out codex-default.json
+```
+
+Each probe is a full qualification run with `--probe-bytes`. The size probe replaces the connector and pads `structuredContent` with real capability entries to an exact compact size. A size counts as intact when the model receives parseable structured content of at least that size. The default resolution is 64 B.
+
+Recorded on macOS (Darwin 27.2.0), arm64, on 2026-11-15, with a pretty-printed text carrier. The results are in [`budget/darwin-arm64/`](budget/darwin-arm64/).
+
+| Harness | Requested model | Largest intact | Smallest rejected | Model received instead |
+|---|---|---|---|---|
+| Claude Code 2.1.325 | `claude-opus-5-5` (harness default) | 49,984 B | 50,048 B | a 2,384-character preview of a stored file |
+| Codex CLI 0.169.0, default | `qualification` (no catalog metadata) | 11,926 B | 11,989 B | 12,020 characters, truncated in the middle |
+| Codex CLI 0.169.0, tool-search | `gpt-5.5` (bundled catalog) | 47,944 B | 48,008 B | 48,020 characters, truncated in the middle |
+| Copilot CLI 1.0.107, BYOK | `claude-sonnet-4` | 20,468 B | 20,532 B | a 921-character preview of a spilled file |
+| Copilot CLI 1.0.107, BYOK vision | `claude-sonnet-4` | 20,468 B | 20,532 B | the same |
+
+- **All three harnesses budget the compact `structuredContent`, not the text.**
+  - A compact-text run gave exactly the same thresholds. It was recorded before the receipts named the requested model, and it is in [`budget/darwin-arm64/compact-text/`](budget/darwin-arm64/compact-text/).
+  - With 12,000 B of structured content and 21,959 B of pretty text, Copilot delivered the 12,000 B.
+- **A cut result can still parse.** Codex keeps the head and tail of a long output. When the cut falls inside one long string, the rest can still parse: at 48,199 B the model got parseable JSON of only 48,020 characters. The size check catches this for the probe. Connector results stay far below every limit once #52 lands.
+- **Next step:** ADR [0002](../adr/0002-compact-mcp-discovery-results.md) chooses a result shape that keeps every connector-shaped observation-only result under 8 KiB.
 
 ## Not covered yet
 

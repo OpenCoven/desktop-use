@@ -1,12 +1,13 @@
 // Deterministic checks for the real-harness qualification runner. No harness binary, provider or network is used.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { sizedResult } from './harness-qualification/budget.mjs';
 import { classifyResult, createModelEndpoint, desktopTools, extractJsonObject } from './harness-qualification/endpoint.mjs';
 import { HARNESSES } from './harness-qualification/harnesses.mjs';
 import { LEVELS, VERDICTS, assertReceipt, assertSanitized, combine, discoveryVerdict, exitCode, observationVerdict, overall, unqualified } from './harness-qualification/verdict.mjs';
@@ -108,6 +109,7 @@ test('the scripted Messages endpoint calls health, then screenshot, then ends', 
     const seen = endpoint.observations();
     assert.equal(seen.finished, true); assert.equal(seen.discovery.desktopTools.length, 1);
     assert.equal(seen.observation.health.structuredContent, 'delivered'); assert.equal(seen.observation.screenshot.image.handling, 'delivered');
+    assert.deepEqual(seen.requestedModels, ['m']);
     assert.doesNotMatch(JSON.stringify(seen), /private-marker|iVBOR/, 'observations hold no private input or image bytes');
   } finally { await endpoint.stop(); }
 });
@@ -178,4 +180,45 @@ test('a harness that reaches the endpoint without starting the connector fails, 
 test('receipts with private values are refused', () => {
   assert.throws(() => assertSanitized({ path: `${homedir()}/x` }, [homedir()]), /private value/);
   assert.equal(assertSanitized({ ok: true }, [homedir(), '', 'abc']).ok, true, 'empty and very short values are not treated as private');
+});
+
+test('size-probe results have the exact compact size, padded with real capability entries', () => {
+  for (const bytes of [256, 257, 1000, 4096, 11926, 11989, 50048, 262144]) {
+    const value = sizedResult('health', bytes);
+    assert.equal(Buffer.byteLength(JSON.stringify(value)), bytes);
+    assert.equal(value.status, 'success'); assert.equal(value.action, 'health'); assert.equal(value.probe.targetBytes, bytes);
+  }
+  assert.ok(sizedResult('health', 50000).padding.every(entry => typeof entry.action === 'string' && Array.isArray(entry.variants)));
+  for (const bytes of [255, 0, -1, 1024.5, Number.NaN]) assert.throws(() => sizedResult('health', bytes), RangeError);
+});
+
+test('the size-probe server answers MCP with one computer_use tool and a result of the configured size', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'size-probe-test-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  for (const probeText of ['compact', 'pretty']) {
+    const config = join(dir, `${probeText}.json`);
+    await writeFile(config, JSON.stringify({ probeBytes: 5000, probeText }));
+    const child = spawn(process.execPath, [fileURLToPath(new URL('./harness-qualification/size-probe-server.mjs', import.meta.url)), '--config', config], { stdio: ['pipe', 'pipe', 'inherit'] });
+    const replies = [];
+    let buffer = '';
+    const done = new Promise(resolve => child.stdout.on('data', chunk => {
+      buffer += chunk; const lines = buffer.split('\n'); buffer = lines.pop();
+      for (const line of lines) if (line) replies.push(JSON.parse(line));
+      if (replies.length === 3) resolve();
+    }));
+    for (const message of [{ id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25' } }, { method: 'notifications/initialized' }, { id: 2, method: 'tools/list' }, { id: 3, method: 'tools/call', params: { name: 'computer_use', arguments: { action: 'health' } } }]) child.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
+    await done; child.kill();
+    assert.equal(replies[0].result.protocolVersion, '2025-11-25');
+    assert.deepEqual(replies[1].result.tools.map(tool => tool.name), ['computer_use']);
+    const { structuredContent, content } = replies[2].result;
+    assert.equal(Buffer.byteLength(JSON.stringify(structuredContent)), 5000);
+    assert.deepEqual(JSON.parse(content[0].text), structuredContent);
+    assert.equal(content[0].text, probeText === 'pretty' ? JSON.stringify(structuredContent, null, 2) : JSON.stringify(structuredContent));
+  }
+});
+
+test('probe options are validated before any harness runs', () => {
+  for (const args of [['--probe-bytes', '255'], ['--probe-bytes', 'many'], ['--probe-bytes', '4096', '--probe-text', 'yaml']]) {
+    assert.equal(spawnSync(process.execPath, [runner, '--harness', 'codex', ...args], { encoding: 'utf8' }).status, 64, args.join(' '));
+  }
 });

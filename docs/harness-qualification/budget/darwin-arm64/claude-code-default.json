@@ -1,0 +1,135 @@
+{
+  "schemaVersion": 1,
+  "kind": "harness-tool-output-budget",
+  "recordedAt": "2026-11-16T02:07:53.575Z",
+  "probe": {
+    "structuredContent": "compact JSON padded with real capability action entries",
+    "text": "the same JSON, pretty-printed"
+  },
+  "harness": {
+    "id": "claude-code",
+    "label": "Claude Code",
+    "variant": "default",
+    "version": "2.1.325 (Claude Code)",
+    "recipe": {
+      "mode": "print (-p) with --bare, --strict-mcp-config and --allowedTools mcp__coven-desktop-use__computer_use",
+      "endpoint": "ANTHROPIC_BASE_URL"
+    },
+    "endpointProtocol": "anthropic-messages",
+    "requestedModels": [
+      "claude-opus-5-5"
+    ]
+  },
+  "host": {
+    "os": "darwin",
+    "osRelease": "27.2.0",
+    "arch": "arm64",
+    "displayServer": "quartz",
+    "node": "v24.22.0"
+  },
+  "largestIntactBytes": 49984,
+  "smallestRejectedBytes": 50048,
+  "rejectedAs": "harness-truncated-or-spilled",
+  "modelSawCharsWhenRejected": 2384,
+  "resolutionBytes": 64,
+  "runs": [
+    {
+      "bytes": 1024,
+      "intact": true,
+      "modelSawChars": 1024,
+      "transformation": null,
+      "carrier": "text-json"
+    },
+    {
+      "bytes": 33664,
+      "intact": true,
+      "modelSawChars": 33664,
+      "transformation": null,
+      "carrier": "text-json"
+    },
+    {
+      "bytes": 49984,
+      "intact": true,
+      "modelSawChars": 49984,
+      "transformation": null,
+      "carrier": "text-json"
+    },
+    {
+      "bytes": 50048,
+      "intact": false,
+      "modelSawChars": 2384,
+      "transformation": "harness-truncated-or-spilled",
+      "carrier": null
+    },
+    {
+      "bytes": 50112,
+      "intact": false,
+      "modelSawChars": 2384,
+      "transformation": "harness-truncated-or-spilled",
+      "carrier": null
+    },
+    {
+      "bytes": 50239,
+      "intact": false,
+      "modelSawChars": 2384,
+      "transformation": "harness-truncated-or-spilled",
+      "carrier": null
+    },
+    {
+      "bytes": 50494,
+      "intact": false,
+      "modelSawChars": 2384,
+      "transformation": "harness-truncated-or-spilled",
+      "carrier": null
+    },
+    {
+      "bytes": 51004,
+      "intact": false,
+      "modelSawChars": 2384,
+      "transformation": "harness-truncated-or-spilled",
+      "carrier": null
+    },
+    {
+      "bytes": 52024,
+      "intact": false,
+      "modelSawChars": 2384,
+      "transformation": "harness-truncated-or-spilled",
+      "carrier": null
+    },
+    {
+      "bytes": 54064,
+      "intact": false,
+      "modelSawChars": 2384,
+      "transformation": "harness-truncated-or-spilled",
+      "carrier": null
+    },
+    {
+      "bytes": 58144,
+      "intact": false,
+      "modelSawChars": 2384,
+      "transformation": "harness-truncated-or-spilled",
+      "carrier": null
+    },
+    {
+      "bytes": 66304,
+      "intact": false,
+      "modelSawChars": 2384,
+      "transformation": "harness-truncated-or-spilled",
+      "carrier": null
+    },
+    {
+      "bytes": 131584,
+      "intact": false,
+      "modelSawChars": 2385,
+      "transformation": "harness-truncated-or-spilled",
+      "carrier": null
+    },
+    {
+      "bytes": 262144,
+      "intact": false,
+      "modelSawChars": 2383,
+      "transformation": "harness-truncated-or-spilled",
+      "carrier": null
+    }
+  ]
+}

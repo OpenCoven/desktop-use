@@ -1,0 +1,129 @@
+{
+  "schemaVersion": 1,
+  "kind": "harness-tool-output-budget",
+  "recordedAt": "2026-11-16T01:57:10.972Z",
+  "probe": "compact JSON structured content padded with real capability entries; content[0].text is the same JSON",
+  "harness": {
+    "id": "copilot",
+    "label": "GitHub Copilot CLI",
+    "variant": "default",
+    "version": "GitHub Copilot CLI 1.0.107.",
+    "recipe": {
+      "mode": "prompt (-p) with --additional-mcp-config, --allow-tool coven-desktop-use and --disable-builtin-mcps",
+      "endpoint": "BYOK: COPILOT_PROVIDER_BASE_URL, COPILOT_PROVIDER_TYPE=anthropic, COPILOT_OFFLINE=true"
+    },
+    "endpointProtocol": "anthropic-messages"
+  },
+  "host": {
+    "os": "darwin",
+    "osRelease": "27.2.0",
+    "arch": "arm64",
+    "displayServer": "quartz",
+    "node": "v24.22.0"
+  },
+  "largestIntactBytes": 20468,
+  "smallestRejectedBytes": 20532,
+  "rejectedAs": "harness-truncated-or-spilled",
+  "modelSawCharsWhenRejected": 921,
+  "resolutionBytes": 64,
+  "runs": [
+    {
+      "bytes": 1024,
+      "intact": true,
+      "modelSawChars": 1024,
+      "transformation": null,
+      "carrier": "text-json"
+    },
+    {
+      "bytes": 17344,
+      "intact": true,
+      "modelSawChars": 17344,
+      "transformation": null,
+      "carrier": "text-json"
+    },
+    {
+      "bytes": 19384,
+      "intact": true,
+      "modelSawChars": 19384,
+      "transformation": null,
+      "carrier": "text-json"
+    },
+    {
+      "bytes": 20404,
+      "intact": true,
+      "modelSawChars": 20404,
+      "transformation": null,
+      "carrier": "text-json"
+    },
+    {
+      "bytes": 20468,
+      "intact": true,
+      "modelSawChars": 20468,
+      "transformation": null,
+      "carrier": "text-json"
+    },
+    {
+      "bytes": 20532,
+      "intact": false,
+      "modelSawChars": 921,
+      "transformation": "harness-truncated-or-spilled",
+      "carrier": null
+    },
+    {
+      "bytes": 20659,
+      "intact": false,
+      "modelSawChars": 921,
+      "transformation": "harness-truncated-or-spilled",
+      "carrier": null
+    },
+    {
+      "bytes": 20914,
+      "intact": false,
+      "modelSawChars": 921,
+      "transformation": "harness-truncated-or-spilled",
+      "carrier": null
+    },
+    {
+      "bytes": 21424,
+      "intact": false,
+      "modelSawChars": 921,
+      "transformation": "harness-truncated-or-spilled",
+      "carrier": null
+    },
+    {
+      "bytes": 25504,
+      "intact": false,
+      "modelSawChars": 921,
+      "transformation": "harness-truncated-or-spilled",
+      "carrier": null
+    },
+    {
+      "bytes": 33664,
+      "intact": false,
+      "modelSawChars": 921,
+      "transformation": "harness-truncated-or-spilled",
+      "carrier": null
+    },
+    {
+      "bytes": 66304,
+      "intact": false,
+      "modelSawChars": 921,
+      "transformation": "harness-truncated-or-spilled",
+      "carrier": null
+    },
+    {
+      "bytes": 131584,
+      "intact": false,
+      "modelSawChars": 922,
+      "transformation": "harness-truncated-or-spilled",
+      "carrier": null
+    },
+    {
+      "bytes": 262144,
+      "intact": false,
+      "modelSawChars": 922,
+      "transformation": "harness-truncated-or-spilled",
+      "carrier": null
+    }
+  ]
+}
