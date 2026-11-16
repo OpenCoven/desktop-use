@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, readFile, writeFile, access } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
@@ -11,6 +11,7 @@ const packageVersion = JSON.parse(await readFile(join(packed, 'package.json'), '
 const main = join(packed, 'dist/src/mcp/main.js');
 const reference = join(packed, 'dist/examples/approval-host/main.js');
 const embedding = join(packed, 'dist/examples/embedded-client.js');
+const approver = join(packed, 'dist/examples/approval-host/approver.js');
 const { createJsonSchemaValidator } = await import(pathToFileURL(join(packed, 'dist/src/mcp/schema.js')));
 const { serveDesktopStdio } = await import(pathToFileURL(join(packed, 'dist/src/mcp/server.js')));
 const { resolveActionPermissions } = await import(pathToFileURL(join(packed, 'dist/src/sdk.js')));
@@ -106,10 +107,35 @@ for (const era of ['modern', 'legacy']) {
     assert.equal((await pending).structuredContent.status, 'cancelled'); await assert.rejects(access(join(stopped.workspace, 'stopped')));
   } finally { await stopped.client.close(); }
 }
+// ADR 0001: the operator-launched approver owns the terminal and secret; the harness runs only the attach relay.
+for (const era of ['modern', 'legacy']) {
+  const base = await fixture(era, '', { host: false }); await base.client.close();
+  // A short private directory keeps the socket under the Unix pathname limit on every runner.
+  const attachDir = await realpath(await mkdtemp('/tmp/cdu-apv-')); const socket = join(attachDir, 'attach.sock');
+  const operator = spawn('python3', [join(process.cwd(), 'pty-host.py'), 'allow', process.execPath, approver, '--config', base.config, '--attach-socket', socket], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let display = ''; operator.stderr.on('data', chunk => display += chunk);
+  const exited = new Promise(resolve => operator.once('exit', resolve));
+  try {
+    const end = Date.now() + 10_000;
+    while (!display.includes('Desktop approver ready')) { assert.ok(Date.now() < end && operator.exitCode === null, display); await new Promise(resolve => setTimeout(resolve, 10)); }
+    const transport = new StdioClientTransport({ command: process.execPath, args: [main, 'attach', '--socket', socket], stderr: 'pipe', env: { PATH: process.env.PATH, NODE_PATH: '' } });
+    const client = new Client({ name: 'packed-attached-harness', version: '1' }, { jsonSchemaValidator: createJsonSchemaValidator(), ...(era === 'modern' ? { versionNegotiation: { mode: { pin: '2026-07-28' } } } : { supportedProtocolVersions: ['2025-11-25'] }) });
+    await client.connect(transport);
+    try {
+      assert.equal(client.getNegotiatedProtocolVersion(), era === 'modern' ? '2026-07-28' : '2025-11-25');
+      assert.deepEqual((await client.listTools()).tools.map(tool => tool.name), ['computer_use']);
+      const result = await client.callTool({ name: 'computer_use', arguments: { action: 'file-write', path: 'attached', content: 'private-content' } });
+      assert.equal(result.structuredContent.success, true); assert.equal(await readFile(join(base.workspace, 'attached'), 'utf8'), 'private-content');
+      assert.match(display, /Decision \[allow\/deny\/cancel\]/); assert.match(display, /"sessionId": "attach-[a-f0-9]{6}-\d+"/);
+      assert.doesNotMatch(await readFile(join(base.state, 'audit.jsonl'), 'utf8'), /private-content|"mac"|"nonce"/);
+    } finally { await client.close(); }
+  } finally { if (operator.exitCode === null) operator.kill('SIGTERM'); }
+  assert.equal(await exited, 0); assert.deepEqual(await readdir(attachDir), []); await rm(attachDir, { recursive: true, force: true });
+}
 const embedded = await fixture('modern', '', { host: false }); await embedded.client.close();
 const child = spawn('python3', [join(process.cwd(), 'pty-host.py'), 'allow', process.execPath, embedding, '--config', embedded.config], { stdio: ['ignore', 'pipe', 'pipe'] });
 let stdout = '', stderr = ''; child.stdout.on('data', chunk => stdout += chunk); child.stderr.on('data', chunk => stderr += chunk);
 assert.equal(await new Promise(resolve => child.once('exit', resolve)), 0);
 assert.equal(JSON.parse(stdout).details.success, true); assert.match(stderr, /Decision \[allow\/deny\/cancel\]/);
 assert.equal(await readFile(join(embedded.workspace, 'reviewed-example.txt'), 'utf8'), 'A reviewed workspace effect.');
-console.log('Compiled MCP: compiled health-only no-start policy on both actual wire revisions, modern/legacy wire parity, real terminal allow/deny/cancel/expiry/missing UI/Stop, private audit, SDK embedding and stderr-only help passed.');
+console.log('Compiled MCP: compiled health-only no-start policy on both actual wire revisions, modern/legacy wire parity, real terminal allow/deny/cancel/expiry/missing UI/Stop, operator-launched approver with attach relay on both revisions, private audit, SDK embedding and stderr-only help passed.');

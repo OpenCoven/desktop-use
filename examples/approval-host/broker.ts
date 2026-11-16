@@ -5,13 +5,16 @@ import type { ApprovalResolution } from '../../src/core/client.js';
 import { authentic, decisions, digest, exactKeys, frame, mac, privateDirectory, readRequest, type Review } from '../../src/mcp/broker-protocol.js';
 import { requestContract } from '../../src/mcp/schema.js';
 
-export async function startApprovalHost(options: { directory: string; secret: Buffer; prompt(review: Review, signal: AbortSignal): Promise<ApprovalResolution> }) {
+/** `notice('review-limit')` fires when the bounded replay register refuses a review; restart the host for a fresh session. */
+export async function startApprovalHost(options: { directory: string; secret: Buffer; prompt(review: Review, signal: AbortSignal): Promise<ApprovalResolution>; notice?(event: 'review-limit'): void }) {
   await privateDirectory(options.directory);
   if (options.secret.length !== 32) throw new Error('APPROVAL_UNAVAILABLE');
   const path = join(options.directory, 'approval.sock'); const sockets = new Set<Socket>(); const seen = new Set<string>();
   const server = createServer({ allowHalfOpen: true }, socket => {
-    sockets.add(socket); const controller = new AbortController();
-    socket.once('close', () => { sockets.delete(socket); controller.abort(); }); socket.on('error', () => controller.abort());
+    sockets.add(socket); const controller = new AbortController(); let expiresAt = Number.POSITIVE_INFINITY;
+    // The abort reason tells the operator UI whether the review expired or was withdrawn (Stop, harness exit, connector loss).
+    const end = () => controller.abort(Date.now() >= expiresAt ? 'expired' : 'cancelled');
+    socket.once('close', () => { sockets.delete(socket); end(); }); socket.on('error', end);
     // Authenticated requests may wait only until their bound expiry; unauthenticated peers get two seconds.
     let timer = setTimeout(() => socket.destroy(), 2000);
     void (async () => {
@@ -23,9 +26,10 @@ export async function startApprovalHost(options: { directory: string; secret: Bu
         const review = request.body as Review;
         if (!review || typeof review.operationId !== 'string' || typeof review.approvalId !== 'string' || typeof review.target !== 'string' || !review.scope || typeof review.scope.principalId !== 'string' || !Number.isSafeInteger(review.expiresAt) || review.expiresAt > Date.now() + 300_000 || !review.policy) return;
         if ((await requestContract['~standard'].validate(review.params)).issues) return;
-        if (seen.has(request.nonce) || seen.has(review.operationId) || seen.size >= 2048) return;
-        seen.add(request.nonce); seen.add(review.operationId);
-        clearTimeout(timer); timer = setTimeout(() => { controller.abort(); socket.destroy(); }, Math.max(1, review.expiresAt - Date.now()));
+        if (seen.has(request.nonce) || seen.has(review.operationId)) return;
+        if (seen.size >= 2048) { options.notice?.('review-limit'); return; }
+        seen.add(request.nonce); seen.add(review.operationId); expiresAt = review.expiresAt;
+        clearTimeout(timer); timer = setTimeout(() => { controller.abort('expired'); socket.destroy(); }, Math.max(1, review.expiresAt - Date.now()));
         let decision: ApprovalResolution = Date.now() >= review.expiresAt ? 'expired' : await options.prompt(review, controller.signal);
         if (!decisions.includes(decision)) decision = 'unavailable';
         if (controller.signal.aborted) return;

@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 import { randomBytes } from 'node:crypto';
 import { mkdtemp, realpath, rm, chmod } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
-import { spawn } from 'node:child_process';
 import { startApprovalHost } from './broker.js';
 import { terminalPrompt } from './terminal.js';
+import { spawnConnector } from './connector.js';
 
 let cleanup: (() => Promise<void>) | undefined;
 try {
@@ -14,13 +13,10 @@ try {
   const secret = randomBytes(32); const terminal = terminalPrompt();
   cleanup = async () => { terminal.close(); secret.fill(0); await rm(directory, { force: true, recursive: true }); };
   const host = await startApprovalHost({ directory, secret, prompt: terminal.prompt });
-  const entry = fileURLToPath(new URL('../../src/mcp/main.js', import.meta.url));
-  const child = spawn(process.execPath, [entry, '--config', process.argv[3], '--approval-socket', host.socketPath, '--approval-secret-fd', '3'], { stdio: ['pipe', 'inherit', 'inherit', 'pipe'] });
+  const child = spawnConnector({ config: process.argv[3], approvalSocket: host.socketPath, secret, stdout: 'inherit' });
   let closing = false;
   cleanup = async () => { if (closing) return; closing = true; await host.close(); terminal.close(); secret.fill(0); await rm(directory, { force: true, recursive: true }); };
-  child.stdio[3]!.on('error', () => {});
-  (child.stdio[3] as import('node:stream').Writable).end(secret.toString('hex') + '\n');
-  child.stdin!.on('error', () => {}); process.stdin.pipe(child.stdin!);
+  process.stdin.pipe(child.stdin!);
   process.once('SIGTERM', () => child.kill('SIGTERM')); process.once('SIGINT', () => child.kill('SIGINT'));
   const code = await new Promise<number>(resolve => { child.once('error', () => resolve(1)); child.once('exit', value => resolve(value ?? 1)); });
   process.stdin.unpipe(child.stdin!); process.stdin.pause(); await cleanup(); process.exitCode = code;

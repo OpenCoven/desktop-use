@@ -64,3 +64,17 @@ for (const scenario of ['config-fifo', 'audit-fifo']) test(`${scenario} startup 
   assert.equal(stderr, 'Desktop MCP startup unavailable; check trusted configuration, private audit state and inherited approval descriptor.\n');
   await assert.rejects(readFile(effect));
 });
+
+test('a trusted launcher may append one bounded session suffix to the configured scope', async () => {
+  const { startupArguments, scopeWithSuffix } = await import('./config.js');
+  assert.equal(startupArguments(['--config', '/trusted.json', '--session-suffix', 'attach-1']).get('--session-suffix'), 'attach-1');
+  assert.equal(startupArguments(['--config', '/trusted.json', '--session-suffix', 'a'.repeat(32)]).get('--session-suffix'), 'a'.repeat(32));
+  for (const suffix of ['', 'Attach-1', '-attach', 'a b', '../x', 'attach_1', 'attach:1', 'a'.repeat(33)]) {
+    assert.throws(() => startupArguments(['--config', '/trusted.json', '--session-suffix', suffix]), /STARTUP_INVALID/, JSON.stringify(suffix));
+  }
+  assert.throws(() => startupArguments(['--config', '/trusted.json', '--session-suffix', 'a', '--session-suffix', 'b']), /STARTUP_INVALID/);
+  assert.deepEqual(scopeWithSuffix({ principalId: 'operator', sessionId: 'desk' }, 'attach-2'), { principalId: 'operator', sessionId: 'desk:attach-2' });
+  assert.deepEqual(scopeWithSuffix({ principalId: 'operator' }, 'attach-2'), { principalId: 'operator', sessionId: 'attach-2' });
+  const scope = { principalId: 'operator', sessionId: 'desk' }; assert.equal(scopeWithSuffix(scope, undefined), scope);
+  assert.throws(() => scopeWithSuffix(scope, 'Bad'), /STARTUP_INVALID/);
+});
