@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "kind": "harness-qualification",
   "evidenceClass": "real-harness, fixture adapter, deterministic local endpoint (not native desktop acceptance)",
-  "recordedAt": "2026-11-16T00:56:52.219Z",
+  "recordedAt": "2026-11-16T01:01:29.496Z",
   "requestedLevels": [
     "L1",
     "L2"
@@ -46,7 +46,7 @@
     "exitCode": 0,
     "signal": null,
     "timedOut": false,
-    "seconds": 1.1,
+    "seconds": 0.7,
     "modelRequests": 3,
     "toolBearingRequests": 3,
     "scriptCompleted": true,
@@ -136,6 +136,7 @@
     }
   },
   "lifecycle": {
+    "connectorStarted": true,
     "connectorReleasedAfterHarnessExit": true,
     "otherProcessesAfterHarnessExit": 0,
     "auditEvents": 2,

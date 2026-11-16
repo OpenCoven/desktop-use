@@ -62,6 +62,22 @@ const copilot = {
   },
 };
 
+const covenCode = {
+  id: 'coven-code', label: 'Coven Code', binary: 'coven-code', protocol: 'anthropic-messages', variants: ['default', 'inline'],
+  recipe: { mode: 'print (-p) with --allowed-tools mcp__coven-desktop-use__computer_use; MCP server in ~/.coven-code/settings.json "mcpServers" array (inline: --mcp-config)', endpoint: '--provider anthropic --api-base' },
+  async prepare({ home, port, server, prompt, variant }) {
+    const config = join(home, '.coven-code');
+    await mkdir(config, { recursive: true, mode: 0o700 });
+    // Coven Code takes MCP servers as an array of named entries, not a name-keyed map.
+    const servers = { mcpServers: [{ name: SERVER_NAME, command: server.command, args: server.args }] };
+    if (variant === 'default') await writePrivate(join(config, 'settings.json'), JSON.stringify(servers));
+    return {
+      env: {},
+      args: ['-p', '--provider', 'anthropic', '--api-base', `http://127.0.0.1:${port}`, '--api-key', LOCAL_KEY, ...(variant === 'inline' ? ['--mcp-config', JSON.stringify(servers)] : []), '--allowed-tools', `mcp__${SERVER_NAME}__computer_use`, '--max-turns', '6', prompt],
+    };
+  },
+};
+
 // Harnesses in the support plan that this runner cannot drive yet. Each records why, so it reports unqualified.
 const blocked = (id, label, binary, reason, detail) => ({ id, label, binary, blocked: { reason, detail }, variants: ['default'] });
 
@@ -71,5 +87,5 @@ export const HARNESSES = Object.freeze({
   copilot,
   opencode: blocked('opencode', 'OpenCode', 'opencode', 'no-runner-recipe', 'No launch recipe yet; needs a verified MCP config shape and a configurable provider base URL (#34).'),
   hermes: blocked('hermes', 'Hermes', 'hermes', 'no-runner-recipe', 'No launch recipe yet; needs a verified MCP config shape and a configurable provider base URL (#34).'),
-  'coven-code': blocked('coven-code', 'Coven Code', 'coven-code', 'no-runner-recipe', 'No verified recipe: the MCP server was not started from settings.json or --mcp-config in earlier runs (#34).'),
+  'coven-code': covenCode,
 });

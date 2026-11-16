@@ -49,6 +49,7 @@ test('a receipt that reports an unqualified level as a pass is rejected', () => 
 test('L1 needs exactly one desktop tool named computer_use; L2 needs both structured results', () => {
   assert.equal(discoveryVerdict({ endpointReached: false, desktopTools: [] }).verdict, 'unqualified');
   assert.deepEqual(discoveryVerdict({ endpointReached: true, desktopTools: [] }), { verdict: 'fail', reason: 'computer-use-not-listed' });
+  assert.deepEqual(discoveryVerdict({ endpointReached: true, connectorStarted: false, desktopTools: [] }), { verdict: 'fail', reason: 'mcp-server-not-started' });
   assert.deepEqual(discoveryVerdict({ endpointReached: true, desktopTools: [...listed, { listedAs: 'mcp__coven-desktop-use__other', mcpName: 'other' }] }), { verdict: 'fail', reason: 'unexpected-desktop-tools' });
   assert.equal(discoveryVerdict({ endpointReached: true, desktopTools: listed }).verdict, 'pass');
   const discovery = { endpointReached: true, desktopTools: listed };
@@ -153,7 +154,7 @@ test('harnesses without a runner recipe are unqualified with their recorded bloc
   assert.equal(cli(['--harness', 'codex', '--level', 'L9']).status, 64);
 });
 
-test('a harness that reaches the endpoint without listing computer_use fails, and one that never reaches it is unqualified', async t => {
+test('a harness that reaches the endpoint without starting the connector fails, and one that never reaches it is unqualified', async t => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'qualify-harness-test-')));
   t.after(() => rm(root, { recursive: true, force: true }));
   const connector = join(root, 'unused-connector.mjs');
@@ -165,7 +166,8 @@ test('a harness that reaches the endpoint without listing computer_use fails, an
   await writeFile(silent, `#!${process.execPath}\nconsole.log('stand-in 1.0');\n`, { mode: 0o700 });
   const failed = cli(['--harness', 'claude-code', '--bin', reaching, '--connector', connector, '--timeout', '30']);
   assert.equal(failed.status, 1, failed.stderr);
-  assert.deepEqual(failed.receipt.levels.L1, { verdict: 'fail', reason: 'computer-use-not-listed' });
+  assert.deepEqual(failed.receipt.levels.L1, { verdict: 'fail', reason: 'mcp-server-not-started' }, 'the stand-in never starts the connector');
+  assert.equal(failed.receipt.lifecycle.connectorStarted, false);
   assert.equal(failed.receipt.harness.version, 'stand-in 1.0');
   assertReceipt(failed.receipt); assertSanitized(failed.receipt, [...privateValues(), root]);
   const quiet = cli(['--harness', 'claude-code', '--bin', silent, '--connector', connector, '--timeout', '30']);

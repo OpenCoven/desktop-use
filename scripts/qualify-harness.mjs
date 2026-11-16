@@ -177,6 +177,8 @@ async function qualify() {
     child = undefined;
 
     const seen = endpoint.observations();
+    // The connector opens its audit file at startup, so a missing file means the harness never started it.
+    seen.discovery.connectorStarted = await access(join(state, 'audit.jsonl')).then(() => true, () => false);
     const audit = await readFile(join(state, 'audit.jsonl'), 'utf8').catch(() => '');
     const auditLines = audit.split('\n').filter(Boolean);
     const debug = launch.debugLog ? await readFile(launch.debugLog, 'utf8').catch(() => '') : '';
@@ -196,7 +198,7 @@ async function qualify() {
       run: { exitCode: exit.code, signal: exit.signal, timedOut, seconds, modelRequests: seen.requests, toolBearingRequests: seen.toolRequests, scriptCompleted: seen.finished, unexpectedEndpointPaths: seen.unexpectedPaths },
       discovery: { mode: seen.discovery.mode ?? 'listed', ...(seen.discovery.search ? { search: seen.discovery.search } : {}), desktopTools: seen.discovery.desktopTools.map(({ callName, namespace, ...tool }) => tool), otherToolCount: seen.discovery.otherToolCount, otherTools: seen.discovery.otherTools, laterListings: seen.laterListings, harnessNotes: notes },
       observation: seen.observation,
-      lifecycle: { connectorReleasedAfterHarnessExit: connectorReleased, otherProcessesAfterHarnessExit: strays, auditEvents: auditLines.length, auditFreeOfPrivateInput: !audit.includes(reasonMarker) && !audit.includes(fixture.base64) },
+      lifecycle: { connectorStarted: seen.discovery.connectorStarted, connectorReleasedAfterHarnessExit: connectorReleased, otherProcessesAfterHarnessExit: strays, auditEvents: auditLines.length, auditFreeOfPrivateInput: !audit.includes(reasonMarker) && !audit.includes(fixture.base64) },
       levels,
     };
     receipt.verdict = overall(levels, requestedLevels);

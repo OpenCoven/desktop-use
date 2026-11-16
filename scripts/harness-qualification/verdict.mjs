@@ -32,7 +32,8 @@ export function exitCode(verdict) {
 export function discoveryVerdict(discovery) {
   if (!discovery?.endpointReached) return unqualified('endpoint-not-reached');
   if (discovery.desktopTools.length === 1 && discovery.desktopTools[0].mcpName === 'computer_use') return { verdict: 'pass' };
-  return { verdict: 'fail', reason: discovery.desktopTools.length === 0 ? 'computer-use-not-listed' : 'unexpected-desktop-tools' };
+  if (discovery.desktopTools.length) return { verdict: 'fail', reason: 'unexpected-desktop-tools' };
+  return { verdict: 'fail', reason: discovery.connectorStarted === false ? 'mcp-server-not-started' : 'computer-use-not-listed' };
 }
 
 // L2 observation: health and screenshot both reach the model as structured results. Image handling is recorded,

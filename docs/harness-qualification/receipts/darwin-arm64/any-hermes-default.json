@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "kind": "harness-qualification",
   "evidenceClass": "real-harness, fixture adapter, deterministic local endpoint (not native desktop acceptance)",
-  "recordedAt": "2026-11-16T00:57:17.992Z",
+  "recordedAt": "2026-11-16T01:02:04.673Z",
   "requestedLevels": [
     "L1",
     "L2"
