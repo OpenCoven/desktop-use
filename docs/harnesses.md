@@ -76,7 +76,7 @@ OpenClaw uses the plugin path described in [the MCP guide](mcp.md) and [the clie
 - Claude Code needs the advertised-schema fix from [PR 50](https://github.com/OpenCoven/desktop-use/pull/50). The Linux receipt above predates that fix.
 - Codex drops typed image content when it forwards `structuredContent`. Default model metadata also truncates the large health report; the `tool-search` variant delivers that structured report but still drops the image. A passing L2 cell therefore provides no visual-input assurance.
 - Copilot's default mode drops images. Its `vision` variant delivered the exact fixture image, while the health report still spilled to a file and failed L2. The separate discovery-result budget work is tracked in [issue 52](https://github.com/OpenCoven/desktop-use/issues/52).
-- OpenCode and Hermes are explicitly unqualified by the runner. Coven Code's local print-mode run reached the model endpoint without starting MCP; its Linux binary was unavailable. Keep these concrete blockers until new receipts replace them.
+- OpenCode and Hermes are explicitly unqualified by the retained runner. Coven Code's retained local print-mode run reached the model endpoint without starting MCP; its Linux binary was unavailable. These are historical qualification gaps. A missing runner recipe or absent local binary does not establish an upstream harness blocker.
 - [PR 49](https://github.com/OpenCoven/desktop-use/pull/49) contains broker/PTY tests and partial macOS real-harness approval examples. Complete L3/L4 requires the remaining real-harness, platform and lifecycle cases in [issue 35](https://github.com/OpenCoven/desktop-use/issues/35), including pending and active interruption and cross-session isolation.
 
 ## Preparing a recipe
@@ -133,7 +133,9 @@ The output is quoted JSON usable as YAML, with an `mcp_servers` entry in the dis
 coven-desktop-use-mcp recipe --harness coven-code
 ```
 
-The recipe snapshot emits the trusted engine-global `config.mcp_servers` array. The real runner instead tried the print-mode documented `mcpServers` array in disposable `settings.json`, plus inline `--mcp-config`; neither started MCP. Those are different configuration surfaces. Their compatibility and the expected alias are unverified; preserve the startup failure until the Coven Code or recipe owner supplies a working receipt.
+The recipe snapshot emits the trusted engine-global `config.mcp_servers` array. The retained runner instead tried an `mcpServers` array in disposable `settings.json`, plus inline `--mcp-config`; neither started MCP. Those are different configuration surfaces, and the retained startup failure does not establish that print mode cannot start MCP.
+
+A later [controlled transport diagnosis](https://github.com/OpenCoven/desktop-use/pull/53#issuecomment-6907719900) used installed Coven Code `0.9.0`, disposable configuration with nested `config.mcp_servers`, a host-admission bridge and packed connector SHA256 `248fe1e27d4971c63b8f0b270da049a963ba6b22b6bb5edb617c231b4226b6d0`. It delivered compact health and screenshot structured content intact through the fixture adapter and deterministic loopback endpoint; screenshot image content was dropped and represented by a placeholder. The landed recipe already uses this configuration nesting. The existing runner still needs its own correction and standard qualification receipts; the historical matrix above is unchanged by this diagnostic and makes no L3/L4 or native claim.
 
 ### Recipe: `grok`
 
