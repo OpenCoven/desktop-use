@@ -1,0 +1,137 @@
+{
+  "schemaVersion": 1,
+  "kind": "harness-tool-output-budget",
+  "recordedAt": "2026-11-16T02:08:20.865Z",
+  "probe": {
+    "structuredContent": "compact JSON padded with real capability action entries",
+    "text": "the same JSON, pretty-printed"
+  },
+  "harness": {
+    "id": "codex",
+    "label": "Codex CLI",
+    "variant": "default",
+    "version": "codex-cli 0.169.0",
+    "recipe": {
+      "mode": "exec --skip-git-repo-check",
+      "endpoint": "model_providers base_url (wire_api = responses)",
+      "mcp": "default_tools_approval_mode = \"approve\", startup_readiness = \"catalog\"",
+      "features": "plugins = false (no curated plugin sync from GitHub)"
+    },
+    "endpointProtocol": "openai-responses",
+    "requestedModels": [
+      "qualification"
+    ]
+  },
+  "host": {
+    "os": "darwin",
+    "osRelease": "27.2.0",
+    "arch": "arm64",
+    "displayServer": "quartz",
+    "node": "v24.22.0"
+  },
+  "largestIntactBytes": 11926,
+  "smallestRejectedBytes": 11989,
+  "rejectedAs": "harness-truncated-or-spilled",
+  "modelSawCharsWhenRejected": 12020,
+  "resolutionBytes": 64,
+  "runs": [
+    {
+      "bytes": 1024,
+      "intact": true,
+      "modelSawChars": 1058,
+      "transformation": null,
+      "carrier": "text-json-with-harness-text"
+    },
+    {
+      "bytes": 9184,
+      "intact": true,
+      "modelSawChars": 9218,
+      "transformation": null,
+      "carrier": "text-json-with-harness-text"
+    },
+    {
+      "bytes": 11224,
+      "intact": true,
+      "modelSawChars": 11258,
+      "transformation": null,
+      "carrier": "text-json-with-harness-text"
+    },
+    {
+      "bytes": 11734,
+      "intact": true,
+      "modelSawChars": 11768,
+      "transformation": null,
+      "carrier": "text-json-with-harness-text"
+    },
+    {
+      "bytes": 11862,
+      "intact": true,
+      "modelSawChars": 11896,
+      "transformation": null,
+      "carrier": "text-json-with-harness-text"
+    },
+    {
+      "bytes": 11926,
+      "intact": true,
+      "modelSawChars": 11960,
+      "transformation": null,
+      "carrier": "text-json-with-harness-text"
+    },
+    {
+      "bytes": 11989,
+      "intact": false,
+      "modelSawChars": 12020,
+      "transformation": "harness-truncated-or-spilled",
+      "carrier": null
+    },
+    {
+      "bytes": 12244,
+      "intact": false,
+      "modelSawChars": 12020,
+      "transformation": "harness-truncated-or-spilled",
+      "carrier": null
+    },
+    {
+      "bytes": 13264,
+      "intact": false,
+      "modelSawChars": 12020,
+      "transformation": "harness-truncated-or-spilled",
+      "carrier": null
+    },
+    {
+      "bytes": 17344,
+      "intact": false,
+      "modelSawChars": 12020,
+      "transformation": "harness-truncated-or-spilled",
+      "carrier": null
+    },
+    {
+      "bytes": 33664,
+      "intact": false,
+      "modelSawChars": 12020,
+      "transformation": "harness-truncated-or-spilled",
+      "carrier": null
+    },
+    {
+      "bytes": 66304,
+      "intact": false,
+      "modelSawChars": 12020,
+      "transformation": "delivered",
+      "carrier": "text-json-with-harness-text"
+    },
+    {
+      "bytes": 131584,
+      "intact": false,
+      "modelSawChars": 12020,
+      "transformation": "harness-truncated-or-spilled",
+      "carrier": null
+    },
+    {
+      "bytes": 262144,
+      "intact": false,
+      "modelSawChars": 12020,
+      "transformation": "harness-truncated-or-spilled",
+      "carrier": null
+    }
+  ]
+}

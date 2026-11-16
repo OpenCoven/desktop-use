@@ -22,10 +22,10 @@ import { HARNESSES } from './harness-qualification/harnesses.mjs';
 import { LEVELS, assertReceipt, assertSanitized, discoveryVerdict, exitCode, observationVerdict, overall, unqualified } from './harness-qualification/verdict.mjs';
 
 const repo = fileURLToPath(new URL('../', import.meta.url));
-const usage = message => { process.stderr.write(`${message}\nusage: qualify-harness.mjs --harness <${Object.keys(HARNESSES).join('|')}> [--variant <name>] [--bin <path>] [--connector built|packed|<tarball.tgz>|<main.js>] [--level L1|L2] [--timeout <s>] [--out <file>] [--keep]\n`); process.exit(64); };
+const usage = message => { process.stderr.write(`${message}\nusage: qualify-harness.mjs --harness <${Object.keys(HARNESSES).join('|')}> [--variant <name>] [--bin <path>] [--connector built|packed|<tarball.tgz>|<main.js>] [--level L1|L2] [--probe-bytes <n> [--probe-text compact|pretty]] [--timeout <s>] [--out <file>] [--keep]\n`); process.exit(64); };
 let options;
 try {
-  options = parseArgs({ options: { harness: { type: 'string' }, variant: { type: 'string', default: 'default' }, bin: { type: 'string' }, connector: { type: 'string', default: 'built' }, level: { type: 'string', default: 'L2' }, timeout: { type: 'string', default: '150' }, out: { type: 'string' }, keep: { type: 'boolean', default: false } }, strict: true }).values;
+  options = parseArgs({ options: { harness: { type: 'string' }, variant: { type: 'string', default: 'default' }, bin: { type: 'string' }, connector: { type: 'string', default: 'built' }, level: { type: 'string', default: 'L2' }, 'probe-bytes': { type: 'string' }, 'probe-text': { type: 'string', default: 'compact' }, timeout: { type: 'string', default: '150' }, out: { type: 'string' }, keep: { type: 'boolean', default: false } }, strict: true }).values;
 } catch (error) { usage(error.message); }
 const harness = HARNESSES[options.harness];
 if (!harness) usage(`Unknown harness ${options.harness ?? '(none)'}`);
@@ -34,6 +34,11 @@ if (!LEVELS.includes(options.level)) usage(`Unknown level ${options.level}`);
 const timeoutMs = Number(options.timeout) * 1000;
 if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) usage('Timeout must be a positive number of seconds');
 const requestedLevels = LEVELS.slice(0, LEVELS.indexOf(options.level) + 1);
+// Budget probe (#52): replace the connector with a server whose results have an exact size.
+const probeBytes = options['probe-bytes'] === undefined ? null : Number(options['probe-bytes']);
+if (probeBytes !== null && !(Number.isSafeInteger(probeBytes) && probeBytes >= 256)) usage('--probe-bytes must be an integer of at least 256');
+const probeText = options['probe-text'];
+if (!['compact', 'pretty'].includes(probeText)) usage('--probe-text must be compact or pretty');
 
 function displayServer() {
   if (process.platform === 'darwin') return 'quartz';
@@ -90,6 +95,7 @@ async function qualify() {
   // Connector: the repository build, this checkout packed and installed outside the repository, a given tarball
   // installed the same way, or an explicit entry point.
   async function connector() {
+    if (probeBytes !== null) return { main: fileURLToPath(new URL('./harness-qualification/size-probe-server.mjs', import.meta.url)), identity: { source: 'size probe (not the desktop-use connector)', package: null, version: null, commit: null } };
     const pkg = JSON.parse(await readFile(join(repo, 'package.json'), 'utf8'));
     const commit = spawnSync('git', ['rev-parse', '--short=12', 'HEAD'], { cwd: repo, encoding: 'utf8' }).stdout.trim() || null;
     if (options.connector === 'built') {
@@ -143,7 +149,7 @@ async function qualify() {
     const fixture = await fixtureAdapter();
     forbidden.push(fixture.base64, reasonMarker, root);
     const cduConfig = join(root, 'desktop-use.json');
-    await writeFile(cduConfig, JSON.stringify({ workspaceDir: workspace, stateDir: state, principalId: 'harness-qualification', sessionId: `${harness.id}-${randomBytes(3).toString('hex')}`, adapterPath: fixture.adapter, actionProfile: 'observation-only' }), { mode: 0o600 });
+    await writeFile(cduConfig, JSON.stringify({ workspaceDir: workspace, stateDir: state, principalId: 'harness-qualification', sessionId: `${harness.id}-${randomBytes(3).toString('hex')}`, adapterPath: fixture.adapter, actionProfile: 'observation-only', ...(probeBytes === null ? {} : { probeBytes, probeText }) }), { mode: 0o600 });
     const server = { command: process.execPath, args: [target.main, '--config', cduConfig] };
 
     endpoint = createModelEndpoint({ protocol: harness.protocol, fixtureSha256: fixture.sha256, reason: reasonMarker });
@@ -192,13 +198,14 @@ async function qualify() {
     }
     const receipt = {
       ...baseReceipt(),
-      harness: { id: harness.id, label: harness.label, variant: options.variant, version, recipe: harness.recipe, endpointProtocol: harness.protocol },
+      harness: { id: harness.id, label: harness.label, variant: options.variant, version, recipe: harness.recipe, endpointProtocol: harness.protocol, requestedModels: seen.requestedModels },
       connector: { ...target.identity, launch: 'node <connector main.js> --config <disposable config>', actionProfile: 'observation-only' },
       adapter: { kind: 'fixture', capabilityFixture: fixture.capabilityFixture, screenshotFixture: 'contracts/v1/fixtures/images/valid.png', screenshotSha256: fixture.sha256 },
       run: { exitCode: exit.code, signal: exit.signal, timedOut, seconds, modelRequests: seen.requests, toolBearingRequests: seen.toolRequests, scriptCompleted: seen.finished, unexpectedEndpointPaths: seen.unexpectedPaths },
       discovery: { mode: seen.discovery.mode ?? 'listed', ...(seen.discovery.search ? { search: seen.discovery.search } : {}), desktopTools: seen.discovery.desktopTools.map(({ callName, namespace, ...tool }) => tool), otherToolCount: seen.discovery.otherToolCount, otherTools: seen.discovery.otherTools, laterListings: seen.laterListings, harnessNotes: notes },
       observation: seen.observation,
       lifecycle: { connectorStarted: seen.discovery.connectorStarted, connectorReleasedAfterHarnessExit: connectorReleased, otherProcessesAfterHarnessExit: strays, auditEvents: auditLines.length, auditFreeOfPrivateInput: !audit.includes(reasonMarker) && !audit.includes(fixture.base64) },
+      ...(probeBytes === null ? {} : { probe: { targetBytes: probeBytes, text: probeText } }),
       levels,
     };
     receipt.verdict = overall(levels, requestedLevels);

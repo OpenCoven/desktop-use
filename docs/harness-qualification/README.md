@@ -19,6 +19,8 @@ node scripts/harness-qualification/summarize.mjs codex.json
 | `--bin <path>` | Harness executable. The default is the harness's command on `PATH`. |
 | `--connector <source>` | `built` (default: this checkout's `dist`), `packed` (pack this checkout and install it outside the repository), a `.tgz` tarball, or an explicit `main.js` |
 | `--level L1\|L2` | Highest level to qualify (default `L2`) |
+| `--probe-bytes <n>` | Budget probe (#52): replace the connector with a size probe whose `computer_use` result has exactly `n` compact bytes of `structuredContent` |
+| `--probe-text compact\|pretty` | With `--probe-bytes`: whether `content[0].text` is compact or pretty-printed JSON (default `compact`) |
 | `--timeout <s>` | Harness run limit (default 150) |
 | `--out <file>` | Receipt path (default: stdout) |
 | `--keep` | Keep the disposable run directory for debugging |
@@ -94,7 +96,7 @@ In every run that started the connector, it exited with the harness. No other pr
 **Codex CLI 0.169.0**
 - **Discovery.** With an unknown model slug, Codex lists MCP tools up front. With `gpt-5.5` metadata it defers them behind the client-side `tool_search` tool, so the model must search first. The scripted model does that in the `tool-search` variant.
 - **Images are always dropped.** When an MCP result has `structuredContent`, Codex sends only the serialized `structuredContent` as text, and drops `content` along with any image. See `CallToolResult::as_function_call_output_payload` in `codex-rs/protocol/src/models.rs` at `rust-v0.169.0`. It also prefixes results with `Wall time: … Output:`.
-- **Truncation.** With an unknown model slug, tool output is cut to about 12 KB, so the 43.9 KB `health` result arrives truncated. With `gpt-5.5` metadata it arrives whole.
+- **Truncation.** With an unknown model slug, tool output is cut to about 12 KB, so the 43.9 KB `health` result arrives truncated. With `gpt-5.5` metadata it arrives whole. Since #52, `health` fits in both cases: see [Compact discovery results](#compact-discovery-results-52-pr-53).
 - **Intermittent empty search.** `tool_search` sometimes returned no tools. That happened in 2 of 13 runs with the `main` build and 0 of 11 with the #50 build, with the host at load average 100–250. The cause is unconfirmed, and the runner does not retry.
 - **Curated plugin sync.** The `plugins` feature (stable, on by default) clones `github.com/openai/plugins` at startup. With it enabled, one process outlived Codex's exit in both variants. The recipe sets `[features] plugins = false`.
 - Codex forwards a top-level `allOf` unchanged.
@@ -102,7 +104,7 @@ In every run that started the connector, it exited with the harness. No other pr
 **GitHub Copilot CLI 1.0.107**
 - **BYOK.** BYOK mode needs no GitHub authentication, so Copilot qualifies against the local endpoint. This withdraws the earlier "needs an authorized test token" blocker.
 - **Tool and schema.** The tool is listed as `coven-desktop-use-computer_use`. Copilot rewrites the schema: it drops `$schema`, `$id` and the top-level `allOf`, and adds `description`.
-- **Large results spill.** Results above an inline limit go to a session file, and the model gets a 500-character preview. The 43.9 KB `health` result therefore fails L2 in every variant.
+- **Large results spill.** Results above an inline limit go to a session file, and the model gets a 500-character preview. The 43.9 KB `health` result therefore fails L2 in every variant. The limit is 20,468 B (see [Tool-output budgets](#tool-output-budgets-52)), and since #52 `health` fits.
 - **Images.** BYOK models are text-only by default, so the image is replaced with an "image attachment was omitted" notice. `COPILOT_PROVIDER_VISION=true` delivers it byte-identical.
 
 **OpenCode and Hermes** are not installed on this host and have no runner recipe.
@@ -134,6 +136,60 @@ The hosted runs packed `main`'s connector (tarball `d4141f9e1ea9…`), byte-iden
 | OpenCode, Hermes | unqualified (`no-runner-recipe`) | |
 
 Claude Code with the #41 fix (#50) has not been run on Linux yet. Its Linux receipt follows once #50 merges and this workflow packs the fixed connector.
+
+## Tool-output budgets (#52)
+
+`scripts/harness-qualification/measure-budget.mjs` bisects the largest `computer_use` result a harness delivers to the model intact:
+
+```sh
+node scripts/harness-qualification/measure-budget.mjs --harness codex --text pretty --out codex-default.json
+```
+
+Each probe is a full qualification run with `--probe-bytes`. The size probe replaces the connector and pads `structuredContent` with real capability entries to an exact compact size. A size counts as intact when the model receives parseable structured content of at least that size. The default resolution is 64 B.
+
+Recorded on macOS (Darwin 27.2.0), arm64, on 2026-11-15, with a pretty-printed text carrier. The results are in [`budget/darwin-arm64/`](budget/darwin-arm64/).
+
+| Harness | Requested model | Largest intact | Smallest rejected | Model received instead |
+|---|---|---|---|---|
+| Claude Code 2.1.325 | `claude-opus-5-5` (harness default) | 49,984 B | 50,048 B | a 2,384-character preview of a stored file |
+| Codex CLI 0.169.0, default | `qualification` (no catalog metadata) | 11,926 B | 11,989 B | 12,020 characters, truncated in the middle |
+| Codex CLI 0.169.0, tool-search | `gpt-5.5` (bundled catalog) | 47,944 B | 48,008 B | 48,020 characters, truncated in the middle |
+| Copilot CLI 1.0.107, BYOK | `claude-sonnet-4` | 20,468 B | 20,532 B | a 921-character preview of a spilled file |
+| Copilot CLI 1.0.107, BYOK vision | `claude-sonnet-4` | 20,468 B | 20,532 B | the same |
+
+- **All three harnesses budget the compact `structuredContent`, not the text.**
+  - A compact-text run gave exactly the same thresholds. It was recorded before the receipts named the requested model, and it is in [`budget/darwin-arm64/compact-text/`](budget/darwin-arm64/compact-text/).
+  - With 12,000 B of structured content and 21,959 B of pretty text, Copilot delivered the 12,000 B.
+- **A cut result can still parse.** Codex keeps the head and tail of a long output. When the cut falls inside one long string, the rest can still parse: at 48,199 B the model got parseable JSON of only 48,020 characters. The size check catches this for the probe. Connector results stay far below every limit once #52 lands.
+- **The fix.** ADR [0002](../adr/0002-compact-mcp-discovery-results.md) keeps every connector-shaped observation-only result within 8 KiB. `src/mcp/result-budget.test.ts` enforces that for every capability fixture.
+
+## Compact discovery results (#52, PR #53)
+
+With ADR 0002, MCP `health` sends the model `capabilitySummaryV1` instead of the full report. The summary keeps per-variant eligibility: a review on #53 found that the first, flattened shape listed unsupported modes and selectors as usable. The macOS fixture result is 6,735 characters (6,769 under Codex, with its prefix); before ADR 0002 it was 43,921. On Linux it is 7,096.
+
+**The head.** #53's head `50fc62e` is stacked on `stack/qualify-35-schema-41`. That branch is #51, #50 (`348bf1477ee4`, the #41 fix) and main `27255b0`, all merged without edits.
+
+**The tarball.** Local and CI packs of that head are byte-identical: `9a45587ba567…`.
+
+| Harness | macOS, local | Linux CI | Hosted macOS CI | Screenshot image |
+|---|---|---|---|---|
+| Claude Code 2.1.325 | **pass / pass** | **pass / pass** | **pass / pass** | delivered, byte-identical |
+| Codex CLI 0.169.0, default | **pass / pass** | **pass / pass** | **pass / pass** | dropped |
+| Codex CLI 0.169.0, tool-search | **pass / pass** | **pass / pass** | **pass / pass** | dropped |
+| Copilot CLI 1.0.107, default | **pass / pass** | **pass / pass** | **pass / pass** | dropped, with an "omitted" notice |
+| Copilot CLI 1.0.107, vision | **pass / pass** | **pass / pass** | **pass / pass** | delivered, byte-identical |
+
+Cells are L1 / L2. The local runs used the same pinned CLIs as the workflow, installed into a scratch prefix.
+
+The receipts are named `pr53-*`:
+- local runs: [`receipts/darwin-arm64/`](receipts/darwin-arm64/);
+- CI run `43825973558`: [`receipts/linux-x64-ci/`](receipts/linux-x64-ci/) and [`receipts/darwin-arm64-ci/`](receipts/darwin-arm64-ci/).
+
+In every run, the connector exited with the harness, no other process outlived it, and the audit held no private input.
+
+Earlier heads of #53 gave the same verdicts, with the flattened summary:
+- `ef120d7` (run `43798045909`) passed L1/L2 everywhere.
+- `5362523`, before #50 was stacked in, failed Claude Code at L1 with `computer-use-not-listed` (#41), as `main` still does.
 
 ## Not covered yet
 

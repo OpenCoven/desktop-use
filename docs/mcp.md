@@ -2,7 +2,7 @@
 
 The MCP connector maps `computer_use` to the host-neutral `DesktopClient`, preserving all 18 canonical action families, shared validation, image receipts, policy, audit and cancellation. It serves local stdio only. Model requests cannot supply `confirm`, workspace or principal identity, approval decisions, secrets or broker configuration. The only listed tool is `computer_use`. Capabilities identify the consumer as `mcp`; installed helpers and protocol success do not establish desktop acceptance.
 
-The connector consumes the public execution v1 request and structured-result schemas described in [the execution contract and version policy](desktop-client.md#execution-contract-and-version-policy). Its negotiated MCP wire revision is independent of that desktop contract. Both supported wire revisions preserve the SDK's `content` and map its `details` to `structuredContent`.
+The connector consumes the public execution v1 request and structured-result schemas described in [the execution contract and version policy](desktop-client.md#execution-contract-and-version-policy). Its negotiated MCP wire revision is independent of that desktop contract. Both supported wire revisions map its `details` to `structuredContent`, with one projection: `health` and `doctor` carry `capabilitySummaryV1` in place of `capabilitiesV1` and omit the adapter's duplicate raw report and the OpenClaw `agent` profile ([ADR 0002](adr/0002-compact-mcp-discovery-results.md)). The first `content` block is the compact JSON of `structuredContent`, and image blocks are preserved.
 
 ## Trusted startup
 

@@ -5,6 +5,7 @@ import type { Readable, Writable } from 'node:stream';
 import { createDesktopClient, type DesktopClientOptions, type DesktopResult } from '../core/client.js';
 import { COMPUTER_USE_TOOL_NAME } from '../tool-names.js';
 import { requestContract, resultContract, createJsonSchemaValidator } from './schema.js';
+import { projectMcpResult } from './result-projection.js';
 
 const packageVersion: string = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version;
 
@@ -18,7 +19,8 @@ export function serveDesktopStdio(options: DesktopClientOptions, streams: { inpu
       pending.add(operation);
       try {
         const result = await operation;
-        return { content: result.content, structuredContent: result.details, isError: result.details.success === false };
+        const { content, structuredContent } = projectMcpResult(result);
+        return { content, structuredContent, isError: result.details.success === false };
       } catch {
         return { content: [{ type: 'text' as const, text: 'Desktop request failed.' }], structuredContent: { status: 'error', success: false, code: 'DESKTOP_REQUEST_FAILED' }, isError: true };
       } finally { pending.delete(operation); }
