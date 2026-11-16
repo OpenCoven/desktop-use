@@ -3,7 +3,7 @@ import { createCapabilitiesFixture, discoveryCallsForPlan, inspectDiscoveryTrans
 import { linkLaneHost, assertHostInstallation, assertLoadedSdk, assertMinimalHttpPolicy, assertExplicitDenyModel, assertExplicitDenyGuard, assertHostApprovalDenied, waitForHostApproval } from "./release-qualification.mjs";
 import { createImageFixture, inspectProviderImage } from "./gateway-image-fixture.mjs";
 import { COMPUTER_USE_TOOL_NAME, DESKTOP_USE_TOOL_NAME } from "../src/tool-names.ts";
-import { buildRestrictedBatch, batchCallId, callName } from "./gateway-action-batches.mjs";
+import { buildRestrictedBatch, fixtureCallId, callName } from "./gateway-action-batches.mjs";
 // Real pinned gateway + local deterministic model transport; no live provider or desktop input.
 import assert from "node:assert/strict";
 import { createServer, request as httpRequest } from "node:http";
@@ -110,8 +110,8 @@ const model = createServer(async (req, res) => {
     if (plan.calls) {
       const responseIndex = plan.responses ?? 0;
       assert.ok(responseIndex < 3, "Restricted fixture exceeded batch, Stop and completion provider responses");
-      const expectedIds = responseIndex === 0 ? [] : plan.calls.map(call => batchCallId(call.name));
-      if (responseIndex === 2) expectedIds.push(batchCallId(callName("allowed", "stop")));
+      const expectedIds = responseIndex === 0 ? [] : plan.calls.map(call => fixtureCallId(call.name));
+      if (responseIndex === 2) expectedIds.push(fixtureCallId(callName("allowed", "stop")));
       assert.deepEqual(currentToolResults.map(message => message.tool_call_id).sort(), expectedIds.sort(), "Restricted provider response must retain each preceding tool result exactly once before Stop/completion");
       assert.equal(finished, responseIndex > 0, "Restricted provider must not repeat the batch after lost/truncated history");
     }
@@ -123,7 +123,7 @@ const model = createServer(async (req, res) => {
     if (finished && plan.imageKind) await save(`provider-image-${plan.replaySourceCase ? "large-replay" : plan.imageKind}.json`, await inspectProviderImage(body, imageFixture.fixtures[plan.imageKind], { currentCase: marker, ...(plan.replaySourceCase ? { stage: "history-replay", sourceCase: plan.replaySourceCase } : {}) }));
     if (finished) {
       phase = "discovery-transport";
-      const calls = discoveryCallsForPlan(plan, { currentCase: marker, batchCallId, allowedActions: profileActions, canonicalAliases: legacyActions, legacyToolName: DESKTOP_USE_TOOL_NAME, canonicalToolName: COMPUTER_USE_TOOL_NAME });
+      const calls = discoveryCallsForPlan(plan, { currentCase: marker, batchCallId: fixtureCallId, allowedActions: profileActions, canonicalAliases: legacyActions, legacyToolName: DESKTOP_USE_TOOL_NAME, canonicalToolName: COMPUTER_USE_TOOL_NAME });
       const receipts = calls.length ? inspectDiscoveryTransport(body, { currentCase: marker, calls, contextWindowTokens: QUALIFICATION_CONTEXT_TOKENS, toolName: plan.tool ?? COMPUTER_USE_TOOL_NAME, hostVersion: expectedHost }) : [];
       if (receipts.length) await save(`${marker}-discovery-provider-transport.json`, receipts);
       if (marker === "capability-model-profile") {
@@ -149,11 +149,11 @@ const model = createServer(async (req, res) => {
       ...(plan.calls ? { responseIndex: plan.responses, currentToolResultIds: currentToolResults.map(message => message.tool_call_id), emitted: !finished ? "batch" : stopAfterBatch ? "stop" : "complete" } : {}) });
     await save("model-requests.json", requests);
     if (!finished) plan.onModelRequest?.();
-    const toolCall = { index: 0, id: `call_${marker}`, type: "function", function: { name: plan.tool ?? COMPUTER_USE_TOOL_NAME, arguments: JSON.stringify(plan.args) } };
+    const toolCall = { index: 0, id: fixtureCallId(marker), type: "function", function: { name: plan.tool ?? COMPUTER_USE_TOOL_NAME, arguments: JSON.stringify(plan.args) } };
     res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
     const chunk = (delta, finish_reason = null) => res.write(`data: ${JSON.stringify({ id: `chatcmpl-${marker}`, object: "chat.completion.chunk", created: Math.floor(Date.now() / 1000), model: "fixture", choices: [{ index: 0, delta, finish_reason }] })}\n\n`);
     chunk({ role: "assistant" });
-    const toolCalls = stopAfterBatch ? [{ index: 0, id: batchCallId("restricted-allowed-stop"), type: "function", function: { name: plan.tool ?? COMPUTER_USE_TOOL_NAME, arguments: JSON.stringify({ action: "stop" }) } }] : plan.calls ? plan.calls.map((call, index) => ({ index, id: batchCallId(call.name), type: "function",
+    const toolCalls = stopAfterBatch ? [{ index: 0, id: fixtureCallId("restricted-allowed-stop"), type: "function", function: { name: plan.tool ?? COMPUTER_USE_TOOL_NAME, arguments: JSON.stringify({ action: "stop" }) } }] : plan.calls ? plan.calls.map((call, index) => ({ index, id: fixtureCallId(call.name), type: "function",
       function: { name: plan.tool ?? COMPUTER_USE_TOOL_NAME, arguments: JSON.stringify(call.args) } })) : [toolCall];
     chunk(finished && !stopAfterBatch ? { content: `Qualification ${marker} complete.` } : { tool_calls: toolCalls });
     chunk({}, finished && !stopAfterBatch ? "stop" : "tool_calls");
@@ -370,7 +370,7 @@ try {
       // Keep it under the existing agent deadline, not the approval-delivery window.
       await Promise.race([modelReady, completed.then(outcome => { throw new Error(`Agent ${name} ended before a model request: ${outcome.status}`); })]);
       for (const approvalName of options.approvalCalls ?? [name]) {
-        const approvalCallId = options.calls ? batchCallId(approvalName) : `call_${approvalName}`;
+        const approvalCallId = fixtureCallId(approvalName);
         let approval;
         try {
           approval = await waitForHostApproval({ completed, timeoutMs: 45000, readApproval: () => events.slice(start).find(e => e.event === "plugin.approval.requested" && e.payload.request.toolCallId === approvalCallId && e.payload.request.toolName === tool && e.payload.request.sessionKey === sessionKey) });
@@ -408,7 +408,7 @@ try {
       const auditText = await readFile(auditPath, "utf8").catch(error => { if (error.code !== "ENOENT") throw error; return ""; });
       const auditRecords = auditText.trim() ? auditText.trim().split("\n").map(line => JSON.parse(line)) : [];
       for (const approvalName of options.approvalCalls ?? [name]) {
-        const toolCallId = options.calls ? batchCallId(approvalName) : `call_${approvalName}`;
+        const toolCallId = fixtureCallId(approvalName);
         const results = history.messages.filter(message => message.role === "toolResult" && message.toolName === tool && message.toolCallId === toolCallId);
         assert.equal(results.length, 1, "Exact denied tool result required");
         const result = JSON.parse(results[0].content.filter(block => block.type === "text").map(block => block.text).join("\n"));
@@ -424,7 +424,7 @@ try {
     const text = message.content?.filter(c => c.type === "text").map(c => c.text).join("\n");
     return JSON.parse(text);
   };
-  async function structuredDiscoveryReplay(name, result, args, tool = COMPUTER_USE_TOOL_NAME, sessionKey = session, toolCallId = `call_${name}`) {
+  async function structuredDiscoveryReplay(name, result, args, tool = COMPUTER_USE_TOOL_NAME, sessionKey = session, toolCallId = fixtureCallId(name)) {
     const message = result.history.messages?.findLast(message => message.role === "toolResult" && message.toolName === tool && message.toolCallId === toolCallId);
     assert.ok(message, "Missing exact discovery history tool call");
     const text = message.content.filter(block => block.type === "text").map(block => block.text).join("\n");
@@ -573,7 +573,7 @@ try {
     await writeFile(join(workspace, "observation.txt"), "local observation fixture");
     const { allowedActions, deniedActions, gatedActions, calls, approvalCalls } = buildRestrictedBatch(profileActions, fixtures);
     assert.deepEqual([...calls.map(call => call.args.action), "stop"].sort(), [...canonicalActions, ...Object.keys(legacyActions)].sort(), "Each compatible action must occur exactly once across the batch and separate Stop");
-    assert.equal(new Set([...calls.map(call => batchCallId(call.name)), batchCallId(callName("allowed", "stop"))]).size, calls.length + 1, "Each batched tool-call id must be unique");
+    assert.equal(new Set([...calls.map(call => fixtureCallId(call.name)), fixtureCallId(callName("allowed", "stop"))]).size, calls.length + 1, "Each batched tool-call id must be unique");
     // A single real agent turn avoids rebuilding the unchanged provider catalog
     // for each vocabulary item. Every tool call keeps its own id and receipt.
     const batch = await runCase("restricted-matrix", { action: "stop" }, gatedActions.length ? "deny" : "none", restrictedSession, COMPUTER_USE_TOOL_NAME,
@@ -582,7 +582,7 @@ try {
     assert.deepEqual(providerSequence.map(request => ({ finished: request.finished, emitted: request.emitted })), [
       { finished: false, emitted: "batch" }, { finished: true, emitted: "stop" }, { finished: true, emitted: "complete" },
     ], "Restricted model must emit one batch, then separate Stop, then complete");
-    const expectedModelCalls = [...calls.map(call => ({ id: batchCallId(call.name), action: call.args.action })), { id: batchCallId(callName("allowed", "stop")), action: "stop" }];
+    const expectedModelCalls = [...calls.map(call => ({ id: fixtureCallId(call.name), action: call.args.action })), { id: fixtureCallId(callName("allowed", "stop")), action: "stop" }];
     const actualModelCalls = batch.history.messages.filter(message => message.role === "assistant").flatMap(message => message.content?.filter(block => block.type === "toolCall") ?? []).map(call => ({ id: call.id, action: call.arguments?.action }));
     assert.deepEqual(actualModelCalls, expectedModelCalls, "Actual restricted assistant history must emit every compatible action exactly once with Stop last");
     const actualResultIds = batch.history.messages.filter(message => message.role === "toolResult").map(message => message.toolCallId);
@@ -591,14 +591,14 @@ try {
     await save("restricted-sequence.json", sequenceReceipt);
     const resultFor = async (kind, action) => {
       const name = callName(kind, action);
-      const message = batch.history.messages?.find(message => message.role === "toolResult" && message.toolCallId === batchCallId(name));
+      const message = batch.history.messages?.find(message => message.role === "toolResult" && message.toolCallId === fixtureCallId(name));
       assert.ok(message, `Missing ${name} tool result`);
       await save(`${name}-result.json`, message);
       return message.content?.filter(content => content.type === "text").map(content => content.text).join("\n");
     };
     const allowed = [];
     for (const action of allowedActions) {
-      const details = ["health", "doctor"].includes(legacyActions[action] ?? action) ? await structuredDiscoveryReplay("restricted-matrix", batch, { action, ...fixtures[legacyActions[action] ?? action] }, COMPUTER_USE_TOOL_NAME, restrictedSession, batchCallId(callName("allowed", action))) : JSON.parse(await resultFor("allowed", action));
+      const details = ["health", "doctor"].includes(legacyActions[action] ?? action) ? await structuredDiscoveryReplay("restricted-matrix", batch, { action, ...fixtures[legacyActions[action] ?? action] }, COMPUTER_USE_TOOL_NAME, restrictedSession, fixtureCallId(callName("allowed", action))) : JSON.parse(await resultFor("allowed", action));
       assert.equal(details.status, ["health", "doctor", "inspect", "screenshot"].includes(legacyActions[action] ?? action) ? "error" : "success");
       if (action === "health") {
         assert.deepEqual(details.actionPermissions.allowedActions, profileActions);
@@ -610,14 +610,14 @@ try {
     const denied = [];
     for (const action of deniedActions) {
       assert.match(await resultFor("denied", action), /Validation failed|disabled by the trusted/, `Model must refuse ${action}`);
-      assert.equal(batch.events.some(event => event.event === "plugin.approval.requested" && event.payload.request.toolCallId === batchCallId(callName("denied", action))), false);
+      assert.equal(batch.events.some(event => event.event === "plugin.approval.requested" && event.payload.request.toolCallId === fixtureCallId(callName("denied", action))), false);
       denied.push({ action, canonical: legacyActions[action] ?? action, modelDenied: true, approvalRequested: false });
     }
     assert.equal(batch.approvalDenials.length, gatedActions.length);
     for (const action of gatedActions) {
-      assert.equal(batch.events.filter(event => event.event === "plugin.approval.requested" && event.payload.request.toolCallId === batchCallId(callName("gated", action))).length, 1, `Exactly one approval despite model confirmation: ${action}`);
+      assert.equal(batch.events.filter(event => event.event === "plugin.approval.requested" && event.payload.request.toolCallId === fixtureCallId(callName("gated", action))).length, 1, `Exactly one approval despite model confirmation: ${action}`);
       await resultFor("gated", action);
-      assert.equal(batch.approvalDenials.filter(proof => proof.toolCallId === batchCallId(callName("gated", action))).length, 1, `Exactly one strict host-correlated denial proof: ${action}`);
+      assert.equal(batch.approvalDenials.filter(proof => proof.toolCallId === fixtureCallId(callName("gated", action))).length, 1, `Exactly one strict host-correlated denial proof: ${action}`);
     }
     // Direct HTTP bypasses model schema validation. Representative excluded
     // shell/file/clipboard/launch families must still meet the trusted hook ceiling.
@@ -722,7 +722,7 @@ try {
     const result = await active;
     const cancellationAudit = await until(async () => {
       const records = (await readFile(join(dirname(agentDir), "audit/computer-use.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
-      return records.find(record => record.toolCallId === `call_${caseName}`);
+      return records.find(record => record.toolCallId === fixtureCallId(caseName));
     });
     assert.equal(cancellationAudit.result.status, "cancelled", `Audit the actual ${mode} outcome`);
     if (mode === "stop") { assert.equal(cancellation.body.result.details.cancellationRequested, 1); assert.equal(toolResult(result.history).status, "cancelled"); }
@@ -738,7 +738,7 @@ try {
   const audit = await readFile(join(dirname(agentDir), "audit/computer-use.jsonl"), "utf8");
   assert.ok(!audit.includes(secret));
   const records = audit.trim().split("\n").map(line => JSON.parse(line));
-  assert.ok(!records.some(record => record.toolCallId === "call_legacy-clipboard-denied"), "Gateway-denied clipboard input must not reach action execution/audit");
+  assert.ok(!records.some(record => record.toolCallId === fixtureCallId("legacy-clipboard-denied")), "Gateway-denied clipboard input must not reach action execution/audit");
   assert.ok(records.some(r => r.action === "file-write" && r.result.status === "success"));
   assert.ok(records.some(r => r.action === "shell" && r.result.status === "cancelled"));
   await save("audit-summary.json", { records: records.length, privateContentAbsent: true, outcomes: records.map(r => ({ action: r.action, status: r.result.status })) });
