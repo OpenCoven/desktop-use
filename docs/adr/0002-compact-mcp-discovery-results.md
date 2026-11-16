@@ -1,6 +1,8 @@
 # ADR 0002: Return a compact capability summary from MCP `health` and `doctor`
 
-- Status: Proposed. Awaiting owner sign-off on #52.
+- Status: Accepted. The owner signed off on option A on 2026-11-15, together with two scope decisions (recorded on #52):
+  - the existing MCP `health` assertions move to the summary in this PR;
+  - data-bearing results get envelope checks now, and bounded paging becomes a follow-up issue.
 - Date: 2026-11-15
 - Issue: #52 (part of #32; evidence from #35)
 - Baseline: main `3b57d45f60fbdd0d10dcf7baeccd24da2c114c0d`, plus the #35 runner from PR #51 (`20464d48804f`). This branch is stacked on `test/qualify-harness-35`.
@@ -175,7 +177,7 @@ The MCP result changes in three ways:
 
 **This is additive within v1. No version bump is needed.**
 - `desktopResultDetailsSchemaV1` requires only `status`, allows additional properties and declares `capabilitiesV1` optional. A result that has `capabilitySummaryV1` and no `capabilitiesV1` validates against the unchanged v1 result schema, and therefore against the advertised MCP `outputSchema`.
-- `capabilitySummaryV1` is a new versioned object with its own `schemaVersion: 1` and a JSON Schema at `contracts/v1/capability-summary.schema.json`. It is added to `desktopResultDetailsSchemaV1` as an optional property, which is additive.
+- `capabilitySummaryV1` is a new versioned object with its own `schemaVersion: 1` and a JSON Schema, `capabilitySummarySchemaV1`, exported from the contracts entry beside the request and result schemas. It is added to `desktopResultDetailsSchemaV1` as an optional property, which is additive. The schema is inline, as the request and result schemas are, so the build's asset list does not change.
 - The capabilities v1 schema, the request schema and the canonical actions are unchanged.
 
 The change is behavioural for one consumer group: MCP clients that read `structuredContent.capabilitiesV1` from `health` or `doctor`.
@@ -191,9 +193,9 @@ Programmatic consumers that need the full report use `createDesktopClient`. It i
 - OpenClaw qualification, CLI `doctor` and `help`, and the audit events.
 - The capabilities v1 schema and the request schema.
 
-## Implementation plan after sign-off
+## Implementation plan
 
-1. `src/capability-summary.ts`: `summarizeCapabilities(report)`, its schema at `contracts/v1/capability-summary.schema.json`, and an optional `capabilitySummaryV1` property in `desktopResultDetailsSchemaV1` (`src/contracts.ts`).
+1. `src/capability-summary.ts`: `summarizeCapabilities(report)`. `src/contracts.ts`: `capabilitySummarySchemaV1`, and an optional `capabilitySummaryV1` property in `desktopResultDetailsSchemaV1`.
 2. `src/mcp/result-projection.ts`: `projectMcpResult(result)`. It applies the summary to `health` and `doctor`, and compact text to every result. `src/mcp/server.ts` uses it.
 3. `src/mcp/result-budget.test.ts`, using the official SDK client on both wire revisions (pinned `2026-07-28` and legacy `2025-11-25`):
    - **Cases:**

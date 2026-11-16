@@ -24,17 +24,55 @@ export const desktopRequestSchemaV1 = {
   allOf: [{ if: { properties: { action: { const: 'clipboard-write' } }, required: ['action'] }, then: { not: { required: ['text'] } } }],
 };
 
+const capabilityDefs = (capabilitiesSchemaV1 as any).$defs;
+const capabilityProperties = (capabilitiesSchemaV1 as any).properties;
+/**
+ * Compact discovery summary that MCP health and doctor carry in place of capabilitiesV1 (ADR 0002): a projection of
+ * the full report, versioned on its own. The SDK and plugin keep the full report.
+ */
+export const capabilitySummarySchemaV1 = {
+  $schema: dialect, $id: schemaId('capability-summary'), title: 'CapabilitySummaryV1',
+  type: 'object', additionalProperties: false, required: ['schemaVersion', 'producer', 'environment', 'actions', 'omitted'],
+  properties: {
+    schemaVersion: { const: 1 }, producer: capabilityProperties.producer, environment: capabilityProperties.environment,
+    adapter: { type: 'object', additionalProperties: false, required: ['version'], properties: { version: { type: ['string', 'null'] } } },
+    actionPermissions: capabilityProperties.actionPermissions,
+    actions: { type: 'object', additionalProperties: false, required: [...CANONICAL_ACTIONS], properties: Object.fromEntries(CANONICAL_ACTIONS.map(action => [action, { $ref: '#/$defs/action' }])) },
+    omitted: {
+      type: 'object', additionalProperties: false, required: ['capabilitiesV1', 'fullReportSurfaces'],
+      properties: { capabilitiesV1: { const: 'tool-output-budget' }, fullReportSurfaces: { type: 'array', minItems: 1, uniqueItems: true, items: { enum: ['sdk', 'plugin', 'cli'] } } },
+    },
+  },
+  $defs: {
+    surface: capabilityDefs.surface, state: capabilityDefs.state, reasonCodes: capabilityDefs.reasonCodes,
+    action: {
+      type: 'object', additionalProperties: false, required: ['state', 'enabled', 'surfaces', 'policy', 'reasonCodes', 'providers'],
+      properties: {
+        state: { $ref: '#/$defs/state' }, enabled: { type: 'boolean' }, surfaces: capabilityDefs.action.properties.surfaces,
+        policy: capabilityDefs.action.properties.policy, reasonCodes: { $ref: '#/$defs/reasonCodes' },
+        modes: { type: 'array', minItems: 1, uniqueItems: true, items: { enum: capabilityDefs.variant.properties.mode.enum.filter((mode: unknown) => mode !== null) } },
+        selectors: { type: 'array', minItems: 1, uniqueItems: true, items: capabilityDefs.variant.properties.selectors.items },
+        providers: { type: 'array', uniqueItems: true, items: { type: 'string', minLength: 1 } },
+      },
+    },
+  },
+};
+
 /** The structured details shared by the SDK/plugin result and MCP structuredContent. */
 export const desktopResultDetailsSchemaV1 = {
   $schema: dialect, $id: schemaId('result-details'), title: 'DesktopResultDetailsV1',
   type: 'object', required: ['status'], additionalProperties: true,
   properties: {
     status: { type: 'string', enum: ['success', 'blocked', 'needsApproval', 'unsupported', 'error', 'cancelled', 'timeout'] },
-    success: { type: 'boolean' }, capabilitiesV1: capabilitiesSchemaV1, observationV1: observationSchemaV1,
+    success: { type: 'boolean' }, capabilitiesV1: capabilitiesSchemaV1, capabilitySummaryV1: capabilitySummarySchemaV1, observationV1: observationSchemaV1,
   },
 };
 
-/** Full SDK/plugin result envelope; MCP maps details to structuredContent without loss. */
+/**
+ * Full SDK/plugin result envelope. MCP maps details to structuredContent, with one projection (ADR 0002): health
+ * and doctor carry capabilitySummaryV1 in place of capabilitiesV1 and the adapter's duplicate raw report, so every
+ * connector-shaped result fits harness tool-output budgets.
+ */
 export const desktopResultSchemaV1 = {
   $schema: dialect, $id: schemaId('result'), title: 'DesktopResultV1',
   type: 'object', required: ['content', 'details'], additionalProperties: true,

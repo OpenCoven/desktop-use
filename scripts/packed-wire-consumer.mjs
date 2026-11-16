@@ -38,11 +38,13 @@ async function checkHealthOnlyWire(era) {
     const details = health.structuredContent;
     assert.equal(health.isError, true); assert.equal(details.status, 'blocked');
     assert.deepEqual(details.adapterProbe, { action: 'doctor', status: 'skipped', code: 'ACTION_PROFILE_DENIED' });
-    const report = details.capabilitiesV1;
+    // ADR 0002: MCP discovery carries the compact capability summary; the SDK keeps the full report.
+    assert.equal(details.capabilitiesV1, undefined);
+    const report = details.capabilitySummaryV1;
     assert.equal(report.schemaVersion, 1); assert.equal(report.producer.surface, 'mcp');
     assert.deepEqual(report.actionPermissions, permissions);
     for (const action of ['doctor', 'inspect', 'screenshot', 'click', 'type-text', 'keypress', 'scroll', 'focus']) {
-      assert.equal(report.actions[action].state, 'unverified'); assert.equal(report.actions[action].policy.profile, 'denied');
+      assert.equal(report.actions[action].state, 'unverified'); assert.equal(report.actions[action].policy.profile, 'denied'); assert.equal(report.actions[action].enabled, false);
       assert.ok(report.actions[action].surfaces.includes('mcp')); assert.ok(!report.actions[action].surfaces.includes('plugin'));
     }
     assert.deepEqual(details.adapterInvocation, { configuredPath: adapter, resolvedPath: adapter, version: null, phase: 'before-start', processStarted: false, code: 'ACTION_PROFILE_DENIED' });
@@ -53,7 +55,7 @@ async function checkHealthOnlyWire(era) {
     assert.equal((await client.callTool({ name: 'computer_use', arguments: { action: 'doctor' } })).structuredContent.code, 'ACTION_PROFILE_DENIED');
     assert.equal(approvals, 0); await assert.rejects(access(marker)); assert.equal(JSON.stringify(permissions), snapshot);
     assert.deepEqual(audits[0].result, { status: 'blocked', success: false, code: 'ACTION_PROFILE_DENIED' });
-    assert.doesNotMatch(JSON.stringify(audits), /private-health-wire|capabilitiesV1|approvalId/);
+    assert.doesNotMatch(JSON.stringify(audits), /private-health-wire|capabilitiesV1|capabilitySummaryV1|approvalId/);
   } finally { await client.close(); await server.close(); }
 }
 
@@ -80,7 +82,10 @@ for (const era of ['modern', 'legacy']) {
     const { tools } = await plain.client.listTools(); assert.deepEqual(tools.map(tool => tool.name), ['computer_use']);
     assert.equal(tools[0].inputSchema.properties.action.enum.length, 18); assert.equal(tools[0].inputSchema.additionalProperties, false);
     const health = await plain.client.callTool({ name: 'computer_use', arguments: { action: 'health' } });
-    assert.equal(health.structuredContent.capabilitiesV1.producer.surface, 'mcp');
+    assert.equal(health.structuredContent.capabilitiesV1, undefined);
+    assert.equal(health.structuredContent.capabilitySummaryV1.producer.surface, 'mcp');
+    // #52: the packed connector's discovery fits the smallest measured harness tool-output budget (8 KiB).
+    for (const carrier of [JSON.stringify(health.structuredContent), health.content[0].text]) assert.ok(Buffer.byteLength(carrier) <= 8192, `packed MCP health is ${Buffer.byteLength(carrier)} B`);
     assert.deepEqual(JSON.parse(health.content[0].text), health.structuredContent);
     const blocked = await plain.client.callTool({ name: 'computer_use', arguments: { action: 'file-write', path: 'unapproved', content: 'private-content' } });
     assert.equal(blocked.structuredContent.status, 'needsApproval'); await assert.rejects(access(join(plain.workspace, 'unapproved')));
