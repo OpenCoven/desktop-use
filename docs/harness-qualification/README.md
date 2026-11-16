@@ -119,6 +119,22 @@ In every run that started the connector, it exited with the harness. No other pr
 
 The verdicts are evidence, not a gate. The job fails only when the runner errors or a receipt is inconsistent.
 
+Run `43785457470` recorded these receipts at `6a8e5b5`. They are in [`receipts/linux-x64-ci/`](receipts/linux-x64-ci/) (Ubuntu, kernel 7.0.0-1017-azure, x64, no display server) and [`receipts/darwin-arm64-ci/`](receipts/darwin-arm64-ci/) (hosted macOS, Darwin 25.6.0).
+
+The hosted runs packed `main`'s connector (tarball `d4141f9e1ea9…`), byte-identical to the local `main` tarball. Every harness gave the same result on Linux as on macOS:
+
+| Harness | L1 / L2 on Linux | Screenshot image |
+|---|---|---|
+| Claude Code 2.1.325 | **fail** (not listed: #41) / fail | — |
+| Codex CLI 0.169.0, default | pass / fail (`health` truncated) | dropped |
+| Codex CLI 0.169.0, tool-search | pass / **pass** | dropped |
+| Copilot CLI 1.0.107, default | pass / fail (`health` spilled) | dropped, with an "omitted" notice |
+| Copilot CLI 1.0.107, vision | pass / fail (`health` spilled) | delivered, byte-identical |
+| Coven Code | unqualified (`binary-not-found`): not installed on runners | |
+| OpenCode, Hermes | unqualified (`no-runner-recipe`) | |
+
+Claude Code with the #41 fix (#50) has not been run on Linux yet. Its Linux receipt follows once #50 merges and this workflow packs the fixed connector.
+
 ## Not covered yet
 
 - **L3, gated effects:** needs the approval routing from #33 (PR #49).

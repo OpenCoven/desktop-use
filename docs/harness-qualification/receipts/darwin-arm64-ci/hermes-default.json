@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "kind": "harness-qualification",
+  "evidenceClass": "real-harness, fixture adapter, deterministic local endpoint (not native desktop acceptance)",
+  "recordedAt": "2026-11-16T01:18:53.349Z",
+  "requestedLevels": [
+    "L1",
+    "L2"
+  ],
+  "harness": {
+    "id": "hermes",
+    "label": "Hermes",
+    "variant": "default",
+    "version": null
+  },
+  "host": {
+    "os": "darwin",
+    "osRelease": "25.6.0",
+    "arch": "arm64",
+    "displayServer": "quartz",
+    "node": "v24.22.2"
+  },
+  "levels": {
+    "L1": {
+      "verdict": "unqualified",
+      "reason": "no-runner-recipe",
+      "detail": "No launch recipe yet; needs a verified MCP config shape and a configurable provider base URL (#34)."
+    },
+    "L2": {
+      "verdict": "unqualified",
+      "reason": "no-runner-recipe",
+      "detail": "No launch recipe yet; needs a verified MCP config shape and a configurable provider base URL (#34)."
+    }
+  },
+  "verdict": "unqualified"
+}

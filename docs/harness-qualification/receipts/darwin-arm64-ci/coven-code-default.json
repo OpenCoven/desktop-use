@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "kind": "harness-qualification",
+  "evidenceClass": "real-harness, fixture adapter, deterministic local endpoint (not native desktop acceptance)",
+  "recordedAt": "2026-11-16T01:18:53.405Z",
+  "requestedLevels": [
+    "L1",
+    "L2"
+  ],
+  "harness": {
+    "id": "coven-code",
+    "label": "Coven Code",
+    "variant": "default",
+    "version": null
+  },
+  "host": {
+    "os": "darwin",
+    "osRelease": "25.6.0",
+    "arch": "arm64",
+    "displayServer": "quartz",
+    "node": "v24.22.2"
+  },
+  "levels": {
+    "L1": {
+      "verdict": "unqualified",
+      "reason": "binary-not-found",
+      "detail": "No executable coven-code was found on PATH."
+    },
+    "L2": {
+      "verdict": "unqualified",
+      "reason": "binary-not-found",
+      "detail": "No executable coven-code was found on PATH."
+    }
+  },
+  "verdict": "unqualified"
+}
