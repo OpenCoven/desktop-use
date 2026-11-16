@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 1,
+  "kind": "harness-qualification",
+  "evidenceClass": "real-harness, fixture adapter, deterministic local endpoint (not native desktop acceptance)",
+  "recordedAt": "2026-11-16T01:01:27.389Z",
+  "requestedLevels": [
+    "L1",
+    "L2"
+  ],
+  "harness": {
+    "id": "claude-code",
+    "label": "Claude Code",
+    "variant": "default",
+    "version": "2.1.325 (Claude Code)",
+    "recipe": {
+      "mode": "print (-p) with --bare, --strict-mcp-config and --allowedTools mcp__coven-desktop-use__computer_use",
+      "endpoint": "ANTHROPIC_BASE_URL"
+    },
+    "endpointProtocol": "anthropic-messages"
+  },
+  "host": {
+    "os": "darwin",
+    "osRelease": "27.2.0",
+    "arch": "arm64",
+    "displayServer": "quartz",
+    "node": "v24.22.0"
+  },
+  "connector": {
+    "source": "packed tarball",
+    "package": "@opencoven/openclaw-desktop-use",
+    "version": "0.1.3",
+    "commit": null,
+    "tarballSha256": "d4141f9e1ea9ab2689b7d79aa7da1b15a3c2d5b8f986d982446ed75a2c835050",
+    "launch": "node <connector main.js> --config <disposable config>",
+    "actionProfile": "observation-only"
+  },
+  "adapter": {
+    "kind": "fixture",
+    "capabilityFixture": "macos",
+    "screenshotFixture": "contracts/v1/fixtures/images/valid.png",
+    "screenshotSha256": "f9b6e08a640c59e92b85531f6a9eb90ff3565189fd95546739a83e58512286c3"
+  },
+  "run": {
+    "exitCode": 0,
+    "signal": null,
+    "timedOut": false,
+    "seconds": 0.6,
+    "modelRequests": 1,
+    "toolBearingRequests": 1,
+    "scriptCompleted": false,
+    "unexpectedEndpointPaths": []
+  },
+  "discovery": {
+    "mode": "listed",
+    "desktopTools": [],
+    "otherToolCount": 3,
+    "otherTools": [
+      "Bash",
+      "Edit",
+      "Read"
+    ],
+    "laterListings": [],
+    "harnessNotes": [
+      "Skipping tool \"computer_use\": its input schema uses top-level allOf, which the Anthropic API does not accept. Other tools from this server remain available."
+    ]
+  },
+  "observation": {
+    "health": {
+      "called": false,
+      "resultSeen": false
+    },
+    "screenshot": {
+      "called": false,
+      "resultSeen": false
+    }
+  },
+  "lifecycle": {
+    "connectorStarted": true,
+    "connectorReleasedAfterHarnessExit": true,
+    "otherProcessesAfterHarnessExit": 0,
+    "auditEvents": 0,
+    "auditFreeOfPrivateInput": true
+  },
+  "levels": {
+    "L1": {
+      "verdict": "fail",
+      "reason": "computer-use-not-listed"
+    },
+    "L2": {
+      "verdict": "fail",
+      "reason": "discovery-failed"
+    }
+  },
+  "verdict": "fail"
+}
