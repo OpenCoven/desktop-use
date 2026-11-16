@@ -25,7 +25,7 @@ export function terminalPrompt() {
       return new Promise(resolve => {
         let line = ''; let done = false;
         const finish = (decision: ApprovalResolution) => { if (done) return; done = true; busy = false; input!.pause(); input!.removeListener('data', data); input!.removeListener('end', unavailable); input!.removeListener('error', unavailable); signal.removeEventListener('abort', cancelled); output!.write(`\nApproval ${decision}.\n`); resolve(decision); };
-        const unavailable = () => finish('unavailable'); const cancelled = () => finish('cancelled');
+        const unavailable = () => finish('unavailable'); const cancelled = () => finish(signal.reason === 'expired' ? 'expired' : 'cancelled');
         const data = (chunk: Buffer | string) => {
           line += chunk.toString();
           if (Buffer.byteLength(line) > 32) return finish('unavailable');

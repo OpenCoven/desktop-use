@@ -90,6 +90,10 @@ for (const decision of ['allow', 'deny', 'cancel', 'wait']) test(`attached harne
   const result = await client.callTool({ name: 'computer_use', arguments: { action: 'file-write', path: 'effect.txt', content: 'harmless attached proof' } });
   assert.equal((result.structuredContent as any).success, decision === 'allow');
   assert.match(f.display(), /Decision \[allow\/deny\/cancel\]/);
+  // The operator's terminal names the same outcome as the tool result; an unanswered review expires, not "cancelled".
+  const outcome = { allow: 'allowed', deny: 'denied', cancel: 'cancelled', wait: 'expired' }[decision];
+  await until(() => f.display().includes(`Approval ${outcome}.`), `terminal outcome ${outcome}`);
+  if (decision === 'wait') assert.doesNotMatch(f.display(), /Approval cancelled\./);
   // The official stdio client may launch the relay more than once while connecting, so session numbers vary.
   assert.match(f.display(), /harmless attached proof/); assert.match(f.display(), new RegExp(`"sessionId": "harness:${SESSION}"`));
   assert.doesNotMatch(f.display(), /approvalId|operationId|"mac"|"nonce"/);
