@@ -81,6 +81,10 @@ for (const era of ['modern', 'legacy']) {
   try {
     const { tools } = await plain.client.listTools(); assert.deepEqual(tools.map(tool => tool.name), ['computer_use']);
     assert.equal(tools[0].inputSchema.properties.action.enum.length, 18); assert.equal(tools[0].inputSchema.additionalProperties, false);
+    // Claude Code drops a tool whose input schema has a top-level combinator (#41); the guard it carried stays enforced.
+    for (const keyword of ['allOf', 'anyOf', 'oneOf']) assert.equal(Object.hasOwn(tools[0].inputSchema, keyword), false, `packed MCP schema has a top-level ${keyword}`);
+    const legacyClipboard = await plain.client.callTool({ name: 'computer_use', arguments: { action: 'clipboard-write', text: 'private-content' } });
+    assert.equal(legacyClipboard.isError, true); assert.equal(legacyClipboard.structuredContent, undefined); assert.doesNotMatch(JSON.stringify(legacyClipboard), /private-content/);
     const health = await plain.client.callTool({ name: 'computer_use', arguments: { action: 'health' } });
     assert.equal(health.structuredContent.capabilitiesV1, undefined);
     assert.equal(health.structuredContent.capabilitySummaryV1.producer.surface, 'mcp');
