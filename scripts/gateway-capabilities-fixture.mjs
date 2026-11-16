@@ -29,7 +29,7 @@ export function selectEligibleDiscoveryCalls(calls, { allowedActions, canonicalA
   return calls.filter(call => discoveryActions.has(call.action) && allowedActions.includes(canonicalAliases[call.action] ?? call.action));
 }
 export function discoveryCallsForPlan(plan, { currentCase, batchCallId, allowedActions, canonicalAliases, legacyToolName, canonicalToolName }) {
-  return selectEligibleDiscoveryCalls((plan.calls ?? [{ name: currentCase, args: plan.args }]).map(call => ({ action: call.args?.action, toolCallId: plan.calls ? batchCallId(call.name) : `call_${currentCase}`, notices: [...(call.args?.action === "permissions" ? ["permissions is deprecated; use doctor instead."] : []), ...(plan.tool === legacyToolName ? [`${legacyToolName} is deprecated; use ${canonicalToolName} instead.`] : [])] })), { allowedActions, canonicalAliases });
+  return selectEligibleDiscoveryCalls((plan.calls ?? [{ name: currentCase, args: plan.args }]).map(call => ({ action: call.args?.action, toolCallId: batchCallId(call.name), notices: [...(call.args?.action === "permissions" ? ["permissions is deprecated; use doctor instead."] : []), ...(plan.tool === legacyToolName ? [`${legacyToolName} is deprecated; use ${canonicalToolName} instead.`] : [])] })), { allowedActions, canonicalAliases });
 }
 const normalizedCallId = value => typeof value === "string" ? value.replace(/[^a-zA-Z0-9]/g, "") : "";
 export function inspectDiscoveryTransport(body, { currentCase, calls, contextWindowTokens = QUALIFICATION_CONTEXT_TOKENS, toolName = "computer_use", hostVersion = "2026.4.26" }) {

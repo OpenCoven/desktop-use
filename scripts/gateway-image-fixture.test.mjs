@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { inspectProviderImage } from "./gateway-image-fixture.mjs";
+import { fixtureCallId } from "./gateway-action-batches.mjs";
 
 test("provider proof checks the current image turn without confusing retained history", async () => {
   const bytes = await readFile(new URL("../contracts/v1/fixtures/images/valid.jpg", import.meta.url));
@@ -344,9 +345,40 @@ test("eligible discovery still rejects malformed permitted JSON and response tex
 
 const discoveryPlanOptions = {
   currentCase: "current", allowedActions: ["health", "doctor", "stop"], canonicalAliases: { permissions: "doctor" },
-  batchCallId: name => ({ legacy: "calllegacy", health: "callhealth" })[name],
+  batchCallId: fixtureCallId,
   legacyToolName: "desktop_use", canonicalToolName: "computer_use",
 };
+
+test("singleton discovery keeps one call identity through provider, truncated history and scoped replay", () => {
+  const currentCase = "single-doctor-replay";
+  const toolCallId = fixtureCallId(currentCase);
+  const scope = { agentId: "fixture-agent", sessionKey: "fixture-session", runId: "fixture-run", auditPath: "/fixture/audit" };
+  const details = { action: "doctor", status: "error", success: false, evidence: { agentId: scope.agentId, sessionKey: scope.sessionKey } };
+  for (const hostVersion of ["2026.4.26", "2026.11.3"]) {
+    const calls = capabilitiesFixture.discoveryCallsForPlan({ args: { action: "doctor" } }, {
+      ...discoveryPlanOptions, currentCase, batchCallId: fixtureCallId,
+    });
+    const text = JSON.stringify({ ...details, padding: "x".repeat(hostVersion === "2026.4.26" ? 20000 : 10000) });
+    const body = { messages: [
+      { role: "user", content: `QUALIFICATION_CASE:${currentCase}` },
+      { role: "assistant", tool_calls: [{ id: toolCallId, function: { name: "computer_use", arguments: '{"action":"doctor"}' } }] },
+      { role: "tool", tool_call_id: toolCallId, content: text },
+    ] };
+    const transport = capabilitiesFixture.inspectDiscoveryTransport(body, { currentCase, calls, hostVersion })
+      .find(receipt => receipt.toolCallId === toolCallId);
+    assert.ok(transport, "Replay requires verified provider-wire evidence for the emitted call ID");
+    const historyText = hostVersion === "2026.11.3" ? text.slice(0, 8000)
+      : `{"status":"error"\n\n${capabilitiesFixture.DISCOVERY_TRUNCATION_MARKER}\n\n"tail":true}[... 10000 more characters truncated]`;
+    const message = { role: "toolResult", toolCallId, content: [{ type: "text", text: historyText }],
+      ...(hostVersion === "2026.11.3" ? { __openclaw: { runId: scope.runId, truncated: true, reason: "display-cap" } } : {}) };
+    const history = capabilitiesFixture.inspectDiscoveryHistory(message, { toolCallId, hostVersion, runId: scope.runId, transport });
+    assert.deepEqual(capabilitiesFixture.correlateDiscoveryReplay({
+      transport, history, scope, call: { toolCallId, action: "doctor" },
+      auditRecords: [{ toolCallId, action: "doctor", agentId: scope.agentId, sessionKey: scope.sessionKey, result: { status: "error", success: false } }],
+      replay: { status: 200, body: { result: { details } } },
+    }), details);
+  }
+});
 
 test("caller discovery metadata safely excludes argument-free image replay and non-discovery plans", () => {
   const replayPlan = { args: undefined, imageKind: "large", replaySourceCase: "synthetic-image-large" };
@@ -362,10 +394,10 @@ test("caller discovery metadata safely excludes argument-free image replay and n
 test("caller discovery metadata retains trusted eligibility, call IDs and canonical and legacy notices", () => {
   const build = capabilitiesFixture.discoveryCallsForPlan;
   assert.deepEqual(build({ args: { action: "health" }, tool: "computer_use" }, discoveryPlanOptions), [
-    { action: "health", toolCallId: "call_current", notices: [] },
+    { action: "health", toolCallId: "callcurrent", notices: [] },
   ]);
   assert.deepEqual(build({ args: { action: "permissions" }, tool: "desktop_use" }, discoveryPlanOptions), [
-    { action: "permissions", toolCallId: "call_current", notices: ["permissions is deprecated; use doctor instead.", "desktop_use is deprecated; use computer_use instead."] },
+    { action: "permissions", toolCallId: "callcurrent", notices: ["permissions is deprecated; use doctor instead.", "desktop_use is deprecated; use computer_use instead."] },
   ]);
   const batch = { tool: "desktop_use", calls: [
     { name: "no-args" }, { name: "legacy", args: { action: "permissions" } }, { name: "health", args: { action: "health" } },
