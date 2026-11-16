@@ -682,12 +682,8 @@ try {
   await rpc("sessions.patch", { key: legacySession });
   const legacyInventory = await rpc("tools.effective", { sessionKey: legacySession }); await save("legacy-effective-tools.json", legacyInventory);
   assert.deepEqual(legacyInventory.groups.flatMap(g => g.tools.map(t => t.id)), [DESKTOP_USE_TOOL_NAME]);
-  const legacy = await runCase("legacy-denied", { action: "file-write", path: "legacy.txt", content: secret, confirm: true }, newerHost ? "none" : "deny", legacySession, DESKTOP_USE_TOOL_NAME);
+  const legacy = await runCase("legacy-denied", { action: "file-write", path: "legacy.txt", content: secret, confirm: true }, "deny", legacySession, DESKTOP_USE_TOOL_NAME);
   await noFile(join(legacyWorkspace, "legacy.txt"));
-  if (newerHost) {
-    assert.equal(toolResult(legacy.history, DESKTOP_USE_TOOL_NAME).status, "needsApproval");
-    assert.equal(legacy.events.some(event => event.event === "plugin.approval.requested"), false);
-  }
   const legacyHealth = await runCase("legacy-tool-health", { action: "health" }, "none", legacySession, DESKTOP_USE_TOOL_NAME);
   const legacyHealthDetails = await structuredDiscoveryReplay("legacy-tool-health", legacyHealth, { action: "health" }, DESKTOP_USE_TOOL_NAME, legacySession);
   assert.ok(legacyHealthDetails.deprecation.includes(`${DESKTOP_USE_TOOL_NAME} is deprecated; use ${COMPUTER_USE_TOOL_NAME} instead.`));
