@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "kind": "harness-qualification",
   "evidenceClass": "real-harness, fixture adapter, deterministic local endpoint (not native desktop acceptance)",
-  "recordedAt": "2026-11-16T03:26:41.651Z",
+  "recordedAt": "2026-11-16T07:45:37.489Z",
   "requestedLevels": [
     "L1",
     "L2"
@@ -33,7 +33,7 @@
     "package": "@opencoven/openclaw-desktop-use",
     "version": "0.1.3",
     "commit": null,
-    "tarballSha256": "885c168388585dc10a84b228038a9032828bc1e4218bb200c376405194ceb4a6",
+    "tarballSha256": "9a45587ba567900d2e76c2986091d1c4c77e6f675477ed2c2f87d4ea76f898cc",
     "launch": "node <connector main.js> --config <disposable config>",
     "actionProfile": "observation-only"
   },
@@ -47,7 +47,7 @@
     "exitCode": 0,
     "signal": null,
     "timedOut": false,
-    "seconds": 3.1,
+    "seconds": 1.7,
     "modelRequests": 3,
     "toolBearingRequests": 3,
     "scriptCompleted": true,
@@ -104,7 +104,7 @@
       "resultShape": [
         "string"
       ],
-      "textChars": 5834,
+      "textChars": 6735,
       "structuredContent": "delivered",
       "structuredKeys": [
         "action",

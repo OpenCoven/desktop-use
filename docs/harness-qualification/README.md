@@ -165,13 +165,11 @@ Recorded on macOS (Darwin 27.2.0), arm64, on 2026-11-15, with a pretty-printed t
 
 ## Compact discovery results (#52, PR #53)
 
-With ADR 0002, MCP `health` sends the model `capabilitySummaryV1` instead of the full report. The macOS fixture result drops from 43,921 to 5,834 characters (5,868 under Codex, with its prefix). On Linux it is 5,817.
+With ADR 0002, MCP `health` sends the model `capabilitySummaryV1` instead of the full report. The summary keeps per-variant eligibility: a review on #53 found that the first, flattened shape listed unsupported modes and selectors as usable. The macOS fixture result is 6,735 characters (6,769 under Codex, with its prefix); before ADR 0002 it was 43,921. On Linux it is 7,096.
 
-**The head.** #53's head `ef120d7` is stacked on `stack/qualify-35-schema-41`: #51 plus #50 (`348bf1477ee4`, the #41 fix), merged without edits.
+**The head.** #53's head `50fc62e` is stacked on `stack/qualify-35-schema-41`. That branch is #51, #50 (`348bf1477ee4`, the #41 fix) and main `27255b0`, all merged without edits.
 
-**The tarballs.** Both were packed from that head:
-- the local tarball is `885c16838858…`;
-- CI's is `248fe1e27d49…`.
+**The tarball.** Local and CI packs of that head are byte-identical: `9a45587ba567…`.
 
 | Harness | macOS, local | Linux CI | Hosted macOS CI | Screenshot image |
 |---|---|---|---|---|
@@ -181,15 +179,17 @@ With ADR 0002, MCP `health` sends the model `capabilitySummaryV1` instead of the
 | Copilot CLI 1.0.107, default | **pass / pass** | **pass / pass** | **pass / pass** | dropped, with an "omitted" notice |
 | Copilot CLI 1.0.107, vision | **pass / pass** | **pass / pass** | **pass / pass** | delivered, byte-identical |
 
-Cells are L1 / L2.
+Cells are L1 / L2. The local runs used the same pinned CLIs as the workflow, installed into a scratch prefix.
 
 The receipts are named `pr53-*`:
 - local runs: [`receipts/darwin-arm64/`](receipts/darwin-arm64/);
-- CI run `43798045909`: [`receipts/linux-x64-ci/`](receipts/linux-x64-ci/) and [`receipts/darwin-arm64-ci/`](receipts/darwin-arm64-ci/).
+- CI run `43825973558`: [`receipts/linux-x64-ci/`](receipts/linux-x64-ci/) and [`receipts/darwin-arm64-ci/`](receipts/darwin-arm64-ci/).
 
 In every run, the connector exited with the harness, no other process outlived it, and the audit held no private input.
 
-Before #50 was stacked in (`5362523`), Codex and Copilot already passed L2 on every host. Claude Code failed L1 there with `computer-use-not-listed` (#41), as it does on `main`.
+Earlier heads of #53 gave the same verdicts, with the flattened summary:
+- `ef120d7` (run `43798045909`) passed L1/L2 everywhere.
+- `5362523`, before #50 was stacked in, failed Claude Code at L1 with `computer-use-not-listed` (#41), as `main` still does.
 
 ## Not covered yet
 
