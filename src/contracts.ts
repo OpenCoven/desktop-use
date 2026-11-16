@@ -26,6 +26,8 @@ export const desktopRequestSchemaV1 = {
 
 const capabilityDefs = (capabilitiesSchemaV1 as any).$defs;
 const capabilityProperties = (capabilitiesSchemaV1 as any).properties;
+const capabilityParameter = capabilityDefs.limits.properties.parameters.additionalProperties.properties;
+const capabilityPolicy = capabilityDefs.action.properties.policy.properties;
 /**
  * Compact discovery summary that MCP health and doctor carry in place of capabilitiesV1 (ADR 0002): a projection of
  * the full report, versioned on its own. The SDK and plugin keep the full report.
@@ -46,13 +48,23 @@ export const capabilitySummarySchemaV1 = {
   $defs: {
     surface: capabilityDefs.surface, state: capabilityDefs.state, reasonCodes: capabilityDefs.reasonCodes,
     action: {
-      type: 'object', additionalProperties: false, required: ['state', 'enabled', 'surfaces', 'policy', 'reasonCodes', 'providers'],
+      type: 'object', additionalProperties: false, required: ['state', 'enabled', 'surfaces', 'policy'],
       properties: {
         state: { $ref: '#/$defs/state' }, enabled: { type: 'boolean' }, surfaces: capabilityDefs.action.properties.surfaces,
-        policy: capabilityDefs.action.properties.policy, reasonCodes: { $ref: '#/$defs/reasonCodes' },
+        // v1 fixes gatewayPolicy to "not-reported", so the summary omits it; an absent list means the report's is empty.
+        policy: { type: 'object', additionalProperties: false, required: ['profile', 'approval'], properties: { profile: capabilityPolicy.profile, approval: capabilityPolicy.approval } },
+        reasonCodes: { ...capabilityDefs.reasonCodes, minItems: 1 }, variants: { type: 'array', minItems: 1, items: { $ref: '#/$defs/variant' } },
+      },
+    },
+    // Report variants identical except for mode; an absent list means the report's list is empty.
+    variant: {
+      type: 'object', additionalProperties: false, required: ['provider', 'state', 'enabled'],
+      properties: {
         modes: { type: 'array', minItems: 1, uniqueItems: true, items: { enum: capabilityDefs.variant.properties.mode.enum.filter((mode: unknown) => mode !== null) } },
+        formats: capabilityParameter.values, formatKnowledge: capabilityParameter.knowledge,
         selectors: { type: 'array', minItems: 1, uniqueItems: true, items: capabilityDefs.variant.properties.selectors.items },
-        providers: { type: 'array', uniqueItems: true, items: { type: 'string', minLength: 1 } },
+        provider: { type: 'string', minLength: 1 }, state: { $ref: '#/$defs/state' }, enabled: { type: 'boolean' },
+        reasonCodes: { ...capabilityDefs.reasonCodes, minItems: 1 },
       },
     },
   },
@@ -70,8 +82,9 @@ export const desktopResultDetailsSchemaV1 = {
 
 /**
  * Full SDK/plugin result envelope. MCP maps details to structuredContent, with one projection (ADR 0002): health
- * and doctor carry capabilitySummaryV1 in place of capabilitiesV1 and the adapter's duplicate raw report, so every
- * connector-shaped result fits harness tool-output budgets.
+ * and doctor carry capabilitySummaryV1 in place of capabilitiesV1 and omit the adapter's duplicate raw report and the
+ * OpenClaw agent profile, so every connector-shaped result fits harness tool-output budgets. The MCP text block is the
+ * compact JSON of structuredContent; image blocks are preserved.
  */
 export const desktopResultSchemaV1 = {
   $schema: dialect, $id: schemaId('result'), title: 'DesktopResultV1',

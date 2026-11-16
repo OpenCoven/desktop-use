@@ -23,7 +23,11 @@ const png = await readFile(new URL('images/valid.png', fixtures));
 const receipt = JSON.parse(await readFile(new URL('observations/valid-png.json', fixtures), 'utf8'));
 const validSummary = new Ajv2020({ strict: false }).compile(capabilitySummarySchemaV1);
 const bytes = (text: string) => Buffer.byteLength(text);
-const unique = <T>(values: T[]) => [...new Set(values)];
+const entrySet = (entries: unknown[]) => [...new Set(entries.map(entry => JSON.stringify(entry)))].sort();
+
+// One entry per report variant: an independent oracle, not the summary's grouping algorithm (#53 review).
+const variantEntry = (variant: any, enabled: boolean) => ({ mode: variant.mode, formats: variant.limits.parameters.format?.values ?? null, formatKnowledge: variant.limits.parameters.format?.knowledge ?? null, selectors: variant.selectors, provider: variant.provider.name, state: variant.state, enabled, reasonCodes: variant.reasonCodes });
+const expandSummaryVariants = (groups: any[]) => groups.flatMap(group => (group.modes ?? [null]).map((mode: unknown) => ({ mode, formats: group.formats ?? null, formatKnowledge: group.formatKnowledge ?? null, selectors: group.selectors ?? [], provider: group.provider, state: group.state, enabled: group.enabled, reasonCodes: group.reasonCodes ?? [] })));
 
 // Discovery reads the envelope from `marker`; capture actions write the shared v1 PNG and receipt. No desktop access.
 async function fixtureAdapter(root: string) {
@@ -72,15 +76,14 @@ function assertFaithfulSummary(mcp: any, core: any, label: string) {
   assert.equal(validSummary(summary), true, `${label}: ${JSON.stringify(validSummary.errors)}`);
   assert.deepEqual([summary.schemaVersion, summary.producer, summary.environment, summary.actionPermissions, summary.adapter?.version], [report.schemaVersion, report.producer, report.environment, report.actionPermissions, report.adapter?.version], label);
   assert.equal(summary.producer.surface, 'mcp');
-  const enabled = Object.fromEntries(discoverCapabilityControls(report).map(control => [control.action, control.enabled]));
   assert.deepEqual(Object.keys(summary.actions), Object.keys(report.actions), label);
-  for (const [name, action] of Object.entries<any>(report.actions)) {
-    const modes = unique(action.variants.map((variant: any) => variant.mode).filter((mode: unknown) => mode !== null));
-    const selectors = unique(action.variants.flatMap((variant: any) => variant.selectors));
-    assert.deepEqual(summary.actions[name], {
-      state: action.state, enabled: enabled[name], surfaces: action.surfaces, policy: action.policy, reasonCodes: action.reasonCodes,
-      ...(modes.length ? { modes } : {}), ...(selectors.length ? { selectors } : {}), providers: unique(action.variants.map((variant: any) => variant.provider.name)),
-    }, `${label}: ${name}`);
+  for (const control of discoverCapabilityControls(report)) {
+    const action = report.actions[control.action]; const summarized = summary.actions[control.action];
+    assert.equal(action.policy.gatewayPolicy, 'not-reported'); // The v1 schema constant the summary omits.
+    assert.deepEqual([summarized.state, summarized.enabled, summarized.surfaces, { ...summarized.policy, gatewayPolicy: 'not-reported' }, summarized.reasonCodes ?? []], [action.state, control.enabled, action.surfaces, action.policy, action.reasonCodes], `${label}: ${control.action}`);
+    // Every mode/format/selector/provider association keeps its own state, reason codes and eligibility.
+    assert.equal(control.variants.length, action.variants.length);
+    assert.deepEqual(entrySet(expandSummaryVariants(summarized.variants ?? [])), entrySet(action.variants.map((variant: any, index: number) => variantEntry(variant, control.variants[index].enabled))), `${label}: ${control.action} variants`);
   }
   assert.deepEqual(summary.omitted, { capabilitiesV1: 'tool-output-budget', fullReportSurfaces: ['sdk', 'plugin', 'cli'] });
 }
@@ -117,6 +120,36 @@ for (const era of ['modern', 'legacy'] as const) {
     assert.equal((await call({ action: 'file-read', path: 'notes.txt' })).structuredContent.success, true);
     assert.equal((await call({ action: 'click', coords: '1,2' })).structuredContent.code, 'ACTION_PROFILE_DENIED');
     assert.equal((await call({ action: 'file-read', path: 'missing.txt' })).structuredContent.success, false);
+  });
+
+  // #53 review: a known-unsupported choice must stay distinguishable from an available one, and unsupported modes or
+  // selectors must not read as usable. The two fixtures differ only in grim's JPEG build support.
+  test(`${era} summary keeps screen JPEG eligibility and unsupported Wayland modes apart`, { timeout: 60_000 }, async t => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'mcp-budget-jpeg-')));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const fixture = await fixtureAdapter(root);
+    const options = { workspaceDir: root, adapterPath: fixture.adapter, actionPermissions: resolveActionPermissions({ actionProfile: 'observation-only' }) };
+    const call = await connect(t, era, options);
+    const core = createDesktopClient({ ...options, scope: { principalId: 'budget', sessionId: era }, auditSink: async () => {}, surface: 'mcp' });
+    const screenshots: Record<string, any> = {};
+    for (const [name, jpeg] of [['wayland-grim-jpeg-disabled', false], ['wayland-grim-jpeg-enabled', true]] as const) {
+      await fixture.select(name);
+      const report = ((await core.execute({ action: 'health' }, { callId: 'core' })).details as any).capabilitiesV1;
+      const controls = discoverCapabilityControls(report).find(control => control.action === 'screenshot')!;
+      const reference = controls.variants.find(variant => variant.mode === 'screen' && variant.parameters.format?.values?.includes('jpg'))!;
+      assert.equal(reference.enabled, jpeg, `${name}: the reference consumer's precondition`);
+      const summary = (await call({ action: 'health' })).structuredContent.capabilitySummaryV1.actions.screenshot;
+      screenshots[name] = summary;
+      const jpg = summary.variants.filter((variant: any) => variant.modes?.includes('screen') && variant.formats?.includes('jpg'));
+      assert.equal(jpg.length, 1, name);
+      assert.deepEqual([jpg[0].enabled, jpg[0].state, jpg[0].reasonCodes], jpeg ? [true, 'available', undefined] : [false, 'unsupported', ['ENCODING_BUILD_DISABLED']], name);
+      // Only screen capture is usable on this compositor, and no selector is.
+      const usable = summary.variants.filter((variant: any) => variant.enabled);
+      assert.deepEqual([...new Set(usable.flatMap((variant: any) => variant.modes ?? []))], ['screen'], name);
+      assert.equal(usable.some((variant: any) => variant.selectors), false, name);
+      assert.deepEqual(usable.flatMap((variant: any) => variant.formats).sort(), jpeg ? ['jpg', 'png'] : ['png'], name);
+    }
+    assert.notDeepEqual(screenshots['wayland-grim-jpeg-disabled'], screenshots['wayland-grim-jpeg-enabled']);
   });
 
   test(`${era} discovery stays within budget when the adapter is missing or doctor is denied`, { timeout: 60_000 }, async t => {

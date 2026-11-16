@@ -3,9 +3,12 @@
 - Status: Accepted. The owner signed off on option A on 2026-11-15, together with two scope decisions (recorded on #52):
   - the existing MCP `health` assertions move to the summary in this PR;
   - data-bearing results get envelope checks now, and bounded paging becomes a follow-up issue.
+- Amended 2026-11-16, after a review on PR #53 found two defects. The owner approved both corrections:
+  - **The summary was lossy.** It flattened variants into unions, so it listed unsupported modes and selectors as if they were usable. It also could not distinguish a build-disabled JPEG choice from an available one. The summary now keeps per-variant eligibility (see [Rules](#rules)).
+  - **"Additive" was the wrong classification.** The change alters the documented MCP mapping of `details`. It is now recorded as a change to an unreleased entry point, made before its first release (see [Compatibility and version decision](#compatibility-and-version-decision)).
 - Date: 2026-11-15
 - Issue: #52 (part of #32; evidence from #35)
-- Baseline: main `3b57d45f60fbdd0d10dcf7baeccd24da2c114c0d`, plus the #35 runner from PR #51 (`20464d48804f`). The implementation branch is stacked on `stack/qualify-35-schema-41`, which is #51 plus #50 (the #41 fix) merged without edits, so that Claude Code can be qualified on the same head.
+- Baseline: main `3b57d45f60fbdd0d10dcf7baeccd24da2c114c0d`, plus the #35 runner from PR #51 (`20464d48804f`). The implementation branch is stacked on `stack/qualify-35-schema-41`: #51 plus #50 (the #41 fix), and later main `27255b0`, all merged without edits. This lets Claude Code be qualified on the same head.
 
 ## Context
 
@@ -68,10 +71,10 @@ The observed limits are about 1.2 times those budgets.
   - whether the action profile allows it;
   - whether it needs approval;
   - why it is degraded;
-  - which modes, selectors and providers it has.
+  - which mode, format, selector and provider combinations it can use, and why each of the others is unavailable.
 
   It also still receives the repair hints and the permission flow.
-- **No v1 schema breaks.** The SDK, the plugin and OpenClaw qualification stay unchanged.
+- **No v1 schema breaks.** The SDK, the plugin and OpenClaw qualification stay unchanged. The MCP mapping of `details` does change; see [Compatibility and version decision](#compatibility-and-version-decision).
 - **The full report stays reachable,** and nothing becomes a second source of truth.
 - **One focused PR,** with no request-contract change.
 
@@ -115,7 +118,7 @@ Rejected:
 
 Codex users could raise `tool_output_token_limit` or use catalog models. Copilot has no setting for this, and default installs would stay broken.
 
-## Decision (proposed): option A
+## Decision: option A
 
 ### Result shape
 
@@ -136,9 +139,12 @@ This applies to MCP `health` and `doctor` only. A successful macOS `health` (abr
     "actions": {
       "screenshot": {
         "state": "unverified", "enabled": false, "surfaces": ["cli", "mcp"],
-        "policy": { "profile": "allowed", "approval": "request-dependent", "gatewayPolicy": "not-reported" },
+        "policy": { "profile": "allowed", "approval": "request-dependent" },
         "reasonCodes": ["BACKEND_ACCESS_UNVERIFIED"],
-        "modes": ["screen", "window", "frontmost"], "selectors": ["app", "windowTitle", "windowId", "screenIndex"], "providers": ["peekaboo"]
+        "variants": [
+          { "modes": ["screen", "window", "frontmost"], "formats": ["png", "jpg"], "selectors": ["app", "windowTitle", "windowId"], "provider": "peekaboo", "state": "unverified", "enabled": false, "reasonCodes": ["BACKEND_ACCESS_UNVERIFIED"] },
+          { "modes": ["screen"], "formats": ["png", "jpg"], "selectors": ["screenIndex"], "provider": "peekaboo", "state": "unverified", "enabled": false, "reasonCodes": ["BACKEND_ACCESS_UNVERIFIED"] }
+        ]
       }
     },
     "omitted": { "capabilitiesV1": "tool-output-budget", "fullReportSurfaces": ["sdk", "plugin", "cli"] }
@@ -159,33 +165,43 @@ The MCP result changes in three ways:
 ### Rules
 
 - **The summary is a projection, never a second source.**
-  - For each action, `state`, `surfaces`, `policy` and `reasonCodes` are copied from the full report.
-  - `enabled` comes from the existing reference consumer, `discoverCapabilityControls`.
-  - `modes`, `selectors` and `providers` are ordered unions over the action's variants.
-  - The summary states no fact that the full report lacks. A test checks it against the SDK's full report for every fixture.
+  - For each action, `state`, `surfaces`, `policy.profile`, `policy.approval` and `reasonCodes` are copied from the full report. v1 fixes `policy.gatewayPolicy` to `not-reported`, so the summary omits it.
+  - `enabled`, for the action and for each variant, comes from the existing reference consumer, `discoverCapabilityControls`.
+  - `variants` groups the report's variants. Two variants share an entry only if they are identical except for their capture mode. Each entry copies the variants' `modes`, `formats` (and `formatKnowledge` when stated), `selectors`, provider name, `state` and `reasonCodes`. So every mode, format, selector and provider stays tied to its own state, reasons and eligibility, and no union can make an unsupported choice look usable. Variant limits other than format, constraints and evidence are omitted.
+  - An absent list means the report's list is empty.
+  - The summary states no fact that the full report lacks. For every fixture, a test expands each entry back into one entry per mode and compares that set with the report's variants and the reference consumer's eligibility. A second test pins the `wayland-grim-jpeg-disabled` and `-enabled` pair: screen JPEG must read `unsupported` (`ENCODING_BUILD_DISABLED`) and `available` respectively, and only screen capture may be usable on that compositor.
 - **The MCP text carrier becomes compact JSON** of `structuredContent`, for every MCP result. Clients that read the text instead of `structuredContent` then get the same budget. `JSON.parse(content[0].text)` still deep-equals `structuredContent`, so every existing parity check holds.
 - **The budget is `MCP_RESULT_BUDGET_BYTES = 8192`** compact bytes, for both carriers. That is:
   - 69% of the smallest measured limit (Codex without catalog metadata, 11,926 B);
   - 40% of Copilot's limit;
   - 16% of Claude Code's limit.
 
-  The largest projected result across all fixtures is 6,890 B: macOS `health` with permission denied, which includes the permission flow. Successful results are 4,754–6,890 B, and error and blocked results are 5.2–6.0 KB. Before the projection, the same results were 13–56 KB.
+  The largest projected result across all fixtures is 7,936 B: X11 `health` with missing helpers, which includes the setup guide and the permission flow. Successful discovery results are 4,569–7,936 B, and error and blocked results are 163–6,696 B. Before the projection, the same results were 13–56 KB. The first summary shape reached only 6,890 B, but it was lossy.
 - **The budget covers connector-shaped results.** These are `health`, `doctor`, `stop` and `screenshot`, plus every `blocked`, `needsApproval` and `error` envelope. They must fit for every capability fixture on both MCP wire revisions.
 - **Data-bearing results are sized by what was requested.** These are `inspect` UI trees, `file-list` entries (up to 500) and `file-read` content (up to 1 MiB). Their envelopes are tested with fixture data. Bounding or paging their data needs request fields, so it is a follow-up, not part of this decision.
 
 ### Compatibility and version decision
 
-**This is additive within v1. No version bump is needed.**
-- `desktopResultDetailsSchemaV1` requires only `status`, allows additional properties and declares `capabilitiesV1` optional. A result that has `capabilitySummaryV1` and no `capabilitiesV1` validates against the unchanged v1 result schema, and therefore against the advertised MCP `outputSchema`.
-- `capabilitySummaryV1` is a new versioned object with its own `schemaVersion: 1` and a JSON Schema, `capabilitySummarySchemaV1`, exported from the contracts entry beside the request and result schemas. It is added to `desktopResultDetailsSchemaV1` as an optional property, which is additive. The schema is inline, as the request and result schemas are, so the build's asset list does not change.
-- The capabilities v1 schema, the request schema and the canonical actions are unchanged.
+**This changes the documented MCP mapping of an entry point that has not been released yet. It lands before that entry point's first release. The execution contract stays v1.**
 
-The change is behavioural for one consumer group: MCP clients that read `structuredContent.capabilitiesV1` from `health` or `doctor`.
-- The documented contract names only the CLI and plugin surfaces for `capabilitiesV1` (`README.md`, `docs/capabilities-contract.md`).
-- `src/contracts.ts` says that MCP maps details "without loss". That sentence will change to name this projection.
-- The package is pre-1.0 (0.1.x).
+It is not additive. `desktopResultDetailsSchemaV1` requires only `status` and declares `capabilitiesV1` optional, so a result that has `capabilitySummaryV1` and no `capabilitiesV1` still validates. Optional-property validation does not preserve behaviour, though: a consumer that ran `discoverCapabilityControls(structuredContent.capabilitiesV1)` on MCP `health` would now fail. The documentation also promised that MCP maps `details` to `structuredContent` and preserves the SDK's content (`docs/desktop-client.md`, `docs/mcp.md`, `src/contracts.ts`).
 
-Programmatic consumers that need the full report use `createDesktopClient`. It is the same execution core, and its report differs only in `producer.surface`.
+Why that is acceptable under the version policy in `docs/desktop-client.md`:
+- **No release contains the MCP entry point.** npm 0.1.3 does not contain the SDK or MCP exports; #30 prepares 0.1.4 as their first release. A breaking change to an existing *released* entry point would need a documented package release and migration. This change ships inside the first release of the entry point instead.
+- **Schemas and identifiers are unchanged.** The capabilities v1 schema, the request schema, the canonical actions and the schema `$id`s stay as they are. `capabilitySummaryV1` is a new versioned object with its own `schemaVersion: 1` and a JSON Schema, `capabilitySummarySchemaV1`, exported from the contracts entry. It is an optional property of `desktopResultDetailsSchemaV1`. The schema is inline, so the build's asset list does not change.
+
+What this PR does with it:
+- **Amends the mapping promise wherever it is stated:**
+  - `docs/desktop-client.md` and `docs/mcp.md` (one sentence each, owner-approved although #30 and #49 own those files);
+  - the `src/contracts.ts` comment;
+  - `docs/capabilities-contract.md`.
+- **Migrates every in-repo MCP reader of `capabilitiesV1`:**
+  - `src/mcp/connector.test.ts`;
+  - `scripts/packed-wire-consumer.mjs`;
+  - main's `scripts/packed-recipe-consumer.mjs`.
+
+  #30's `scripts/release-installed-consumer.mjs` exists only on that branch. Its migration is posted on #30.
+- **Migration for consumers:** read `structuredContent.capabilitySummaryV1` instead. Per-action and per-variant `enabled` are the eligibility that `discoverCapabilityControls` would return. A consumer that needs variant limits, constraints or evidence uses `createDesktopClient`, which is the same execution core and whose report differs only in `producer.surface`. Alternatively, it uses the plugin. The 0.1.4 release notes should state the projection (`CHANGELOG.md` is #30's).
 
 ### Unchanged
 
@@ -206,21 +222,24 @@ Programmatic consumers that need the full report use `createDesktopClient`. It i
      - macOS permission denied.
    - **Actions:** every observation-only action. Both carriers must be ≤ `MCP_RESULT_BUDGET_BYTES`.
    - **Checks:**
-     - the summary equals the projection of the SDK's full report;
+     - the summary, expanded per mode, equals the full report's variants with the reference consumer's eligibility;
+     - the screen JPEG pair `wayland-grim-jpeg-disabled` / `-enabled` stays distinguishable;
      - MCP results carry no `capabilitiesV1`;
      - the SDK still does.
    - It fails on `main`, where `health` is 44–56 KB.
 4. Existing assertions about MCP `health`. **These files are owned by open PRs, so they need an owner decision before they change:**
    - `src/mcp/connector.test.ts` (#30);
-   - `scripts/packed-wire-consumer.mjs` (#49, #50).
+   - `scripts/packed-wire-consumer.mjs` (#49, #50);
+   - `scripts/packed-recipe-consumer.mjs`, added to main by #55 after this ADR was first accepted.
 
    Each assertion keeps its strength and moves to the summary: `schemaVersion`, `producer.surface`, `actionPermissions`, and per-action `state`, `policy.profile` and `surfaces`. Each test also gains `capabilitiesV1 === undefined`. The full-report coverage stays on the SDK path, which `scripts/packed-sdk-consumer.mjs` already checks.
 5. Docs:
    - `docs/capabilities-contract.md` (MCP discovery);
    - this ADR's status;
-   - `docs/harness-qualification/README.md`.
+   - `docs/harness-qualification/README.md`;
+   - the mapping sentence in `docs/desktop-client.md` and in `docs/mcp.md`.
 
-   `docs/mcp.md`, `README.md` and `CHANGELOG.md` are owned by #43, #49 and #30, and follow once those merge.
+   `README.md` and `CHANGELOG.md` are owned by #49 and #30, and follow once those merge.
 6. Re-qualify Claude Code, Codex (both variants) and Copilot (both variants):
    - on macOS locally;
    - on Linux and hosted macOS through `.github/workflows/harness-qualification.yml`.
@@ -228,9 +247,9 @@ Programmatic consumers that need the full report use `createDesktopClient`. It i
 ## Consequences
 
 - MCP discovery fits every Tier A harness, so `health` can reach L2 on Codex without catalog metadata and on Copilot.
-- An MCP model loses per-variant parameter limits and evidence detail.
+- An MCP model loses variant limits other than format, plus constraints and evidence detail.
   - The request schema already carries parameter limits, and execution enforces them.
-  - Evidence detail is summarized as `state` and `reasonCodes`.
+  - Evidence detail is summarized as each variant's `state` and `reasonCodes`.
 - MCP `structuredContent` is no longer a byte-for-byte copy of SDK `details` for discovery. The contract comment and docs must say so.
 - Raising the budget, or adding a field to the summary, is a deliberate change: the budget test fails first.
 - PR #30 changes every capability fixture. The budget test reads those fixtures, so #30 must stay within budget when it rebases. That is the point of the test.
