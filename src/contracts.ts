@@ -67,7 +67,7 @@ export const capabilitySummarySchemaV1 = {
   },
 };
 
-/** The structured details shared by the SDK/plugin result and MCP structuredContent. */
+/** The details schema for SDK/plugin results and MCP structuredContent, which projects discovery results. */
 export const desktopResultDetailsSchemaV1 = {
   $schema: dialect, $id: schemaId('result-details'), title: 'DesktopResultDetailsV1',
   type: 'object', required: ['status'], additionalProperties: true,
