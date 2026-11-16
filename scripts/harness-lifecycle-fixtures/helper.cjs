@@ -21,9 +21,10 @@ const end = (name, code) => {
   catch { code = 1; }
   process.exit(code);
 };
-process.on('SIGTERM', () => end('helper-cancelled', 0));
-process.on('SIGINT', () => end('helper-cancelled', 0));
-process.on('disconnect', () => end('helper-disconnected', 0));
+// Exit 2 distinguishes an interrupted hold from successful completion even if the adapter received no signal.
+process.on('SIGTERM', () => end('helper-cancelled', 2));
+process.on('SIGINT', () => end('helper-cancelled', 2));
+process.on('disconnect', () => end('helper-disconnected', 2));
 timer = setInterval(() => {
   try {
     if (!committed && fs.existsSync(path.join(directory, 'release'))) {

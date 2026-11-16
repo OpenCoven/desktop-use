@@ -34,11 +34,15 @@ Releasing the gate writes exactly one `effect.txt` containing fixed fixture text
 
 The adapter publishes its terminal marker only after the real child's close event. Consumers must still verify actual process absence rather than trusting `helperReaped` alone. A killed actor can leave incomplete state; retain that uncertainty and inspect independent process/effect evidence instead of inventing a terminal record.
 
+Direct helper cancellation also ends the operation as cancelled, even if the effect was already committed and the adapter received no signal. The helper's internal exit code distinguishes interruption from normal completion. Adapter cancellation escalates against only its owned child after a bounded grace period, so a stopped helper cannot keep the operation open indefinitely.
+
 ## Privacy and cleanup
 
 Fixture metadata contains fixed event names, operation identifiers, process identities, statuses and effect facts. Requested text and raw argv are never copied into metadata, stdout, stderr or the fixed effect. These fixture events are separate from the real connector's action audit; later harness qualification must check both.
 
 A terminal audit-write failure still lets the child exit and be reaped. The adapter returns a fixed nonzero `FIXTURE_AUDIT_FAILED` outcome, retains the committed-effect fact and sets `auditWritten: false`. Unavailable or incomplete fixture audit remains an evidence failure even when cleanup succeeds.
+
+Operation-directory, startup-marker and readiness-marker failures produce a fixed nonzero `FIXTURE_STATE_FAILED` outcome without raw filesystem diagnostics or private paths. If a helper was started, the adapter terminates and reaps it before reporting the state failure. No active or successful terminal phase is inferred from an unavailable marker.
 
 Callers own the adapter process and its process group. Register it before inspecting readiness, terminate and reap only those owned actors, confirm their helpers are gone, and then remove only the fresh fixture root. Traversing or symlinked operation-directory gates are rejected. The focused tests keep all state under their own sandbox and verify the exact helper identity before any orphan cleanup.
 

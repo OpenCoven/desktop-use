@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { spawn, execFileSync } from 'node:child_process';
-import { appendFile, mkdtemp, mkdir, readFile, readdir, realpath, rename, rm, stat, symlink } from 'node:fs/promises';
+import { appendFile, mkdtemp, mkdir, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
@@ -297,5 +297,104 @@ test('a terminal audit-write failure cannot strand a committed helper or leak it
       process.kill(operation.active.helperPid, 'SIGKILL');
       await bounded(actor.closed, 2000, 'fault-probe adapter reap');
     }
+  }
+});
+
+for (const signal of ['SIGTERM', 'SIGINT']) test(`direct helper ${signal} preserves the committed effect without claiming successful completion`, { timeout: 15000 }, async t => {
+  const f = await fixture(t, { holdAfterEffect: true });
+  const actor = f.start();
+  const operation = await activeFor(f, actor);
+  await f.release(operation.operationId);
+  assert.equal((await afterEffectFor(f, operation)).terminal, null);
+  process.kill(operation.active.helperPid, signal);
+  await bounded(actor.closed, 5000, 'direct helper cancellation');
+  const result = JSON.parse(actor.stdout);
+  assert.equal(result.ok, false, 'A cancelled held helper is not a successful completion');
+  assert.equal(result.code, 'CANCELLED');
+  assert.equal(result.fixture.status, 'cancelled');
+  assert.equal(result.fixture.effectCommitted, true);
+  assert.equal(result.fixture.helperReaped, true);
+  assert.equal(alive(operation.active.helperPid), false);
+  assert.equal((await f.readEvents()).some(event => event.event === 'helper-cancelled'), true);
+});
+
+test('adapter cancellation reaps a stopped helper within a bounded deadline', { timeout: 15000 }, async t => {
+  const f = await fixture(t);
+  const actor = f.start();
+  const operation = await activeFor(f, actor);
+  process.kill(operation.active.helperPid, 'SIGSTOP');
+  actor.child.kill('SIGTERM');
+  await bounded(actor.closed, 3000, 'stopped helper cancellation');
+  assert.equal(alive(operation.active.helperPid), false);
+  assert.equal(JSON.parse(actor.stdout).code, 'CANCELLED');
+  assert.equal(JSON.parse(actor.stdout).fixture.effectCommitted, false);
+});
+
+test('an unavailable operations directory produces a fixed state failure without private paths', { timeout: 15000 }, async t => {
+  const f = await fixture(t);
+  const operations = join(f.root, 'operations'), saved = join(f.root, 'saved-operations');
+  await rename(operations, saved); await writeFile(operations, 'fixture obstruction');
+  try {
+    const actor = f.start();
+    const exit = await bounded(actor.closed, 5000, 'startup state failure');
+    assert.equal(exit.code, 1);
+    assert.equal(actor.stderr.includes(f.root), false, 'A state failure must not print the private root');
+    assert.notEqual(actor.stdout, '', 'A state failure needs a fixed structured outcome');
+    const result = JSON.parse(actor.stdout);
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'FIXTURE_STATE_FAILED');
+    assert.equal(result.fixture.helperPid, null);
+    assert.equal(result.fixture.effectCommitted, false);
+  } finally {
+    await rm(operations, { force: true }); await rename(saved, operations);
+  }
+  assert.deepEqual(await f.readOperations(), []);
+});
+
+test('an active-marker write failure reaps the actual ready helper and reveals no private path', { timeout: 15000 }, async t => {
+  const f = await fixture(t);
+  const options = join(f.root, 'fixture-options.json'), saved = join(f.root, 'saved-options.json');
+  await rename(options, saved);
+  execFileSync('mkfifo', [options]);
+  let helperPid, actor, activePath;
+  try {
+    actor = f.start();
+    const operation = await until(async () => (await f.readOperations()).find(item => item.started?.parentPid === actor.child.pid), 'started operation');
+    helperPid = await until(() => {
+      let found;
+      try { found = execFileSync('pgrep', ['-P', String(actor.child.pid)], { encoding: 'utf8' }).trim().split('\n').filter(Boolean); }
+      catch (error) { if (error.status === 1) return null; throw error; }
+      assert.equal(found.length, 1, 'The blocked adapter must own exactly one fixture helper');
+      return Number(found[0]);
+    }, 'actual child awaiting options');
+    assert.equal(Number(execFileSync('ps', ['-p', String(helperPid), '-o', 'ppid='], { encoding: 'utf8' }).trim()), actor.child.pid);
+    activePath = join(f.root, 'operations', operation.operationId, 'active.json');
+    await mkdir(activePath);
+    // The real helper cannot reach readiness until this FIFO write completes; the filesystem fault is already installed.
+    await bounded(writeFile(options, JSON.stringify({ schemaVersion: 1, holdAfterEffect: false })), 3000, 'release helper initialization');
+    const exit = await bounded(actor.closed, 5000, 'active marker failure cleanup');
+    assert.equal(exit.code, 1);
+    assert.equal(actor.stderr.includes(f.root), false, 'A readiness failure must not print the private root');
+    assert.notEqual(actor.stdout, '', 'A readiness failure needs a fixed structured outcome');
+    const result = JSON.parse(actor.stdout);
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'FIXTURE_STATE_FAILED');
+    assert.equal(result.fixture.helperPid, helperPid);
+    assert.equal(result.fixture.helperReaped, true);
+    assert.equal(result.fixture.effectCommitted, false);
+    assert.equal(alive(helperPid), false);
+  } finally {
+    if (helperPid && alive(helperPid)) {
+      let command;
+      try { command = execFileSync('ps', ['-p', String(helperPid), '-o', 'command='], { encoding: 'utf8' }); }
+      catch (error) { if (error.status !== 1 || alive(helperPid)) throw error; }
+      if (command) {
+        assert.equal(command.includes(join(f.root, 'helper.cjs')), true, 'Fault cleanup must match the exact task helper');
+        try { process.kill(helperPid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
+        await until(() => !alive(helperPid), 'fault helper removal');
+      }
+    }
+    if (activePath) await rm(activePath, { recursive: true, force: true });
+    await rm(options, { force: true }); await rename(saved, options);
   }
 });
