@@ -1,0 +1,39 @@
+name: Harness lifecycle fixtures
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/harness-lifecycle-fixtures/**'
+      - '.github/workflows/harness-lifecycle-fixtures.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/harness-lifecycle-fixtures/**'
+      - '.github/workflows/harness-lifecycle-fixtures.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: harness-lifecycle-fixtures-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fixture:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Verify real fixture process, effect and audit boundaries
+        run: node --test scripts/harness-lifecycle-fixtures/fixture.test.mjs
