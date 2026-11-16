@@ -37,6 +37,32 @@ const receiptFacts = new Map<string, ReceiptFact>([
   ['linux-x64-ci/coven-code-default.json', { harness: 'coven-code', platform: 'Linux', variant: 'default', L1: 'unqualified', L2: 'unqualified', image: null }],
 ].map(([path, fact]) => [receiptRoot + path, fact]) as [string, ReceiptFact][]);
 
+// Hand-checked corrected PR 53 receipts from run 43826298788; these qualify only the unlanded candidate.
+const candidateReceiptRoot = 'https://github.com/OpenCoven/desktop-use/blob/6a78069b6dcb968b1a80fa6f003135cc83340e30/docs/harness-qualification/receipts/';
+const candidateFacts = new Map([
+  ['claude:macOS:default', 'darwin-arm64-ci/pr53-claude-code-default.json', 'delivered'],
+  ['codex:macOS:default', 'darwin-arm64-ci/pr53-codex-default.json', 'dropped'],
+  ['codex:macOS:tool-search', 'darwin-arm64-ci/pr53-codex-tool-search.json', 'dropped'],
+  ['copilot:macOS:default', 'darwin-arm64-ci/pr53-copilot-default.json', 'dropped'],
+  ['copilot:macOS:vision', 'darwin-arm64-ci/pr53-copilot-vision.json', 'delivered'],
+  ['claude:Linux:default', 'linux-x64-ci/pr53-claude-code-default.json', 'delivered'],
+  ['codex:Linux:default', 'linux-x64-ci/pr53-codex-default.json', 'dropped'],
+  ['codex:Linux:tool-search', 'linux-x64-ci/pr53-codex-tool-search.json', 'dropped'],
+  ['copilot:Linux:default', 'linux-x64-ci/pr53-copilot-default.json', 'dropped'],
+  ['copilot:Linux:vision', 'linux-x64-ci/pr53-copilot-vision.json', 'delivered'],
+].map(([key, path, image]) => [key, { url: candidateReceiptRoot + path, image }]));
+
+// Reject duplicate labels before resolving links, including Markdown's case/whitespace aliases.
+function evidenceReferences(markdown: string): Map<string, string> {
+  const references = new Map<string, string>();
+  for (const definition of markdown.matchAll(/^ {0,3}\[([^\]]+)\]:([^\n]*)$/gm)) {
+    const label = definition[1].trim().replace(/\s+/g, ' ').toLowerCase();
+    assert.ok(!references.has(label), `Duplicate reference label: ${label}`);
+    references.set(label, definition[2].trim());
+  }
+  return references;
+}
+
 function assertRecipeCoverage(markdown: string, advertised: string[], rendererIds: string[]) {
   const ids = [...rendererIds].sort();
   assert.deepEqual([...advertised].sort(), ids, 'CLI help must cover the authoritative renderer registry');
@@ -111,7 +137,7 @@ function assertSupportMatrix(markdown: string) {
   const ids = [...registry.matchAll(/^\| `([a-z-]+)` \|/gm)].map(row => row[1]);
   const expected = ids.flatMap(id => [`${id}:macOS`, `${id}:Linux`]).sort();
   const observed: string[] = [];
-  const references = new Map([...markdown.matchAll(/^\[([a-z0-9-]+)\]: (https:\/\/\S+)$/gm)].map(match => [match[1], match[2]]));
+  const references = evidenceReferences(markdown);
   for (const row of rows) {
     const cells = row.split('|').slice(1, -1).map(cell => cell.trim());
     assert.equal(cells.length, 9, 'Matrix columns are ID, platform, L0 through L5, image');
@@ -196,6 +222,74 @@ for (const replacement of ['L1 | L5 | L3 | L4 | L5', 'L1 | L5 | L3 | L4 | L2']) 
   const mutation = markdown.replace('L1 | L2 | L3 | L4 | L5', replacement);
   assert.notEqual(mutation, markdown);
   assert.throws(() => assertSupportMatrix(mutation), /header/);
+});
+
+function assertCandidateMatrix(markdown: string) {
+  const matrix = markdown.split('<!-- harness-candidate-matrix:start -->')[1]?.split('<!-- harness-candidate-matrix:end -->')[0];
+  assert.ok(matrix, 'The guide must distinguish corrected candidate evidence from historical evidence');
+  const lines = matrix.split('\n').filter(line => line.startsWith('|'));
+  assert.deepEqual(lines[0].split('|').slice(1, -1).map(cell => cell.trim()), ['Recipe ID', 'Platform', 'Variant', 'L1', 'L2', 'L3', 'L4', 'L5', 'Image'], 'Unsupported candidate matrix header');
+  const references = evidenceReferences(markdown);
+  const observed: string[] = [];
+  for (const line of lines.slice(2)) {
+    const cells = line.split('|').slice(1, -1).map(cell => cell.trim());
+    assert.equal(cells.length, 9, 'Candidate rows must keep support levels separate from image delivery');
+    const key = `${cells[0].replaceAll('`', '')}:${cells[1]}:${cells[2]}`;
+    observed.push(key);
+    const fact = candidateFacts.get(key);
+    assert.ok(fact, 'Evidence belongs to an unsupported candidate harness/platform/variant');
+    for (const column of [3, 4, 8]) {
+      const claim = /^\[([^\]]+)\]\[([a-z0-9-]+)\]$/.exec(cells[column]);
+      assert.ok(claim, 'Candidate claims must link exactly one immutable receipt');
+      assert.equal(references.get(claim[2]), fact.url, 'Evidence belongs to a different candidate harness/platform/variant');
+      assert.equal(claim[1], column === 8 ? fact.image === 'delivered' ? 'Delivered, byte identical' : 'Dropped' : 'Pass', 'Evidence contradicts the candidate verdict or image delivery');
+    }
+    assert.deepEqual(cells.slice(5, 8), ['Unverified', 'Unverified', 'Unverified'], 'Candidate L1/L2 receipts do not qualify L3, L4 or L5');
+  }
+  assert.deepEqual(observed.sort(), [...candidateFacts.keys()].sort(), 'Every corrected candidate variant needs one row per platform');
+}
+
+test('corrected candidate support claims preserve receipt scope and image delivery', async () => {
+  assertCandidateMatrix(await readFile(guide, 'utf8'));
+});
+
+for (const [name, before, after] of [
+  ['wrong platform', '[Pass][candidate-mac-claude]', '[Pass][candidate-linux-claude]'],
+  ['wrong variant', '[Pass][candidate-mac-codex]', '[Pass][candidate-mac-codex-search]'],
+  ['contradictory verdict', '[Pass][candidate-mac-codex]', '[Fail][candidate-mac-codex]'],
+  ['contradictory image', '[Dropped][candidate-mac-codex]', '[Delivered, byte identical][candidate-mac-codex]'],
+  ['historical evidence', '[Pass][candidate-linux-claude]', '[Pass][linux-claude]'],
+] as const) test(`candidate matrix rejects ${name}`, async () => {
+  const markdown = await readFile(guide, 'utf8');
+  const mutation = markdown.replace(before, after);
+  assert.notEqual(mutation, markdown);
+  assert.throws(() => assertCandidateMatrix(mutation), /Evidence/);
+});
+
+for (const column of [5, 6, 7]) test(`candidate observations cannot qualify support column ${column}`, async () => {
+  const markdown = await readFile(guide, 'utf8');
+  const marker = '<!-- harness-candidate-matrix:start -->';
+  const [historical, candidate] = markdown.split(marker);
+  assert.ok(candidate, 'Candidate matrix must exist');
+  const mutation = historical + marker + candidate.split('\n').map(line => {
+    if (!line.startsWith('| `claude` | macOS | default |')) return line;
+    const cells = line.split('|'); cells[column + 1] = ' [Pass][candidate-mac-claude] '; return cells.join('|');
+  }).join('\n');
+  assert.notEqual(mutation, markdown);
+  assert.throws(() => assertCandidateMatrix(mutation), /do not qualify/);
+});
+
+for (const label of ['candidate-mac-claude', 'CANDIDATE-MAC-CLAUDE']) test(`candidate matrix rejects duplicate Markdown evidence label ${label}`, async () => {
+  const markdown = await readFile(guide, 'utf8');
+  const mutation = `   [${label}]: http://example.invalid/wrong-receipt\n\n${markdown}`;
+  assert.throws(() => assertCandidateMatrix(mutation), /duplicate reference/i);
+});
+
+test('corrected candidate receipts cannot replace dated historical evidence', async () => {
+  const markdown = await readFile(guide, 'utf8');
+  const mutation = changeCell(markdown, 'claude', 'Linux', 3, '[Pass][candidate-linux-claude]');
+  assert.notEqual(mutation, markdown);
+  assert.throws(() => assertSupportMatrix(mutation), /Evidence/);
 });
 
 test('the actual production tarball contains the harness guide unchanged', async t => {

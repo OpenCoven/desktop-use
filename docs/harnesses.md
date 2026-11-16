@@ -40,7 +40,7 @@ Versions in this table are the recipe command's checked source/documentation pin
 | `generic` | Generic MCP client | Unpinned | C; unqualified protocol example |
 <!-- harness-registry:end -->
 
-## Platform support matrix
+## Historical platform support matrix
 
 Claude Code is `2.1.325`, Codex CLI `0.169.0`, Copilot CLI `1.0.107`, and local Coven Code `0.9.0`. OpenCode and Hermes have no real-harness execution pin in these receipts. The Linux Claude Code receipt uses the older connector and fails schema discovery; the fixed connector has only macOS evidence in this snapshot. An unqualified or failed cell remains visible even when another variant passes.
 
@@ -78,6 +78,33 @@ OpenClaw uses the plugin path described in [the MCP guide](mcp.md) and [the clie
 - Copilot's default mode drops images. Its `vision` variant delivered the exact fixture image, while the health report still spilled to a file and failed L2. The separate discovery-result budget work is tracked in [issue 52](https://github.com/OpenCoven/desktop-use/issues/52).
 - OpenCode and Hermes are explicitly unqualified by the retained runner. Coven Code's retained local print-mode run reached the model endpoint without starting MCP; its Linux binary was unavailable. These are historical qualification gaps. A missing runner recipe or absent local binary does not establish an upstream harness blocker.
 - [PR 49](https://github.com/OpenCoven/desktop-use/pull/49) contains broker/PTY tests and partial macOS real-harness approval examples. Complete L3/L4 requires the remaining real-harness, platform and lifecycle cases in [issue 35](https://github.com/OpenCoven/desktop-use/issues/35), including pending and active interruption and cross-session isolation.
+
+## Corrected PR 53 candidate
+
+The preceding matrix preserves the historical failures. A separate, unlanded and unreleased [PR 53 candidate at `6a78069b6dcb968b1a80fa6f003135cc83340e30`](https://github.com/OpenCoven/desktop-use/pull/53) has newer L1/L2 observations from [exact-head run `43826298788`](https://github.com/OpenCoven/desktop-use/actions/runs/43826298788). This is candidate evidence, not qualification of current main or published npm `0.1.3`. All ten receipts below identify packed connector SHA256 `9a45587ba567900d2e76c2986091d1c4c77e6f675477ed2c2f87d4ea76f898cc`; their connector `commit` fields are null, so that hash is the direct package identity. [Independent candidate verification](https://github.com/OpenCoven/desktop-use/pull/53#issuecomment-6910932672) records that the packed bytes match the exact-head workflow artifacts.
+
+The harness pins are Claude Code `2.1.325`, Codex CLI `0.169.0` and GitHub Copilot CLI `1.0.107`. Hosted macOS uses Darwin `25.6.0`, arm64 and Quartz; Linux uses kernel `7.0.0-1017-azure`, x64 and no display server. Both use Node `24.22.2`. These observation-only runs use the fixture adapter and deterministic local endpoints. No additional harness run is implied by this guide update.
+
+<!-- harness-candidate-matrix:start -->
+| Recipe ID | Platform | Variant | L1 | L2 | L3 | L4 | L5 | Image |
+|---|---|---|---|---|---|---|---|---|
+| `claude` | macOS | default | [Pass][candidate-mac-claude] | [Pass][candidate-mac-claude] | Unverified | Unverified | Unverified | [Delivered, byte identical][candidate-mac-claude] |
+| `codex` | macOS | default | [Pass][candidate-mac-codex] | [Pass][candidate-mac-codex] | Unverified | Unverified | Unverified | [Dropped][candidate-mac-codex] |
+| `codex` | macOS | tool-search | [Pass][candidate-mac-codex-search] | [Pass][candidate-mac-codex-search] | Unverified | Unverified | Unverified | [Dropped][candidate-mac-codex-search] |
+| `copilot` | macOS | default | [Pass][candidate-mac-copilot] | [Pass][candidate-mac-copilot] | Unverified | Unverified | Unverified | [Dropped][candidate-mac-copilot] |
+| `copilot` | macOS | vision | [Pass][candidate-mac-copilot-vision] | [Pass][candidate-mac-copilot-vision] | Unverified | Unverified | Unverified | [Delivered, byte identical][candidate-mac-copilot-vision] |
+| `claude` | Linux | default | [Pass][candidate-linux-claude] | [Pass][candidate-linux-claude] | Unverified | Unverified | Unverified | [Delivered, byte identical][candidate-linux-claude] |
+| `codex` | Linux | default | [Pass][candidate-linux-codex] | [Pass][candidate-linux-codex] | Unverified | Unverified | Unverified | [Dropped][candidate-linux-codex] |
+| `codex` | Linux | tool-search | [Pass][candidate-linux-codex-search] | [Pass][candidate-linux-codex-search] | Unverified | Unverified | Unverified | [Dropped][candidate-linux-codex-search] |
+| `copilot` | Linux | default | [Pass][candidate-linux-copilot] | [Pass][candidate-linux-copilot] | Unverified | Unverified | Unverified | [Dropped][candidate-linux-copilot] |
+| `copilot` | Linux | vision | [Pass][candidate-linux-copilot-vision] | [Pass][candidate-linux-copilot-vision] | Unverified | Unverified | Unverified | [Delivered, byte identical][candidate-linux-copilot-vision] |
+<!-- harness-candidate-matrix:end -->
+
+Every listed variant delivers successful `health` and `screenshot` structured results intact. Codex's `default` variant requests `qualification` without catalog model metadata; `tool-search` requests the catalog model `gpt-5.5`. Both now pass L2 on this candidate, and both still drop images. Copilot's default variant also drops images; its `vision` variant and Claude Code deliver byte-identical fixture PNG content. Passing L2 does not guarantee visual input.
+
+The candidate's [amended ADR 0002](https://github.com/OpenCoven/desktop-use/blob/6a78069b6dcb968b1a80fa6f003135cc83340e30/docs/adr/0002-compact-mcp-discovery-results.md#compatibility-and-version-decision) explicitly classifies replacing the MCP `health`/`doctor` full report with `capabilitySummaryV1` as a pre-first-release mapping change, rather than an additive change. Consumers of that candidate must migrate the MCP discovery reader; the SDK retains full-report discovery. The per-variant summary preserves eligibility associations. Large data-bearing result pagination remains separate work in [issue 54](https://github.com/OpenCoven/desktop-use/issues/54).
+
+The receipts record completed harness scripts, released connectors, no remaining processes and two audit events free of private input. Those observation-run cleanup facts do not qualify trusted approval or active cancellation. L3/L4 still require the complete real-harness scenario matrix, including the [PR 49 forced-shutdown failure](https://github.com/OpenCoven/desktop-use/pull/49#issuecomment-6907504376) and its repair. L5 and macOS privacy attribution remain unverified. The historical Tier B rows remain unqualified; this candidate supplies no new OpenCode, Hermes or Coven Code standard-runner qualification.
 
 ## Preparing a recipe
 
@@ -216,3 +243,14 @@ Retain the first failed receipt and its exact harness, OS, display server, launc
 [linux-opencode]: https://github.com/OpenCoven/desktop-use/blob/20464d48804f8c82b834d5d7b2441a1712989e59/docs/harness-qualification/receipts/linux-x64-ci/opencode-default.json
 [linux-hermes]: https://github.com/OpenCoven/desktop-use/blob/20464d48804f8c82b834d5d7b2441a1712989e59/docs/harness-qualification/receipts/linux-x64-ci/hermes-default.json
 [linux-coven-code]: https://github.com/OpenCoven/desktop-use/blob/20464d48804f8c82b834d5d7b2441a1712989e59/docs/harness-qualification/receipts/linux-x64-ci/coven-code-default.json
+
+[candidate-mac-claude]: https://github.com/OpenCoven/desktop-use/blob/6a78069b6dcb968b1a80fa6f003135cc83340e30/docs/harness-qualification/receipts/darwin-arm64-ci/pr53-claude-code-default.json
+[candidate-mac-codex]: https://github.com/OpenCoven/desktop-use/blob/6a78069b6dcb968b1a80fa6f003135cc83340e30/docs/harness-qualification/receipts/darwin-arm64-ci/pr53-codex-default.json
+[candidate-mac-codex-search]: https://github.com/OpenCoven/desktop-use/blob/6a78069b6dcb968b1a80fa6f003135cc83340e30/docs/harness-qualification/receipts/darwin-arm64-ci/pr53-codex-tool-search.json
+[candidate-mac-copilot]: https://github.com/OpenCoven/desktop-use/blob/6a78069b6dcb968b1a80fa6f003135cc83340e30/docs/harness-qualification/receipts/darwin-arm64-ci/pr53-copilot-default.json
+[candidate-mac-copilot-vision]: https://github.com/OpenCoven/desktop-use/blob/6a78069b6dcb968b1a80fa6f003135cc83340e30/docs/harness-qualification/receipts/darwin-arm64-ci/pr53-copilot-vision.json
+[candidate-linux-claude]: https://github.com/OpenCoven/desktop-use/blob/6a78069b6dcb968b1a80fa6f003135cc83340e30/docs/harness-qualification/receipts/linux-x64-ci/pr53-claude-code-default.json
+[candidate-linux-codex]: https://github.com/OpenCoven/desktop-use/blob/6a78069b6dcb968b1a80fa6f003135cc83340e30/docs/harness-qualification/receipts/linux-x64-ci/pr53-codex-default.json
+[candidate-linux-codex-search]: https://github.com/OpenCoven/desktop-use/blob/6a78069b6dcb968b1a80fa6f003135cc83340e30/docs/harness-qualification/receipts/linux-x64-ci/pr53-codex-tool-search.json
+[candidate-linux-copilot]: https://github.com/OpenCoven/desktop-use/blob/6a78069b6dcb968b1a80fa6f003135cc83340e30/docs/harness-qualification/receipts/linux-x64-ci/pr53-copilot-default.json
+[candidate-linux-copilot-vision]: https://github.com/OpenCoven/desktop-use/blob/6a78069b6dcb968b1a80fa6f003135cc83340e30/docs/harness-qualification/receipts/linux-x64-ci/pr53-copilot-vision.json
