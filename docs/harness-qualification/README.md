@@ -165,31 +165,31 @@ Recorded on macOS (Darwin 27.2.0), arm64, on 2026-11-15, with a pretty-printed t
 
 ## Compact discovery results (#52, PR #53)
 
-With ADR 0002, MCP `health` sends the model `capabilitySummaryV1` instead of the full report. The macOS fixture result drops from 43,921 to 5,834 characters (5,868 under Codex, with its prefix).
+With ADR 0002, MCP `health` sends the model `capabilitySummaryV1` instead of the full report. The macOS fixture result drops from 43,921 to 5,834 characters (5,868 under Codex, with its prefix). On Linux it is 5,817.
 
-Three connector builds, all packed:
-- **#53** at `4628718`. It is stacked on #51 and does not include the #41 fix:
-  - local tarball `963e637f6612…`;
-  - CI tarball `3c03f7f1b490…`, packed by the workflow from the same commit.
-- **#50 + #53**: a local merge of #50 (`348bf1477ee4`, the #41 fix) with #53, tarball `885c16838858…`. This is the state after the planned merge order.
+**The head.** #53's head `ef120d7` is stacked on `stack/qualify-35-schema-41`: #51 plus #50 (`348bf1477ee4`, the #41 fix), merged without edits.
 
-| Harness | macOS, #53 | macOS, #50 + #53 | Linux CI, #53 | Hosted macOS CI, #53 | Screenshot image |
-|---|---|---|---|---|---|
-| Claude Code 2.1.325 | fail (not listed: #41) | **pass / pass** | fail (not listed: #41) | fail (not listed: #41) | delivered, byte-identical |
-| Codex CLI 0.169.0, default | **pass / pass** | **pass / pass** | **pass / pass** | **pass / pass** | dropped |
-| Codex CLI 0.169.0, tool-search | **pass / pass** | **pass / pass** | **pass / pass** | **pass / pass** | dropped |
-| Copilot CLI 1.0.107, default | **pass / pass** | **pass / pass** | **pass / pass** | **pass / pass** | dropped, with an "omitted" notice |
-| Copilot CLI 1.0.107, vision | **pass / pass** | **pass / pass** | **pass / pass** | **pass / pass** | delivered, byte-identical |
+**The tarballs.** Both were packed from that head:
+- the local tarball is `885c16838858…`;
+- CI's is `248fe1e27d49…`.
+
+| Harness | macOS, local | Linux CI | Hosted macOS CI | Screenshot image |
+|---|---|---|---|---|
+| Claude Code 2.1.325 | **pass / pass** | **pass / pass** | **pass / pass** | delivered, byte-identical |
+| Codex CLI 0.169.0, default | **pass / pass** | **pass / pass** | **pass / pass** | dropped |
+| Codex CLI 0.169.0, tool-search | **pass / pass** | **pass / pass** | **pass / pass** | dropped |
+| Copilot CLI 1.0.107, default | **pass / pass** | **pass / pass** | **pass / pass** | dropped, with an "omitted" notice |
+| Copilot CLI 1.0.107, vision | **pass / pass** | **pass / pass** | **pass / pass** | delivered, byte-identical |
 
 Cells are L1 / L2.
 
-Where the receipts are:
-- local runs: [`receipts/darwin-arm64/`](receipts/darwin-arm64/) (`pr53-*`, `pr50-53-*`);
-- CI run `43794185081`: [`receipts/linux-x64-ci/`](receipts/linux-x64-ci/) and [`receipts/darwin-arm64-ci/`](receipts/darwin-arm64-ci/) (`pr53-*`).
+The receipts are named `pr53-*`:
+- local runs: [`receipts/darwin-arm64/`](receipts/darwin-arm64/);
+- CI run `43798045909`: [`receipts/linux-x64-ci/`](receipts/linux-x64-ci/) and [`receipts/darwin-arm64-ci/`](receipts/darwin-arm64-ci/).
 
 In every run, the connector exited with the harness, no other process outlived it, and the audit held no private input.
 
-Claude Code's L2 on Linux follows once #50 merges and this branch is rebased. Its macOS result with #50 shows that the fix and the projection work together.
+Before #50 was stacked in (`5362523`), Codex and Copilot already passed L2 on every host. Claude Code failed L1 there with `computer-use-not-listed` (#41), as it does on `main`.
 
 ## Not covered yet
 

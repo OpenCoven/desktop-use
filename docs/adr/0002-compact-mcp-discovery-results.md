@@ -5,7 +5,7 @@
   - data-bearing results get envelope checks now, and bounded paging becomes a follow-up issue.
 - Date: 2026-11-15
 - Issue: #52 (part of #32; evidence from #35)
-- Baseline: main `3b57d45f60fbdd0d10dcf7baeccd24da2c114c0d`, plus the #35 runner from PR #51 (`20464d48804f`). This branch is stacked on `test/qualify-harness-35`.
+- Baseline: main `3b57d45f60fbdd0d10dcf7baeccd24da2c114c0d`, plus the #35 runner from PR #51 (`20464d48804f`). The implementation branch is stacked on `stack/qualify-35-schema-41`, which is #51 plus #50 (the #41 fix) merged without edits, so that Claude Code can be qualified on the same head.
 
 ## Context
 
