@@ -1,0 +1,167 @@
+{
+  "schemaVersion": 1,
+  "kind": "harness-qualification",
+  "evidenceClass": "real-harness, fixture adapter, deterministic local endpoint (not native desktop acceptance)",
+  "recordedAt": "2026-11-16T02:47:12.405Z",
+  "requestedLevels": [
+    "L1",
+    "L2"
+  ],
+  "harness": {
+    "id": "codex",
+    "label": "Codex CLI",
+    "variant": "default",
+    "version": "codex-cli 0.169.0",
+    "recipe": {
+      "mode": "exec --skip-git-repo-check",
+      "endpoint": "model_providers base_url (wire_api = responses)",
+      "mcp": "default_tools_approval_mode = \"approve\", startup_readiness = \"catalog\"",
+      "features": "plugins = false (no curated plugin sync from GitHub)"
+    },
+    "endpointProtocol": "openai-responses",
+    "requestedModels": [
+      "qualification"
+    ]
+  },
+  "host": {
+    "os": "linux",
+    "osRelease": "7.0.0-1017-azure",
+    "arch": "x64",
+    "displayServer": "none",
+    "node": "v24.22.2"
+  },
+  "connector": {
+    "source": "packed tarball",
+    "package": "@opencoven/openclaw-desktop-use",
+    "version": "0.1.3",
+    "commit": null,
+    "tarballSha256": "3c03f7f1b4908940775447fde47c7967320a335f5a837a64dcf815f1bf5c773f",
+    "launch": "node <connector main.js> --config <disposable config>",
+    "actionProfile": "observation-only"
+  },
+  "adapter": {
+    "kind": "fixture",
+    "capabilityFixture": "linux",
+    "screenshotFixture": "contracts/v1/fixtures/images/valid.png",
+    "screenshotSha256": "f9b6e08a640c59e92b85531f6a9eb90ff3565189fd95546739a83e58512286c3"
+  },
+  "run": {
+    "exitCode": 0,
+    "signal": null,
+    "timedOut": false,
+    "seconds": 0.8,
+    "modelRequests": 3,
+    "toolBearingRequests": 3,
+    "scriptCompleted": true,
+    "unexpectedEndpointPaths": []
+  },
+  "discovery": {
+    "mode": "listed",
+    "desktopTools": [
+      {
+        "listedAs": "mcp__coven_desktop_use/computer_use",
+        "mcpName": "computer_use",
+        "schemaTopLevelKeys": [
+          "type",
+          "properties",
+          "required",
+          "additionalProperties",
+          "allOf"
+        ]
+      }
+    ],
+    "otherToolCount": 16,
+    "otherTools": [
+      "exec_command",
+      "write_stdin",
+      "list_mcp_resources",
+      "list_mcp_resource_templates",
+      "read_mcp_resource",
+      "request_user_input",
+      "view_image",
+      "multi_agent_v1/close_agent",
+      "multi_agent_v1/resume_agent",
+      "multi_agent_v1/send_input",
+      "multi_agent_v1/spawn_agent",
+      "multi_agent_v1/wait_agent",
+      "get_goal",
+      "create_goal",
+      "update_goal",
+      "web_search"
+    ],
+    "laterListings": [
+      "mcp__coven_desktop_use/computer_use"
+    ],
+    "harnessNotes": []
+  },
+  "observation": {
+    "health": {
+      "called": true,
+      "resultSeen": true,
+      "status": "success",
+      "resultShape": [
+        "string"
+      ],
+      "textChars": 5851,
+      "structuredContent": "delivered",
+      "structuredKeys": [
+        "action",
+        "actionPermissions",
+        "adapterInvocation",
+        "capabilitySummaryV1",
+        "evidence",
+        "healthCheck",
+        "repairHints",
+        "result",
+        "status",
+        "success"
+      ],
+      "structuredCarrier": "text-json-with-harness-text"
+    },
+    "screenshot": {
+      "called": true,
+      "resultSeen": true,
+      "status": "success",
+      "resultShape": [
+        "string"
+      ],
+      "textChars": 1316,
+      "structuredContent": "delivered",
+      "structuredKeys": [
+        "action",
+        "evidence",
+        "modelImageSupport",
+        "observationV1",
+        "result",
+        "status",
+        "success"
+      ],
+      "structuredCarrier": "text-json-with-harness-text",
+      "image": {
+        "handling": "dropped",
+        "count": 0,
+        "mediaTypes": [],
+        "byteLengths": [],
+        "fixtureBytesMatch": false,
+        "carrier": null,
+        "textPlaceholder": false
+      }
+    }
+  },
+  "lifecycle": {
+    "connectorStarted": true,
+    "connectorReleasedAfterHarnessExit": true,
+    "otherProcessesAfterHarnessExit": 0,
+    "auditEvents": 2,
+    "auditFreeOfPrivateInput": true
+  },
+  "levels": {
+    "L1": {
+      "verdict": "pass"
+    },
+    "L2": {
+      "verdict": "pass"
+    }
+  },
+  "verdict": "pass"
+}

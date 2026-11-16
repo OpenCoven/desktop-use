@@ -96,7 +96,7 @@ In every run that started the connector, it exited with the harness. No other pr
 **Codex CLI 0.169.0**
 - **Discovery.** With an unknown model slug, Codex lists MCP tools up front. With `gpt-5.5` metadata it defers them behind the client-side `tool_search` tool, so the model must search first. The scripted model does that in the `tool-search` variant.
 - **Images are always dropped.** When an MCP result has `structuredContent`, Codex sends only the serialized `structuredContent` as text, and drops `content` along with any image. See `CallToolResult::as_function_call_output_payload` in `codex-rs/protocol/src/models.rs` at `rust-v0.169.0`. It also prefixes results with `Wall time: … Output:`.
-- **Truncation.** With an unknown model slug, tool output is cut to about 12 KB, so the 43.9 KB `health` result arrives truncated. With `gpt-5.5` metadata it arrives whole.
+- **Truncation.** With an unknown model slug, tool output is cut to about 12 KB, so the 43.9 KB `health` result arrives truncated. With `gpt-5.5` metadata it arrives whole. Since #52, `health` fits in both cases: see [Compact discovery results](#compact-discovery-results-52-pr-53).
 - **Intermittent empty search.** `tool_search` sometimes returned no tools. That happened in 2 of 13 runs with the `main` build and 0 of 11 with the #50 build, with the host at load average 100–250. The cause is unconfirmed, and the runner does not retry.
 - **Curated plugin sync.** The `plugins` feature (stable, on by default) clones `github.com/openai/plugins` at startup. With it enabled, one process outlived Codex's exit in both variants. The recipe sets `[features] plugins = false`.
 - Codex forwards a top-level `allOf` unchanged.
@@ -104,7 +104,7 @@ In every run that started the connector, it exited with the harness. No other pr
 **GitHub Copilot CLI 1.0.107**
 - **BYOK.** BYOK mode needs no GitHub authentication, so Copilot qualifies against the local endpoint. This withdraws the earlier "needs an authorized test token" blocker.
 - **Tool and schema.** The tool is listed as `coven-desktop-use-computer_use`. Copilot rewrites the schema: it drops `$schema`, `$id` and the top-level `allOf`, and adds `description`.
-- **Large results spill.** Results above an inline limit go to a session file, and the model gets a 500-character preview. The 43.9 KB `health` result therefore fails L2 in every variant.
+- **Large results spill.** Results above an inline limit go to a session file, and the model gets a 500-character preview. The 43.9 KB `health` result therefore fails L2 in every variant. The limit is 20,468 B (see [Tool-output budgets](#tool-output-budgets-52)), and since #52 `health` fits.
 - **Images.** BYOK models are text-only by default, so the image is replaced with an "image attachment was omitted" notice. `COPILOT_PROVIDER_VISION=true` delivers it byte-identical.
 
 **OpenCode and Hermes** are not installed on this host and have no runner recipe.
@@ -161,7 +161,35 @@ Recorded on macOS (Darwin 27.2.0), arm64, on 2026-11-15, with a pretty-printed t
   - A compact-text run gave exactly the same thresholds. It was recorded before the receipts named the requested model, and it is in [`budget/darwin-arm64/compact-text/`](budget/darwin-arm64/compact-text/).
   - With 12,000 B of structured content and 21,959 B of pretty text, Copilot delivered the 12,000 B.
 - **A cut result can still parse.** Codex keeps the head and tail of a long output. When the cut falls inside one long string, the rest can still parse: at 48,199 B the model got parseable JSON of only 48,020 characters. The size check catches this for the probe. Connector results stay far below every limit once #52 lands.
-- **Next step:** ADR [0002](../adr/0002-compact-mcp-discovery-results.md) chooses a result shape that keeps every connector-shaped observation-only result under 8 KiB.
+- **The fix.** ADR [0002](../adr/0002-compact-mcp-discovery-results.md) keeps every connector-shaped observation-only result within 8 KiB. `src/mcp/result-budget.test.ts` enforces that for every capability fixture.
+
+## Compact discovery results (#52, PR #53)
+
+With ADR 0002, MCP `health` sends the model `capabilitySummaryV1` instead of the full report. The macOS fixture result drops from 43,921 to 5,834 characters (5,868 under Codex, with its prefix).
+
+Three connector builds, all packed:
+- **#53** at `4628718`. It is stacked on #51 and does not include the #41 fix:
+  - local tarball `963e637f6612…`;
+  - CI tarball `3c03f7f1b490…`, packed by the workflow from the same commit.
+- **#50 + #53**: a local merge of #50 (`348bf1477ee4`, the #41 fix) with #53, tarball `885c16838858…`. This is the state after the planned merge order.
+
+| Harness | macOS, #53 | macOS, #50 + #53 | Linux CI, #53 | Hosted macOS CI, #53 | Screenshot image |
+|---|---|---|---|---|---|
+| Claude Code 2.1.325 | fail (not listed: #41) | **pass / pass** | fail (not listed: #41) | fail (not listed: #41) | delivered, byte-identical |
+| Codex CLI 0.169.0, default | **pass / pass** | **pass / pass** | **pass / pass** | **pass / pass** | dropped |
+| Codex CLI 0.169.0, tool-search | **pass / pass** | **pass / pass** | **pass / pass** | **pass / pass** | dropped |
+| Copilot CLI 1.0.107, default | **pass / pass** | **pass / pass** | **pass / pass** | **pass / pass** | dropped, with an "omitted" notice |
+| Copilot CLI 1.0.107, vision | **pass / pass** | **pass / pass** | **pass / pass** | **pass / pass** | delivered, byte-identical |
+
+Cells are L1 / L2.
+
+Where the receipts are:
+- local runs: [`receipts/darwin-arm64/`](receipts/darwin-arm64/) (`pr53-*`, `pr50-53-*`);
+- CI run `43794185081`: [`receipts/linux-x64-ci/`](receipts/linux-x64-ci/) and [`receipts/darwin-arm64-ci/`](receipts/darwin-arm64-ci/) (`pr53-*`).
+
+In every run, the connector exited with the harness, no other process outlived it, and the audit held no private input.
+
+Claude Code's L2 on Linux follows once #50 merges and this branch is rebased. Its macOS result with #50 shows that the fix and the projection work together.
 
 ## Not covered yet
 
