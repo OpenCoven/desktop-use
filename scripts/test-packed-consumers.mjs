@@ -46,8 +46,10 @@ try {
   await cp(new URL('./packed-wire-consumer.mjs', import.meta.url), join(tools, 'consumer.mjs'));
   await cp(new URL('../src/mcp/fixtures/pty-host.py', import.meta.url), join(tools, 'pty-host.py'));
   const wireOutput = run(process.execPath, ['consumer.mjs', packageRoot], tools); console.log(wireOutput.trim());
+  await cp(new URL('./packed-recipe-consumer.mjs', import.meta.url), join(tools, 'recipes.mjs'));
+  const recipeOutput = run(process.execPath, ['recipes.mjs', packageRoot], tools); console.log(recipeOutput.trim());
   const productionLock = JSON.parse(await readFile(join(sdk, 'package-lock.json'), 'utf8'));
   const productionAudit = JSON.parse(run('npm', ['audit', '--omit=dev', '--json'], sdk));
-  const receipt = { success: true, productionLock, productionAudit, node: process.version, root, tarball, sha256: createHash('sha256').update(await readFile(tarball)).digest('hex'), manifest, files, productionTree: run('npm', ['ls', '--all', '--json'], sdk), sdkOutput, wireOutput };
+  const receipt = { success: true, productionLock, productionAudit, node: process.version, root, tarball, sha256: createHash('sha256').update(await readFile(tarball)).digest('hex'), manifest, files, productionTree: run('npm', ['ls', '--all', '--json'], sdk), sdkOutput, wireOutput, recipeOutput };
   await writeFile(join(root, 'receipt.json'), JSON.stringify(receipt, null, 2) + '\n');
 } catch (error) { await writeFile(join(root, 'failure.txt'), String(error.stack) + '\n'); throw error; }

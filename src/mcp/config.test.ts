@@ -61,6 +61,6 @@ for (const scenario of ['config-fifo', 'audit-fifo']) test(`${scenario} startup 
   const result = await closed; clearTimeout(timer);
   assert.equal(exceededBound, false, `${scenario} blocked until exact owned child was killed and reaped`);
   assert.equal(result.code, 1); assert.equal(result.signal, null); assert.equal(stdout, '');
-  assert.equal(stderr, 'Desktop MCP startup unavailable; check trusted configuration, private audit state and inherited approval descriptor.\n');
+  assert.equal(stderr, `Desktop MCP startup unavailable [${scenario === 'config-fifo' ? 'CONFIG_UNSAFE' : 'AUDIT_UNAVAILABLE'}].\n`);
   await assert.rejects(readFile(effect));
 });
