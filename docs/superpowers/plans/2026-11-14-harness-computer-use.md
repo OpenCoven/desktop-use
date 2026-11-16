@@ -4,7 +4,7 @@
 
 **Goal:** Make `computer_use` (the `coven-desktop-use` adapter behind the shared `DesktopClient` pipeline) usable from every OpenCoven harness, at a support level proven per harness by evidence. "Supported" means a real harness binary discovers the tool, gets correct observation results, and completes a gated effect only after trusted human approval, with nothing weakened in policy, approval, audit or cancellation. Keep going until every in-scope harness reaches its target level or has a concrete recorded blocker, then keep pinned versions green and report drift against newer harness releases.
 
-**Architecture:** Every harness reaches the adapter through the local stdio MCP connector (`coven-desktop-use-mcp`) and the shared execution pipeline. OpenClaw keeps using the plugin. The adapter supplies the contract, a trusted reference approval path, print-only recipes and conformance receipts. Harnesses keep their own auth, models and tool UX. Coven attaches the connector through each harness's native MCP configuration, not through new harness adapters.
+**Architecture:** Every non-OpenClaw coding harness reaches the adapter through the local stdio MCP connector (`coven-desktop-use-mcp`) and the shared execution pipeline. OpenClaw keeps using the plugin. The adapter supplies the contract, a trusted reference approval path, print-only recipes and conformance receipts. Harnesses keep their own auth, models and tool UX. Coven attaches the connector through each harness's native MCP configuration, not through new harness adapters.
 
 **Tech stack:** TypeScript, tsx/node tests, the pinned official MCP SDK, the packed candidate tarball, real harness binaries under disposable config homes, deterministic local model endpoints, the existing Rust CLI and checks.
 
@@ -26,7 +26,7 @@ Each level requires all the levels below it.
 |---|---|---|
 | L0 Recipe | Config documented and checked against the harness's current docs or `--help` at a pinned version | Recipe, version and date |
 | L1 Discovery | A real harness binary starts the connector and lists exactly one desktop tool, `computer_use` | Receipt from a disposable config home |
-| L2 Observation | A harness-issued `health` or `screenshot` call round-trips; structured content is preserved; image content is accepted, or its loss is documented | Receipt, fixture adapter |
+| L2 Observation | A harness-issued `health` and `screenshot` call round-trip; structured content is preserved; image content is accepted, or its loss is documented | Receipt, fixture adapter |
 | L3 Gated effect | A gated fixture effect (workspace `file-write`) reaches the trusted approval provider. Allow gives exactly one effect; deny, expiry and cancel give none; harness auto-approve modes do not authorize it | Receipt and audit lines |
 | L4 Lifecycle | Harness interrupt, exit and session end abort pending and active work, reap helpers and write audit. Same-scope Stop works; cross-scope Stop cannot | Receipt |
 | L5 Native | A real graphical action through the harness on a host with existing helpers and grants | Separate evidence class, never inferred from fixtures |
