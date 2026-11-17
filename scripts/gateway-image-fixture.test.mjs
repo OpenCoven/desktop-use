@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { inspectProviderImage } from "./gateway-image-fixture.mjs";
+import { fixtureCallId } from "./gateway-action-batches.mjs";
 
 test("provider proof checks the current image turn without confusing retained history", async () => {
   const bytes = await readFile(new URL("../contracts/v1/fixtures/images/valid.jpg", import.meta.url));
@@ -156,10 +157,11 @@ test("explicit replay rejects missing, ambiguous, wrong-turn and unrelated image
 
 // Discovery transport is qualified independently of the image assertions above.
 const capabilitiesFixture = await import("./gateway-capabilities-fixture.mjs");
-const discoveryBody = (text, id = "call_current") => ({ messages: [
+const discoveryBody = (text, id = "call_current", action = "health") => ({ messages: [
   { role: "user", content: "QUALIFICATION_CASE:old" },
   { role: "tool", tool_call_id: "call_old", content: "old private decoy" },
   { role: "user", content: "QUALIFICATION_CASE:current" },
+  { role: "assistant", tool_calls: [{ id, function: { name: "computer_use", arguments: JSON.stringify({ action }) } }] },
   { role: "tool", tool_call_id: id, content: text },
 ] });
 const discoveryOptions = { currentCase: "current", calls: [{ toolCallId: "call_current", action: "health" }] };
@@ -175,6 +177,38 @@ test("discovery provider receipts identify complete JSON and explicit host trunc
   assert.equal(clipped[0].providerTextBudget, 32768);
   assert.equal(clipped[0].truncationStyle, "context-tail");
   assert.equal(JSON.stringify(clipped).includes("private"), false);
+});
+
+test("newer discovery live head-tail truncation remains current-call bound and obeys its exact 16000 character cap", () => {
+  const middle = capabilitiesFixture.DISCOVERY_TRUNCATION_MARKER;
+  const text = `{"status":"success"\n\n${middle}\n\n"tail":true}[... 11945 more characters truncated; rerun with narrower args if needed]`;
+  const options = { ...discoveryOptions, hostVersion: "2026.11.3" };
+  const proof = capabilitiesFixture.inspectDiscoveryTransport(discoveryBody(text), options)[0];
+  assert.equal(proof.truncated, true);
+  assert.equal(proof.fullCapabilityJsonTransport, false);
+  assert.equal(proof.providerTextBudget, 16000);
+  assert.equal(proof.truncationStyle, "live-middle");
+  assert.equal(proof.hostVersion, "2026.11.3");
+  for (const invalid of [text.replace("; rerun with narrower args if needed", ""), text.replace("11945", "0"), text.replace("args if needed", "different suffix"), text + "extra", text.replace(middle, middle + middle), "x".repeat(16001) + text]) {
+    assert.throws(() => capabilitiesFixture.inspectDiscoveryTransport(discoveryBody(invalid), options));
+  }
+  assert.throws(() => capabilitiesFixture.inspectDiscoveryTransport(discoveryBody(text), discoveryOptions));
+  assert.throws(() => capabilitiesFixture.inspectDiscoveryTransport(discoveryBody(text), { ...options, currentCase: "stale" }));
+  assert.throws(() => capabilitiesFixture.inspectDiscoveryTransport(discoveryBody("x".repeat(1000) + text), { ...options, contextWindowTokens: 1024 }));
+  assert.throws(() => capabilitiesFixture.inspectDiscoveryTransport(discoveryBody(text), { ...options, hostVersion: "unknown" }));
+  const longText = "x".repeat(11800) + text;
+  const transport = capabilitiesFixture.inspectDiscoveryTransport(discoveryBody(longText), options)[0];
+  const message = { role: "toolResult", toolCallId: "call_current", content: [{ type: "text", text: longText.slice(0, 8000) }], __openclaw: { runId: "current-run", truncated: true, reason: "display-cap" } };
+  const historyOptions = { toolCallId: "call_current", hostVersion: "2026.11.3", runId: "current-run", transport };
+  const history = capabilitiesFixture.inspectDiscoveryHistory(message, historyOptions);
+  assert.equal(history.truncated, true);
+  assert.equal(history.stage, "chat-history-display");
+  assert.equal(history.historyTextBudget, 8000);
+  for (const patch of [{ toolCallId: "old" }, { __openclaw: { ...message.__openclaw, runId: "old" } }, { __openclaw: undefined }, { __openclaw: { ...message.__openclaw, reason: "unknown" } }, { content: [{ type: "text", text: "y".repeat(8000) }] }, { content: [{ type: "text", text: "x".repeat(8001) }] }]) {
+    assert.throws(() => capabilitiesFixture.inspectDiscoveryHistory({ ...message, ...patch }, historyOptions));
+  }
+  assert.throws(() => capabilitiesFixture.inspectDiscoveryHistory(message, { ...historyOptions, transport: { ...transport, toolCallId: "old" } }));
+  assert.throws(() => capabilitiesFixture.inspectDiscoveryHistory(message, { ...historyOptions, transport: undefined }));
 });
 
 test("discovery provider receipts reject wrong turns, missing or duplicate call ids and oversized live text", () => {
@@ -225,6 +259,20 @@ test("discovery provider proof rejects a missing legacy notice without trusting 
   assert.equal(capabilitiesFixture.inspectDiscoveryTransport(discoveryBody('{"status":"success","deprecation":"fixed legacy notice"}'), options).length, 1);
 });
 
+test("newer display replay requires its run, wire prefix and original scoped audit", () => {
+  const prefix = { textChars: 8000, sha256: "a".repeat(64) };
+  const input = { transport: { stage: "provider-current-turn", hostVersion: "2026.11.3", truncated: true, toolCallId: "call", action: "health", displayPrefix: prefix }, history: { stage: "chat-history-display", hostVersion: "2026.11.3", truncated: true, toolCallId: "call", runId: "current", ...prefix }, call: { toolCallId: "call", action: "health" }, scope: { runId: "current", agentId: "agent", sessionKey: "session", auditPath: "/scratch/audit" }, auditRecords: [{ toolCallId: "call", action: "health", agentId: "agent", sessionKey: "session", result: { status: "success", success: true } }], replay: { status: 200, body: { result: { details: { action: "health", status: "success", success: true, auditLog: "/scratch/audit" } } } } };
+  assert.equal(capabilitiesFixture.correlateDiscoveryReplay(input).status, "success");
+  for (const mutate of [
+    v => { delete v.history.runId; delete v.scope.runId; },
+    v => { v.scope.runId = "old"; },
+    v => { v.history.sha256 = "b".repeat(64); },
+    v => { v.transport.displayPrefix.textChars = 7999; },
+    v => { v.auditRecords[0].sessionKey = "other"; },
+    v => { v.replay.body.result.details.auditLog = "/other"; },
+  ]) { const bad = structuredClone(input); mutate(bad); assert.throws(() => capabilitiesFixture.correlateDiscoveryReplay(bad)); }
+});
+
 
 test("discovery history proof enforces its own16k limit and exact persisted marker", () => {
   const inspect = capabilitiesFixture.inspectDiscoveryHistory;
@@ -255,6 +303,7 @@ test("Stop-only discovery selection excludes host-denied health, doctor and perm
   const calls = ["health", "doctor", "permissions"].map(action => ({ action, toolCallId: `call_denied_${action}` }));
   const body = { messages: [
     { role: "user", content: "QUALIFICATION_CASE:current" },
+    { role: "assistant", tool_calls: calls.map(call => ({ id: call.toolCallId, function: { name: "computer_use", arguments: JSON.stringify({ action: call.action }) } })) },
     ...calls.map(call => ({ role: "tool", tool_call_id: call.toolCallId, content: `Validation failed for tool computer_use: action ${call.action} is disabled by the trusted action permissions` })),
     { role: "tool", tool_call_id: "call_stop", content: '{"status":"success","action":"stop"}' },
   ] };
@@ -264,7 +313,7 @@ test("Stop-only discovery selection excludes host-denied health, doctor and perm
   assert.deepEqual(selected, []);
   assert.deepEqual(capabilitiesFixture.inspectDiscoveryTransport(body, { currentCase: "current", calls: selected }), []);
   assert.equal(JSON.parse(body.messages.at(-1).content).status, "success");
-  for (const message of body.messages.slice(1, -1)) assert.match(message.content, /Validation failed.*disabled by the trusted/);
+  for (const message of body.messages.slice(1, -1).filter(message => message.role === "tool")) assert.match(message.content, /Validation failed.*disabled by the trusted/);
 });
 
 test("trusted discovery selection preserves full, observation and desktop call identities and notices", () => {
@@ -288,7 +337,7 @@ test("eligible discovery still rejects malformed permitted JSON and response tex
   const canonicalAliases = { permissions: "doctor" };
   const selected = capabilitiesFixture.selectEligibleDiscoveryCalls([call], { allowedActions: ["doctor"], canonicalAliases });
   assert.deepEqual(selected, [call]);
-  assert.throws(() => capabilitiesFixture.inspectDiscoveryTransport(discoveryBody("Validation failed for tool computer_use"), { currentCase: "current", calls: selected }), /Malformed untruncated discovery JSON/);
+  assert.throws(() => capabilitiesFixture.inspectDiscoveryTransport(discoveryBody("Validation failed for tool computer_use", "call_current", "permissions"), { currentCase: "current", calls: selected }), /Malformed untruncated discovery JSON/);
   const denied = capabilitiesFixture.selectEligibleDiscoveryCalls([call], { allowedActions: ["stop"], canonicalAliases });
   assert.deepEqual(capabilitiesFixture.inspectDiscoveryTransport(discoveryBody('{"status":"success","action":"doctor","allowedActions":["doctor"]}'), { currentCase: "current", calls: denied }), []);
 });
@@ -296,9 +345,40 @@ test("eligible discovery still rejects malformed permitted JSON and response tex
 
 const discoveryPlanOptions = {
   currentCase: "current", allowedActions: ["health", "doctor", "stop"], canonicalAliases: { permissions: "doctor" },
-  batchCallId: name => ({ legacy: "calllegacy", health: "callhealth" })[name],
+  batchCallId: fixtureCallId,
   legacyToolName: "desktop_use", canonicalToolName: "computer_use",
 };
+
+test("singleton discovery keeps one call identity through provider, truncated history and scoped replay", () => {
+  const currentCase = "single-doctor-replay";
+  const toolCallId = fixtureCallId(currentCase);
+  const scope = { agentId: "fixture-agent", sessionKey: "fixture-session", runId: "fixture-run", auditPath: "/fixture/audit" };
+  const details = { action: "doctor", status: "error", success: false, evidence: { agentId: scope.agentId, sessionKey: scope.sessionKey } };
+  for (const hostVersion of ["2026.4.26", "2026.11.3"]) {
+    const calls = capabilitiesFixture.discoveryCallsForPlan({ args: { action: "doctor" } }, {
+      ...discoveryPlanOptions, currentCase, batchCallId: fixtureCallId,
+    });
+    const text = JSON.stringify({ ...details, padding: "x".repeat(hostVersion === "2026.4.26" ? 20000 : 10000) });
+    const body = { messages: [
+      { role: "user", content: `QUALIFICATION_CASE:${currentCase}` },
+      { role: "assistant", tool_calls: [{ id: toolCallId, function: { name: "computer_use", arguments: '{"action":"doctor"}' } }] },
+      { role: "tool", tool_call_id: toolCallId, content: text },
+    ] };
+    const transport = capabilitiesFixture.inspectDiscoveryTransport(body, { currentCase, calls, hostVersion })
+      .find(receipt => receipt.toolCallId === toolCallId);
+    assert.ok(transport, "Replay requires verified provider-wire evidence for the emitted call ID");
+    const historyText = hostVersion === "2026.11.3" ? text.slice(0, 8000)
+      : `{"status":"error"\n\n${capabilitiesFixture.DISCOVERY_TRUNCATION_MARKER}\n\n"tail":true}[... 10000 more characters truncated]`;
+    const message = { role: "toolResult", toolCallId, content: [{ type: "text", text: historyText }],
+      ...(hostVersion === "2026.11.3" ? { __openclaw: { runId: scope.runId, truncated: true, reason: "display-cap" } } : {}) };
+    const history = capabilitiesFixture.inspectDiscoveryHistory(message, { toolCallId, hostVersion, runId: scope.runId, transport });
+    assert.deepEqual(capabilitiesFixture.correlateDiscoveryReplay({
+      transport, history, scope, call: { toolCallId, action: "doctor" },
+      auditRecords: [{ toolCallId, action: "doctor", agentId: scope.agentId, sessionKey: scope.sessionKey, result: { status: "error", success: false } }],
+      replay: { status: 200, body: { result: { details } } },
+    }), details);
+  }
+});
 
 test("caller discovery metadata safely excludes argument-free image replay and non-discovery plans", () => {
   const replayPlan = { args: undefined, imageKind: "large", replaySourceCase: "synthetic-image-large" };
@@ -314,10 +394,10 @@ test("caller discovery metadata safely excludes argument-free image replay and n
 test("caller discovery metadata retains trusted eligibility, call IDs and canonical and legacy notices", () => {
   const build = capabilitiesFixture.discoveryCallsForPlan;
   assert.deepEqual(build({ args: { action: "health" }, tool: "computer_use" }, discoveryPlanOptions), [
-    { action: "health", toolCallId: "call_current", notices: [] },
+    { action: "health", toolCallId: "callcurrent", notices: [] },
   ]);
   assert.deepEqual(build({ args: { action: "permissions" }, tool: "desktop_use" }, discoveryPlanOptions), [
-    { action: "permissions", toolCallId: "call_current", notices: ["permissions is deprecated; use doctor instead.", "desktop_use is deprecated; use computer_use instead."] },
+    { action: "permissions", toolCallId: "callcurrent", notices: ["permissions is deprecated; use doctor instead.", "desktop_use is deprecated; use computer_use instead."] },
   ]);
   const batch = { tool: "desktop_use", calls: [
     { name: "no-args" }, { name: "legacy", args: { action: "permissions" } }, { name: "health", args: { action: "health" } },
@@ -328,4 +408,29 @@ test("caller discovery metadata retains trusted eligibility, call IDs and canoni
   ]);
   assert.deepEqual(build(batch, { ...discoveryPlanOptions, allowedActions: ["stop"] }), []);
   assert.deepEqual(build({ args: { action: "permissions" } }, { ...discoveryPlanOptions, allowedActions: ["permissions"] }), []);
+});
+
+test("discovery proof binds current declarations and results across newer host inserted user-role messages", () => {
+  const body = { messages: [
+    { role: "user", content: "QUALIFICATION_CASE:current" },
+    { role: "user", content: "fixture host-generated context before tool execution" },
+    { role: "assistant", tool_calls: [{ id: "call_current", function: { name: "computer_use", arguments: '{"action":"health"}' } }] },
+    { role: "tool", tool_call_id: "call_current", content: '{"status":"success","action":"health"}' },
+    { role: "user", content: "fixture host-generated context after tool execution" },
+  ] };
+  assert.equal(capabilitiesFixture.inspectDiscoveryTransport(body, discoveryOptions)[0].fullCapabilityJsonTransport, true);
+  for (const mutate of [
+    value => value.messages.push({ role: "user", content: "QUALIFICATION_CASE:later" }),
+    value => value.messages.push({ role: "user", content: "QUALIFICATION_CASE:current" }),
+    value => value.messages.unshift(structuredClone(value.messages[2])),
+    value => value.messages.unshift(structuredClone(value.messages[3])),
+    value => { value.messages[2].tool_calls[0].function.arguments = '{"action":"doctor"}'; },
+    value => { value.messages[2].tool_calls[0].function.name = "desktop_use"; },
+    value => { [value.messages[2], value.messages[3]] = [value.messages[3], value.messages[2]]; },
+    value => value.messages.splice(2, 1),
+    value => { const declaration = value.messages.splice(2, 1)[0]; value.messages.unshift(declaration); },
+  ]) {
+    const changed = structuredClone(body); mutate(changed);
+    assert.throws(() => capabilitiesFixture.inspectDiscoveryTransport(changed, discoveryOptions));
+  }
 });

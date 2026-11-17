@@ -31,7 +31,7 @@ test("real adapter spawn/output provenance distinguishes absent/nonexecutable ad
         const selected = await createComputerUseTool({ appendAuditEvent: async () => {} }).execute("selected", { action: "health" });
         assert.equal((selected.details.adapterInvocation as any).configuredPath, link);
         assert.equal((selected.details.adapterInvocation as any).resolvedPath, await realpath(path));
-        assert.equal((selected.details.adapterInvocation as any).version, "0.1.3");
+        assert.equal((selected.details.adapterInvocation as any).version, "0.1.4");
       }
     }
   } finally {
@@ -83,6 +83,7 @@ test("real adapter post-start timeout, output limit and cancellation retain exec
     const { details } = await createComputerUseTool({ appendAuditEvent: async () => {} }).execute("prestart", { action: "health" }, aborted.signal);
     assert.equal((details.adapterInvocation as any)?.phase, "before-start");
     assert.equal((details.adapterInvocation as any)?.processStarted, false);
+    assert.equal((details.adapterInvocation as any)?.code, "CANCELLED");
   } finally {
     if (previous === undefined) delete process.env.COVEN_DESKTOP_USE_BIN; else process.env.COVEN_DESKTOP_USE_BIN = previous;
     await rm(root, { recursive: true, force: true });

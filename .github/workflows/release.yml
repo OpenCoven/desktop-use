@@ -1,0 +1,399 @@
+name: Paired release qualification and delivery
+
+on:
+  push:
+    branches: [feat/paired-releases-25]
+    tags: ['v0.1.*']
+  workflow_dispatch:
+    inputs:
+      delivery:
+        description: Prepare only, or explicitly authorize npm staging and a GitHub prerelease from this version tag
+        type: choice
+        options: [prepare, stage-bootstrap, stage]
+        default: prepare
+
+permissions:
+  contents: read
+
+# Every producer uses its actual branch or version-tag context, never a relabeled branch artifact.
+concurrency:
+  group: paired-release-${{ github.sha }}
+  cancel-in-progress: false
+
+env:
+  CARGO_BUILD_JOBS: '2'
+  RELEASE_DELIVERY: ${{ inputs.delivery || 'prepare' }}
+
+jobs:
+  package:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Isolate local state
+        shell: bash
+        run: |
+          mkdir -m 700 "$RUNNER_TEMP/release-coven" "$RUNNER_TEMP/release-openclaw"
+          echo "COVEN_HOME=$RUNNER_TEMP/release-coven" >> "$GITHUB_ENV"
+          echo "OPENCLAW_STATE_DIR=$RUNNER_TEMP/release-openclaw" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.0'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Build and pack exactly once
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          pnpm run build
+          mkdir -p "$RUNNER_TEMP/release-package"
+          npm pack --ignore-scripts --json --pack-destination "$RUNNER_TEMP/release-package" > "$RUNNER_TEMP/pack.json"
+      - name: Qualify packed SDK and MCP consumers from the same bytes
+        run: node scripts/test-packed-consumers.mjs "$RUNNER_TEMP/release-package/"*.tgz
+      - uses: actions/attest@v4
+        with:
+          create-storage-record: false
+          subject-path: ${{ runner.temp }}/release-package/*.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-package
+          path: ${{ runner.temp }}/release-package/*.tgz
+          if-no-files-found: error
+
+  native:
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-15, target: aarch64-apple-darwin }
+          - { runner: macos-15-intel, target: x86_64-apple-darwin }
+          - { runner: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
+          - { runner: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Isolate local state
+        shell: bash
+        run: |
+          mkdir -m 700 "$RUNNER_TEMP/release-coven" "$RUNNER_TEMP/release-openclaw"
+          echo "COVEN_HOME=$RUNNER_TEMP/release-coven" >> "$GITHUB_ENV"
+          echo "OPENCLAW_STATE_DIR=$RUNNER_TEMP/release-openclaw" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.0'
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm install --ignore-scripts --omit=dev --no-audit --no-fund --package-lock=false
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-package
+          path: ${{ runner.temp }}/package
+      - name: Build, archive, extract and execute declared native identity
+        shell: bash
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+          RELEASE_RUNNER: ${{ matrix.runner }}
+        run: node scripts/release-native.mjs "$RELEASE_TARGET" "$RELEASE_RUNNER" "$RUNNER_TEMP/native" "$RUNNER_TEMP/package/"*.tgz
+      - uses: actions/attest@v4
+        with:
+          create-storage-record: false
+          subject-path: ${{ runner.temp }}/native/*.tar.gz
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-native-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/native/*.tar.gz
+            ${{ runner.temp }}/native/*.tgz
+            ${{ runner.temp }}/native/native-*.json
+          if-no-files-found: error
+
+  assemble:
+    needs: native
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Isolate local state
+        shell: bash
+        run: |
+          mkdir -m 700 "$RUNNER_TEMP/release-coven" "$RUNNER_TEMP/release-openclaw"
+          echo "COVEN_HOME=$RUNNER_TEMP/release-coven" >> "$GITHUB_ENV"
+          echo "OPENCLAW_STATE_DIR=$RUNNER_TEMP/release-openclaw" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.0'
+      - run: npm install --ignore-scripts --omit=dev --no-audit --no-fund --package-lock=false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-native-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/release
+      - run: node scripts/release-candidate.mjs "$RUNNER_TEMP/release"
+      - uses: actions/attest@v4
+        with:
+          create-storage-record: false
+          subject-path: ${{ runner.temp }}/release/release.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: paired-release-${{ github.sha }}
+          path: ${{ runner.temp }}/release
+          if-no-files-found: error
+
+  install:
+    needs: assemble
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel, ubuntu-22.04, ubuntu-22.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+    env:
+      RELEASE_RUNNER: ${{ matrix.runner }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Isolate local state
+        shell: bash
+        run: |
+          mkdir -m 700 "$RUNNER_TEMP/release-coven" "$RUNNER_TEMP/release-openclaw"
+          echo "COVEN_HOME=$RUNNER_TEMP/release-coven" >> "$GITHUB_ENV"
+          echo "OPENCLAW_STATE_DIR=$RUNNER_TEMP/release-openclaw" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.0'
+      # No Rust build or installer lifecycle script is used in clean-install jobs.
+      - run: npm install --ignore-scripts --omit=dev --no-audit --no-fund --package-lock=false
+      - uses: actions/download-artifact@v4
+        with:
+          name: paired-release-${{ github.sha }}
+          path: ${{ runner.temp }}/release
+      - id: previous
+        run: node scripts/release-previous.mjs
+      - uses: actions/download-artifact@v4
+        if: steps.previous.outputs.runId != ''
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.previous.outputs.runId }}
+          name: paired-release-${{ steps.previous.outputs.sourceCommit }}
+          path: ${{ runner.temp }}/previous
+      - name: Explicit verified install and update rollback
+        shell: bash
+        env:
+          PREVIOUS_RUN_ID: ${{ steps.previous.outputs.runId }}
+        run: |
+          if [ -n "$PREVIOUS_RUN_ID" ]; then
+            node scripts/release-install.mjs "$RUNNER_TEMP/release" "$RUNNER_TEMP/install-evidence" "$RUNNER_TEMP/previous"
+          else
+            node scripts/release-install.mjs "$RUNNER_TEMP/release" "$RUNNER_TEMP/install-evidence"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-install-${{ matrix.runner }}
+          path: ${{ runner.temp }}/install-evidence/installation.json
+          if-no-files-found: error
+
+  gateway:
+    needs: assemble
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-22.04, macos-15]
+        host: ['2026.4.26', '2026.11.3']
+        profile: [full, observation-only, desktop-only, stop-only, sdk-authorization]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      attestations: read
+    env:
+      RELEASE_RUNNER: ${{ matrix.runner }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Isolate local state
+        shell: bash
+        run: |
+          mkdir -m 700 "$RUNNER_TEMP/release-coven" "$RUNNER_TEMP/release-openclaw"
+          echo "COVEN_HOME=$RUNNER_TEMP/release-coven" >> "$GITHUB_ENV"
+          echo "OPENCLAW_STATE_DIR=$RUNNER_TEMP/release-openclaw" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.0'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - uses: actions/download-artifact@v4
+        with:
+          name: paired-release-${{ github.sha }}
+          path: ${{ runner.temp }}/release
+      - name: Qualify installed pair against frozen exact host
+        env:
+          EXPECTED_HOST: ${{ matrix.host }}
+          ACTION_PROFILE: ${{ matrix.profile }}
+        run: node scripts/release-host.mjs "$RUNNER_TEMP/release" "$RUNNER_TEMP/host-evidence" "$EXPECTED_HOST" "$ACTION_PROFILE"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-host-${{ matrix.runner }}-${{ matrix.host }}-${{ matrix.profile }}
+          path: |
+            ${{ runner.temp }}/host-evidence/host-lane.json
+            ${{ runner.temp }}/host-evidence/*/complete.json
+            ${{ runner.temp }}/host-evidence/*/sdk-resolution.json
+            ${{ runner.temp }}/host-evidence/*/host-integrity.json
+            ${{ runner.temp }}/host-evidence/*/audit-path-preflight.json
+            ${{ runner.temp }}/host-evidence/*/loaded-sdk.json
+            ${{ runner.temp }}/host-evidence/*/model-tool-schemas.json
+            ${{ runner.temp }}/host-evidence/*/provider-image-*.json
+            ${{ runner.temp }}/host-evidence/*/restricted-summary.json
+            ${{ runner.temp }}/host-evidence/*/audit-summary.json
+            ${{ runner.temp }}/host-evidence/*/qualification-failure.json
+            ${{ runner.temp }}/host-evidence/*/fixture-failure-summary.json
+            ${{ runner.temp }}/host-evidence/*/minimal-http-policy.json
+            ${{ runner.temp }}/host-evidence/*/explicit-tool-deny.json
+            ${{ runner.temp }}/host-evidence/*/explicit-deny-model-inventory.json
+            ${{ runner.temp }}/host-evidence/*/*-approval-denials.json
+            ${{ runner.temp }}/host-evidence/*/*-approval-wait-failure.json
+          if-no-files-found: error
+
+  reconcile:
+    needs: [install, gateway]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.0'
+      - run: npm install --ignore-scripts --omit=dev --no-audit --no-fund --package-lock=false
+      - uses: actions/download-artifact@v4
+        with:
+          name: paired-release-${{ github.sha }}
+          path: ${{ runner.temp }}/release
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-install-*
+          path: ${{ runner.temp }}/receipts
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-host-*
+          path: ${{ runner.temp }}/receipts
+      - name: Reconcile without modifying any attested producer artifact
+        run: node scripts/release-delivery.mjs "$RUNNER_TEMP/release" "$RUNNER_TEMP/receipts" "$RUNNER_TEMP/delivery"
+      - uses: actions/attest@v4
+        with:
+          create-storage-record: false
+          subject-path: |
+            ${{ runner.temp }}/delivery/release-evidence.json
+            ${{ runner.temp }}/delivery/qualification-receipts.json
+            ${{ runner.temp }}/delivery/SHA256SUMS
+            ${{ runner.temp }}/delivery/release-notes.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: paired-delivery-${{ github.sha }}
+          path: ${{ runner.temp }}/delivery
+          if-no-files-found: error
+
+  delivery:
+    needs: reconcile
+    if: github.event_name == 'workflow_dispatch' && (inputs.delivery == 'stage' || inputs.delivery == 'stage-bootstrap') && startsWith(github.ref, 'refs/tags/v0.1.')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      actions: read
+      attestations: read
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.0'
+      - name: Isolate npm configuration; no token fallback
+        shell: bash
+        run: |
+          mkdir -m 700 "$RUNNER_TEMP/delivery-npm"
+          touch "$RUNNER_TEMP/delivery-npm/user.npmrc" "$RUNNER_TEMP/delivery-npm/global.npmrc"
+          {
+            echo "NPM_CONFIG_USERCONFIG=$RUNNER_TEMP/delivery-npm/user.npmrc"
+            echo "NPM_CONFIG_GLOBALCONFIG=$RUNNER_TEMP/delivery-npm/global.npmrc"
+            echo "NPM_CONFIG_CACHE=$RUNNER_TEMP/delivery-npm/cache"
+          } >> "$GITHUB_ENV"
+      - run: npm install --ignore-scripts --omit=dev --no-audit --no-fund --package-lock=false
+      - name: Install pinned staging-capable npm CLI
+        run: npm install --global npm@12.2.2 --ignore-scripts --no-audit --no-fund
+      - uses: actions/download-artifact@v4
+        with:
+          name: paired-delivery-${{ github.sha }}
+          path: ${{ runner.temp }}/delivery
+      - name: Verify exact tag, complete qualification and immutable artifacts
+        run: node scripts/release-prepublish.mjs "$RUNNER_TEMP/delivery"
+      - name: Stage the exact packed bytes with npm OIDC
+        id: npm-stage
+        shell: bash
+        working-directory: ${{ runner.temp }}/delivery
+        env:
+          NODE_AUTH_TOKEN: ''
+          NPM_TOKEN: ''
+        run: npm stage publish ./*.tgz --ignore-scripts --provenance --access public --tag paired-candidate --registry https://registry.npmjs.org/
+      - name: Publish GitHub prerelease from the same immutable bytes
+        id: github-release
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release create "$RELEASE_TAG" "$RUNNER_TEMP/delivery/"* --repo OpenCoven/desktop-use --verify-tag --prerelease --title "$RELEASE_TAG paired release candidate" --notes-file "$RUNNER_TEMP/delivery/release-notes.md"
+      - name: Retain truthful partial publication state
+        if: always()
+        env:
+          NPM_STAGE_OUTCOME: ${{ steps.npm-stage.outcome }}
+          GITHUB_RELEASE_OUTCOME: ${{ steps.github-release.outcome }}
+        run: node scripts/release-publication-receipt.mjs "$RUNNER_TEMP/publication.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-publication-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/publication.json
+          if-no-files-found: error

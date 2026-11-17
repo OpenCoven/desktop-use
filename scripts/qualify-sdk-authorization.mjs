@@ -1,3 +1,4 @@
+import { linkLaneHost, assertHostInstallation, assertLoadedSdk } from "./release-qualification.mjs";
 // Real public gateway approval lifecycle against an unchanged packed plugin.
 // The fixture wrapper captures invocation parameters and injects explicit faults only;
 // all authority, preparation and dispatch remain in the packed production implementation.
@@ -21,6 +22,8 @@ async function until(fn, timeout = 30000) { const end = Date.now() + timeout; le
 const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const pkg = JSON.parse(await readFile(join(host, 'package.json'), 'utf8'));
 assert.ok(['2026.4.26', '2026.11.3'].includes(pkg.version));
+if (process.argv[5]) assert.equal(pkg.version, process.argv[5], 'Exact expected host');
+if (process.env.RELEASE_HOST_LOCK) await save('host-integrity.json', assertHostInstallation(process.argv[5], pkg, JSON.parse(await readFile(process.env.RELEASE_HOST_LOCK, 'utf8'))));
 const hostRequire = createRequire(join(host, 'package.json')), WebSocket = hostRequire('ws');
 const callId = name => `call${name.replace(/[^a-zA-Z0-9]/g, '')}`;
 const cases = new Map(), events = [], calls = [], pending = new Map();
@@ -55,7 +58,7 @@ await access(pluginEntry);
 const wrapper = `import plugin from './dist/index.js';\nimport { appendFileSync, realpathSync } from 'node:fs';\nimport { createRequire } from 'node:module';\nconst loadedSdk=createRequire(${JSON.stringify(join(packed, 'package.json'))}).resolve('openclaw/plugin-sdk/plugin-entry');\nappendFileSync(${JSON.stringify(join(root, 'loaded-sdk.jsonl'))},JSON.stringify({host:${JSON.stringify(host)},sdkEntry:realpathSync(loadedSdk)})+'\\n');\nexport default {...plugin, register(api){plugin.register({...api,registerTool(factory, options){api.registerTool(ctx=>{appendFileSync(${JSON.stringify(join(root, 'factory-scopes.jsonl'))},JSON.stringify({agentId:ctx.agentId,sessionKey:ctx.sessionKey,workspaceDir:ctx.workspaceDir,keys:Object.keys(ctx)})+'\\n',{mode:0o600});const tool=factory(ctx);return {...tool,async execute(id,params,signal){appendFileSync(${JSON.stringify(join(root, 'invocations.jsonl'))},JSON.stringify({id,params,ctx})+'\\n',{mode:0o600});if(params.reason==='fixture-mutate')params={...params,content:'mutated'};return tool.execute(id,params,signal);}}},options);}})}};\n`;
 await symlink(host, join(root, 'harness/openclaw-host'));
 await mkdir(join(root, 'harness/node_modules')); await symlink(host, join(root, 'harness/node_modules/openclaw'));
-await mkdir(join(packed, 'node_modules'), { recursive: true }); await symlink(host, join(packed, 'node_modules/openclaw'));
+const laneResolution = await linkLaneHost(packed, host);
 const sdkEntry = createRequire(join(packed, 'package.json')).resolve('openclaw/plugin-sdk/plugin-entry');
 assert.ok((await realpath(sdkEntry)).startsWith(host + '/'), 'Packed plugin resolves the selected actual host SDK');
 await save('sdk-resolution.json', { host, hostVersion: pkg.version, sdkEntry: await realpath(sdkEntry), sdkSha256: createHash('sha256').update(await readFile(sdkEntry)).digest('hex'), packed, pluginEntry, pluginSha256: createHash('sha256').update(await readFile(pluginEntry)).digest('hex'), ancestorFallback: false });
@@ -89,6 +92,9 @@ let exit, socket; gateway.on('exit', (code, signal) => { exit = { code, signal }
 try {
   await until(async () => exit || (await readFile(join(root, 'console.log'), 'utf8')).includes('[gateway] ready'), 600000);
   assert.equal(exit, undefined, `Gateway exited before readiness: ${JSON.stringify(exit)}`);
+  const loadedSdk = (await readFile(join(root, 'loaded-sdk.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+  assertLoadedSdk(loadedSdk, laneResolution);
+  await save('loaded-sdk.json', { records: loadedSdk, ...laneResolution });
   socket = new WebSocket(`ws://127.0.0.1:${port}`);
   const rpc = (method, params = {}, timeoutMs = 450000) => new Promise((resolve, reject) => { const id = randomUUID(), timer = setTimeout(() => { pending.delete(id); reject(new Error(`${method} timeout`)); }, timeoutMs); pending.set(id, { resolve, reject, timer }); socket.send(JSON.stringify({ type: 'req', id, method, params })); });
   await new Promise((resolve, reject) => {
@@ -154,7 +160,7 @@ try {
   assert.ok(scopes.length > 0 && scopes.every(scope => scope.workspaceDir === workspace), 'Effective inventory, HTTP and agent factories retain one explicit canonical workspace');
   await save('scope-proof.json', { canonicalWorkspace: workspace, factories: scopes, allMatch: true });
   await save('complete.json', { success: true, hostVersion: pkg.version, actualPackedPlugin: packed, allow: true, deny: true, expiry: true, changedParams: true, canonicalRebinding: true, forgedReferences: true, replay: true, pendingStop: true, abortSignal: true, legacy: true, directInvocationMigration: 'direct factory needsApproval; HTTP invokes real host hook and requires actual resolution, confirm has no authority', nativeActivity: false });
-} catch (error) { await save('failure.json', { message: String(error), stack: error.stack }); throw error; }
+} catch (error) { await save('qualification-failure.json', { name: error.name, code: error.code ?? null, message: error.message.split('\n')[0].replaceAll(token, '[redacted]').slice(0, 200), frames: error.stack?.split('\n').filter(line => /^\s+at /.test(line)) }); throw error; }
 finally {
   await save('events.json', events); await save('model-calls.json', calls);
   for (const waiter of pending.values()) clearTimeout(waiter.timer);

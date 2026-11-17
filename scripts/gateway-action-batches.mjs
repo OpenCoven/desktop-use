@@ -1,7 +1,7 @@
 import { CANONICAL_ACTIONS, LEGACY_ACTION_ALIASES } from "../src/computer-use-actions.ts";
 
 // Host replay normalizes tool-call ids; use alphanumeric fixture ids.
-export const batchCallId = name => `call${name.replace(/[^a-zA-Z0-9]/g, "")}`;
+export const fixtureCallId = name => `call${name.replace(/[^a-zA-Z0-9]/g, "")}`;
 export const callName = (kind, action) => `restricted-${kind}-${action}`;
 
 export function buildRestrictedBatch(profileActions, fixtures) {

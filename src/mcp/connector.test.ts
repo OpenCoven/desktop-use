@@ -19,6 +19,7 @@ async function fixture(t: any, era: 'modern' | 'legacy', extra = {}) {
   const client = new Client({ name: 'second-host-fixture', version: '1' }, era === 'modern' ? { jsonSchemaValidator: createJsonSchemaValidator(), versionNegotiation: { mode: { pin: '2026-07-28' } } } : { jsonSchemaValidator: createJsonSchemaValidator(), supportedProtocolVersions: ['2025-11-25'] });
   t.after(async () => { await client.close(); await handle.close(); });
   await client.connect(new StdioServerTransport(output, input));
+  assert.equal(client.getServerVersion()?.version, JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8')).version);
   assert.equal(client.getNegotiatedProtocolVersion(), era === 'modern' ? '2026-07-28' : '2025-11-25');
   return { client, root, audits, input, output };
 }

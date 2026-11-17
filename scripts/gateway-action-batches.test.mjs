@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { CANONICAL_ACTIONS, LEGACY_ACTION_ALIASES } from "../src/computer-use-actions.ts";
-import { buildRestrictedBatch, batchCallId, callName } from "./gateway-action-batches.mjs";
+import { buildRestrictedBatch, fixtureCallId, callName } from "./gateway-action-batches.mjs";
 
 const fixtures = {
   health: {}, doctor: {}, inspect: {}, screenshot: {}, click: { on: "B1" },
@@ -21,17 +21,22 @@ test("restricted batches submit every compatible action exactly once, with a sep
     const batch = buildRestrictedBatch(eligible, fixtures);
     const submitted = [...batch.calls.map(call => call.args.action), "stop"];
     assert.deepEqual([...submitted].sort(), [...CANONICAL_ACTIONS, ...Object.keys(LEGACY_ACTION_ALIASES)].sort(), `${profile}: missing or duplicate vocabulary`);
-    const ids = [...batch.calls.map(call => batchCallId(call.name)), batchCallId(callName("allowed", "stop"))];
+    const ids = [...batch.calls.map(call => fixtureCallId(call.name)), fixtureCallId(callName("allowed", "stop"))];
     assert.equal(new Set(ids).size, 23);
     assert.equal(batch.calls.some(call => call.args.action === "stop"), false);
     assert.deepEqual(batch.approvalCalls, batch.calls.filter(call => batch.gatedActions.includes(call.args.action)).map(call => call.name));
-    assert.equal(new Set(batch.approvalCalls.map(batchCallId)).size, batch.gatedActions.length);
+    assert.equal(new Set(batch.approvalCalls.map(fixtureCallId)).size, batch.gatedActions.length);
     for (const call of batch.calls) {
       const canonical = LEGACY_ACTION_ALIASES[call.args.action] ?? call.args.action;
       assert.equal(batch.deniedActions.includes(call.args.action), !eligible.includes(canonical));
       assert.deepEqual(call.args, { action: call.args.action, ...fixtures[canonical], ...(batch.allowedActions.includes(call.args.action) ? {} : { confirm: true }) });
     }
   }
+});
+
+test("fixture call ids use the host-normalized alphanumeric form", () => {
+  assert.equal(fixtureCallId("legacy-action-type"), "calllegacyactiontype");
+  assert.equal(fixtureCallId("restricted-gated-type-text"), "callrestrictedgatedtypetext");
 });
 
 test("desktop batch gates all canonical inputs and legacy inputs despite model confirmation, and invokes observation aliases", () => {

@@ -1,0 +1,13 @@
+# Paired desktop-use release candidate
+
+This candidate pairs the native desktop adapter with the compiled OpenClaw plugin, standalone SDK/contracts and local MCP package. Use the exact version and full source commit in the accompanying immutable `release.json`; the attested `release-evidence.json` binds that manifest to its qualification receipts. GitHub prerelease availability and npm staging are separate operations. Staging does not make the npm package public.
+
+The native matrix is macOS 15 ARM64, macOS 15 Intel, Ubuntu 22.04 AMD64 and Ubuntu 22.04 ARM64 with glibc 2.35 and kernel 5.15 or newer. The installer requires explicit version selection and verifies publisher provenance, hashes, archive contents, executable identity and package pairing before activation. It installs no desktop helpers and changes no privacy grants. Package and running host synchronization remain separate, visible operations.
+
+OpenClaw qualification targets are the frozen exact versions 2026.4.26 and 2026.11.3. At source preparation time, the official newer-host lane remains blocked by upstream trusted-workspace propagation. The release workflow cannot reach delivery while that lane fails; this note does not claim that the current source is qualified or publicly released. If this document accompanies a later delivered tag, use its attested evidence index and exact run for the actual qualification result rather than inferring success from these notes.
+
+Identity signing and notarization are not performed by this workflow. GitHub/npm provenance does not imply Apple signing, notarization, installed desktop permissions or graphical acceptance. Native binaries may be unsigned or ad-hoc signed as recorded in the native receipts.
+
+The first public pair may have no prior public version. Its bootstrap delivery records rollback as not run. Subsequent candidate qualification must retain a successful actual prior workflow and execute A → B → A → B. Public acceptance separately downloads both real tag-bound pairs, verifies them and repeats installation, consumer, gateway and rollback checks. Native graphical acceptance remains open until the installed artifacts pass the documented fixture and helper/session/display/permission checks. Neither the first public pair nor green synthetic tests close issue #25.
+
+Use [the public delivery and native acceptance procedure](https://github.com/OpenCoven/desktop-use/blob/main/docs/release-delivery.md) together with the source at the manifest's full commit. Preserve the downloaded manifest and evidence; do not replace or relabel already attested artifacts.
